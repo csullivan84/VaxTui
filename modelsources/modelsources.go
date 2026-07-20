@@ -104,10 +104,8 @@ func Gateway(gatewayURL, anthropicKey, openAIKey, fireworksKey string) Source {
 // Env returns a Source for direct-to-provider env-var credentials. Only
 // providers with a non-empty key are included.
 //
-// DEPRECATED: Per-provider env-var model credentials are frozen. Do NOT add
-// new providers here. New models should be served through the exe.dev LLM
-// gateway or an exe.dev LLM integration (or added as DB-backed custom
-// models) rather than a new direct env-var credential.
+// Upstream freezes new env-var providers. shelley-a11y intentionally adds
+// DeepSeek via EnvDeepSeek / $DEEPSEEK_API_KEY rather than this signature.
 func Env(anthropicKey, openAIKey, geminiKey, fireworksKey string) Source {
 	prov := map[models.Provider]*providerConn{}
 	labels := map[models.Provider]string{}
@@ -123,6 +121,23 @@ func Env(anthropicKey, openAIKey, geminiKey, fireworksKey string) Source {
 	add(models.ProviderGemini, geminiKey, "GEMINI_API_KEY")
 	add(models.ProviderFireworks, fireworksKey, "FIREWORKS_API_KEY")
 	return Source{label: "env", providers: prov, providerLabels: labels}
+}
+
+// EnvDeepSeek is fork-only: materializes native deepseek-v4-* models when
+// DEEPSEEK_API_KEY is set. Safe no-op when key is empty.
+func EnvDeepSeek(deepseekKey string) Source {
+	if deepseekKey == "" {
+		return Source{label: "env", providers: map[models.Provider]*providerConn{}}
+	}
+	return Source{
+		label: "env",
+		providers: map[models.Provider]*providerConn{
+			models.ProviderDeepSeek: {apiKey: deepseekKey},
+		},
+		providerLabels: map[models.Provider]string{
+			models.ProviderDeepSeek: "$DEEPSEEK_API_KEY",
+		},
+	}
 }
 
 // LLMIntegration returns a Source backed by one exe.dev "llm"

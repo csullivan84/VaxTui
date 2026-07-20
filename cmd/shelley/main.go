@@ -420,9 +420,8 @@ func buildLLMModelSources(ctx context.Context, global GlobalConfig, logger *slog
 	openAIKey := os.Getenv("OPENAI_API_KEY")
 	geminiKey := os.Getenv("GEMINI_API_KEY")
 	fireworksKey := os.Getenv("FIREWORKS_API_KEY")
-	// DEPRECATED: Per-provider env-var credentials are frozen. Do NOT add new
-	// env vars or models here; new models belong to the exe.dev LLM gateway or
-	// an exe.dev LLM integration.
+	// Fork (shelley-a11y): direct DeepSeek alongside frozen upstream env keys.
+	deepseekKey := os.Getenv("DEEPSEEK_API_KEY")
 
 	var sources []modelsources.Source
 
@@ -487,6 +486,11 @@ func buildLLMModelSources(ctx context.Context, global GlobalConfig, logger *slog
 	} else if anthropicKey != "" || openAIKey != "" || geminiKey != "" || fireworksKey != "" {
 		// 3. Env vars.
 		sources = append(sources, modelsources.Env(anthropicKey, openAIKey, geminiKey, fireworksKey))
+	}
+
+	// Fork: native DeepSeek models when DEEPSEEK_API_KEY is set (any path).
+	if deepseekKey != "" {
+		sources = append(sources, modelsources.EnvDeepSeek(deepseekKey))
 	}
 
 	// 4. Predictable always available.

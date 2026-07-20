@@ -29,7 +29,10 @@ const (
 	ProviderFireworks Provider = "fireworks"
 	ProviderGemini    Provider = "gemini"
 	ProviderXAI       Provider = "xai"
-	ProviderBuiltIn   Provider = "builtin"
+	// ProviderDeepSeek is fork-only (shelley-a11y): direct api.deepseek.com
+	// via $DEEPSEEK_API_KEY. Upstream freezes new env-var providers.
+	ProviderDeepSeek Provider = "deepseek"
+	ProviderBuiltIn  Provider = "builtin"
 )
 
 // SourceCustomLabel is the label used for custom (DB-backed) models.
@@ -45,6 +48,8 @@ const (
 	DefaultFireworksBaseURL = "https://api.fireworks.ai/inference"
 	DefaultGeminiBaseURL    = "https://generativelanguage.googleapis.com"
 	DefaultXAIBaseURL       = "https://api.x.ai"
+	// Bare origin; oaiChatSvc appends /v1.
+	DefaultDeepSeekBaseURL = "https://api.deepseek.com"
 )
 
 // APIType identifies the wire protocol Shelley uses to talk to a model.
@@ -355,6 +360,18 @@ func All() []Model {
 			Description: "Gemini 3 Flash", APIModelName: "gemini-3-flash-preview",
 			APIType: APITypeGemini, DefaultBaseURL: DefaultGeminiBaseURL,
 			Build: gemSvc("gemini-3-flash-preview"),
+		},
+		{
+			ID: "deepseek-v4-flash", Provider: ProviderDeepSeek,
+			Description: "DeepSeek V4 Flash", APIModelName: oai.DeepseekV4Flash.ModelName,
+			APIType: APITypeOpenAIChat, DefaultBaseURL: DefaultDeepSeekBaseURL,
+			Build: oaiChatSvc(oai.DeepseekV4Flash, "deepseek"),
+		},
+		{
+			ID: "deepseek-v4-pro", Provider: ProviderDeepSeek,
+			Description: "DeepSeek V4 Pro", APIModelName: oai.DeepseekV4Pro.ModelName,
+			APIType: APITypeOpenAIChat, DefaultBaseURL: DefaultDeepSeekBaseURL,
+			Build: oaiChatSvc(oai.DeepseekV4Pro, "deepseek"),
 		},
 		{
 			ID: "deepseek-v4-flash-fireworks", Provider: ProviderFireworks,

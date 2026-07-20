@@ -43,6 +43,8 @@ const (
 	GeminiAPIKeyEnv    = "GEMINI_API_KEY"
 	MistralAPIKeyEnv   = "MISTRAL_API_KEY"
 	MoonshotAPIKeyEnv  = "MOONSHOT_API_KEY"
+	DeepSeekAPIKeyEnv  = "DEEPSEEK_API_KEY"
+	DeepSeekURL        = "https://api.deepseek.com"
 )
 
 //exe:completeinit
@@ -272,6 +274,31 @@ var (
 		URL:                FireworksURL,
 		APIKeyEnv:          FireworksAPIKeyEnv,
 		IsReasoningModel:   false,
+		UseSimplifiedPatch: false,
+		SupportsImages:     false,
+	}
+
+	// Direct api.deepseek.com (fork / DEEPSEEK_API_KEY). Wire model names
+	// match DeepSeek's public catalog; reasoning_content round-trips via
+	// isDeepSeekBaseURL.
+	DeepseekV4Flash = Model{
+		UserName:           "deepseek-v4-flash",
+		ModelName:          "deepseek-v4-flash",
+		TextVerbosity:      "",
+		URL:                DeepSeekURL,
+		APIKeyEnv:          DeepSeekAPIKeyEnv,
+		IsReasoningModel:   true,
+		UseSimplifiedPatch: false,
+		SupportsImages:     false,
+	}
+
+	DeepseekV4Pro = Model{
+		UserName:           "deepseek-v4-pro",
+		ModelName:          "deepseek-v4-pro",
+		TextVerbosity:      "",
+		URL:                DeepSeekURL,
+		APIKeyEnv:          DeepSeekAPIKeyEnv,
+		IsReasoningModel:   true,
 		UseSimplifiedPatch: false,
 		SupportsImages:     false,
 	}
@@ -633,6 +660,8 @@ var ModelsRegistry = []Model{
 	TogetherMistralSmall,
 	// Fireworks / misc providers
 	FireworksDeepseekV3,
+	DeepseekV4Flash,
+	DeepseekV4Pro,
 	DeepseekV4ProFireworks,
 	DeepseekV4FlashFireworks,
 	FireworksLlama4Maverick,

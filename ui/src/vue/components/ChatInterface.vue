@@ -4,6 +4,11 @@
      scroll behavior. Preserves the e2e DOM/ARIA/CSS contract. -->
 <template>
   <div class="full-height flex flex-col">
+    <StatusAnnouncer
+      :agent-working="agentWorking"
+      :stream-status="streamStatus"
+      :error="error"
+    />
     <!-- Header -->
     <div class="header">
       <div class="header-left">
@@ -419,6 +424,7 @@ import ChatOverflowMenu from "./ChatOverflowMenu.vue";
 import MessageRenderNode from "./MessageRenderNode.vue";
 import QueuedGhostMessage from "./QueuedGhostMessage.vue";
 import ChatStatusContent from "./ChatStatusContent.vue";
+import StatusAnnouncer from "./StatusAnnouncer.vue";
 import MarkdownContent from "./MarkdownContent.vue";
 
 // Props mirror ChatInterfaceProps in the React source. Callbacks that
