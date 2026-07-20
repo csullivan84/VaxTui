@@ -11,18 +11,37 @@
      it does not introduce a new prop or emit. -->
 <template>
   <div class="tool" :data-testid="isComplete ? 'tool-call-completed' : 'tool-call-running'">
-    <div class="tool-header" @click="isExpanded = !isExpanded">
+    <div
+      class="tool-header"
+      role="button"
+      tabindex="0"
+      :aria-expanded="isExpanded"
+      :aria-controls="detailsId"
+      :aria-label="toggleLabel"
+      @click="toggleExpanded"
+      @keydown.enter.prevent="toggleExpanded"
+      @keydown.space.prevent="toggleExpanded"
+    >
       <div class="tool-summary">
-        <span class="tool-emoji" :class="{ running: isRunning }">⚡</span>
+        <span class="tool-emoji" :class="{ running: isRunning }" aria-hidden="true">⚡</span>
         <span class="tool-name">subagent</span>
-        <span v-if="isComplete && hasError" class="tool-error">✗</span>
-        <span v-if="isComplete && !hasError" class="tool-success">✓</span>
+        <span v-if="isComplete && hasError" class="tool-error">
+          <span aria-hidden="true">✗</span>
+          <span class="sr-only">failed</span>
+        </span>
+        <span v-if="isComplete && !hasError" class="tool-success">
+          <span aria-hidden="true">✓</span>
+          <span class="sr-only">succeeded</span>
+        </span>
         <span class="tool-command" :title="prompt">{{ commandText }}</span>
       </div>
       <button
+        type="button"
         class="tool-toggle"
-        :aria-label="isExpanded ? 'Collapse' : 'Expand'"
+        tabindex="-1"
+        :aria-label="toggleLabel"
         :aria-expanded="isExpanded"
+        @click.stop="toggleExpanded"
       >
         <svg
           width="12"
@@ -32,6 +51,7 @@
           xmlns="http://www.w3.org/2000/svg"
           class="tool-chevron"
           :class="{ 'tool-chevron-expanded': isExpanded }"
+          aria-hidden="true"
         >
           <path
             d="M4.5 3L7.5 6L4.5 9"
@@ -44,7 +64,13 @@
       </button>
     </div>
 
-    <div v-if="isExpanded" class="tool-details">
+    <ToolAccessibleBody
+      :expanded="isExpanded"
+      :label="outputLabel"
+      :plain-text="accessibleText"
+      body-class="tool-details"
+      :body-id="detailsId"
+    >
       <div class="tool-section">
         <div class="tool-label">
           Prompt to '{{ slug }}':
@@ -73,14 +99,24 @@
           </a>
         </div>
       </div>
-    </div>
+    </ToolAccessibleBody>
+
+    <a
+      v-if="!isExpanded && displayData?.conversation_id"
+      :href="`/c/${slug}`"
+      class="sr-only"
+      @click="onLinkClick"
+    >
+      View subagent {{ slug }} conversation
+    </a>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, useId } from "vue";
 import type { LLMContent } from "../../../types";
 import { useToolExpanded } from "../../composables/toolDetail";
+import ToolAccessibleBody from "./ToolAccessibleBody.vue";
 
 interface SubagentInput {
   slug?: string;
@@ -100,6 +136,11 @@ const props = defineProps<{
 }>();
 
 const isExpanded = useToolExpanded();
+const detailsId = `subagent-details-${useId()}`;
+
+function toggleExpanded() {
+  isExpanded.value = !isExpanded.value;
+}
 
 const input = computed<SubagentInput>(() =>
   typeof props.toolInput === "object" && props.toolInput !== null
@@ -144,6 +185,26 @@ const commandText = computed(() => {
   s += props.isRunning ? (wait.value ? "running..." : "started") : "";
   if (displayPrompt.value && !props.isRunning) s += ` ${displayPrompt.value}`;
   return s;
+});
+
+const outputLabel = computed(() => `Subagent details for ${slug.value}`);
+const toggleLabel = computed(() =>
+  isExpanded.value
+    ? `Collapse subagent details for ${slug.value}`
+    : `Expand subagent details for ${slug.value}`,
+);
+const accessibleText = computed(() => {
+  const badges: string[] = [];
+  if (model.value) badges.push(`Model: ${model.value}`);
+  if (!wait.value) badges.push("Fire-and-forget");
+  if (timeout.value !== 60) badges.push(`Timeout: ${timeout.value} seconds`);
+
+  const parts = [`Prompt to ${slug.value}:\n${prompt.value || "(no prompt)"}`];
+  if (badges.length > 0) parts.push(badges.join("\n"));
+  if (isComplete.value) {
+    parts.push(`Response${props.hasError ? " (Error)" : ""}:\n${resultText.value || "(no response)"}`);
+  }
+  return parts.join("\n\n");
 });
 
 function onLinkClick(e: MouseEvent) {
