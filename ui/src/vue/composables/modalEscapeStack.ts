@@ -10,13 +10,19 @@
 
 import { isImeComposing } from "../../utils/imeComposing";
 
-const stack: Array<() => void> = [];
+interface ModalEntry {
+  close: () => void;
+  restoreFocusTo: HTMLElement | null;
+}
+
+const stack: ModalEntry[] = [];
 
 function onKeydown(event: KeyboardEvent) {
   if (event.key !== "Escape" || isImeComposing(event) || stack.length === 0) return;
+  event.preventDefault();
   event.stopPropagation();
   // Close only the topmost modal.
-  stack[stack.length - 1]();
+  stack[stack.length - 1].close();
 }
 
 let listening = false;
@@ -26,10 +32,27 @@ export function pushModalEscape(close: () => void): void {
     document.addEventListener("keydown", onKeydown);
     listening = true;
   }
-  stack.push(close);
+  const existing = stack.findIndex((entry) => entry.close === close);
+  if (existing !== -1) stack.splice(existing, 1);
+  const active = document.activeElement;
+  stack.push({
+    close,
+    restoreFocusTo: active instanceof HTMLElement ? active : null,
+  });
 }
 
 export function popModalEscape(close: () => void): void {
-  const i = stack.lastIndexOf(close);
-  if (i !== -1) stack.splice(i, 1);
+  let i = -1;
+  for (let candidate = stack.length - 1; candidate >= 0; candidate--) {
+    if (stack[candidate].close === close) {
+      i = candidate;
+      break;
+    }
+  }
+  if (i === -1) return;
+  const [entry] = stack.splice(i, 1);
+  if (i !== stack.length || !entry.restoreFocusTo?.isConnected) return;
+  requestAnimationFrame(() => {
+    if (entry.restoreFocusTo?.isConnected) entry.restoreFocusTo.focus();
+  });
 }

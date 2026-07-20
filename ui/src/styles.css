@@ -2356,6 +2356,46 @@ body {
   padding-right: max(1rem, env(safe-area-inset-right));
 }
 
+.diff-viewer-text {
+  height: 100%;
+  overflow: auto;
+  padding: 1rem;
+  background: var(--bg-base);
+}
+
+.diff-viewer-text h2,
+.diff-viewer-text p {
+  margin: 0 0 0.75rem;
+}
+
+.diff-viewer-text-lines {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-family: var(--font-mono);
+  white-space: pre-wrap;
+}
+
+.diff-viewer-text-line {
+  display: grid;
+  grid-template-columns: 4rem 1.5rem minmax(0, 1fr);
+  min-height: 1.5rem;
+}
+
+.diff-viewer-text-line-added {
+  background: var(--diff-added-bg, rgba(46, 160, 67, 0.15));
+}
+
+.diff-viewer-text-line-removed {
+  background: var(--diff-removed-bg, rgba(248, 81, 73, 0.15));
+}
+
+.diff-viewer-text-number,
+.diff-viewer-text-kind {
+  color: var(--text-secondary);
+  user-select: none;
+}
+
 .message-input-form {
   display: flex;
   flex-wrap: wrap;
@@ -4803,8 +4843,13 @@ svg {
   }
 
   .message-input-container {
+    position: sticky;
+    bottom: 0;
+    z-index: 20;
     padding: 0.5rem 0.75rem;
     padding-bottom: calc(0.5rem + env(safe-area-inset-bottom, 0px));
+    padding-left: max(0.75rem, env(safe-area-inset-left, 0px));
+    padding-right: max(0.75rem, env(safe-area-inset-right, 0px));
     border-top: 1px solid var(--border);
   }
 

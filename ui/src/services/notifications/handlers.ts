@@ -1,5 +1,5 @@
 import type { NotificationEvent } from "../../types";
-import { isChannelEnabled } from "./preferences";
+import { isChannelEnabled, isQuietHours } from "./preferences";
 
 type NotificationHandler = (event: NotificationEvent) => void;
 
@@ -10,6 +10,7 @@ export function registerHandler(name: string, handler: NotificationHandler): voi
 }
 
 export function handleNotificationEvent(event: NotificationEvent): void {
+  if (isQuietHours()) return;
   for (const [name, handler] of handlers) {
     if (!isChannelEnabled(name, event.type)) continue;
     try {

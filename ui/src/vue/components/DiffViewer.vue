@@ -64,6 +64,15 @@
           </div>
         </div>
         <button
+          type="button"
+          class="diff-viewer-mode-btn"
+          :class="{ active: readingMode === 'text' }"
+          :aria-pressed="readingMode === 'text'"
+          @click="toggleReadingMode"
+        >
+          {{ readingMode === "text" ? "Visual diff" : "Text diff" }}
+        </button>
+        <button
           v-tooltip.top="`Git directory: ${cwd}\nClick to change`"
           class="diff-viewer-dir-btn"
           :aria-label="`Git directory: ${cwd}. Click to change`"
@@ -195,6 +204,16 @@
             </div>
             <div class="diff-viewer-mode-toggle">
               <button
+                v-tooltip.top="
+                  readingMode === 'text' ? 'Show visual diff' : 'Show linear text diff'
+                "
+                :class="`diff-viewer-mode-btn ${readingMode === 'text' ? 'active' : ''}`"
+                :aria-pressed="readingMode === 'text'"
+                @click="toggleReadingMode"
+              >
+                {{ readingMode === "text" ? "Visual" : "Text" }}
+              </button>
+              <button
                 v-tooltip.top="'Comment mode'"
                 :class="`diff-viewer-mode-btn ${mode === 'comment' ? 'active' : ''}`"
                 aria-label="Comment mode"
@@ -323,13 +342,35 @@
               Click a line to comment, or select text and click Comment.
             </p>
           </div>
+          <section
+            v-if="fileDiff && readingMode === 'text'"
+            class="diff-viewer-text"
+            :aria-label="`Linear diff for ${fileDiff.path}`"
+          >
+            <h2>{{ fileDiff.path }}</h2>
+            <p>{{ linearDiffSummary }}</p>
+            <ol class="diff-viewer-text-lines" aria-label="Changed lines">
+              <li
+                v-for="line in linearDiffLines"
+                :key="line.key"
+                :class="`diff-viewer-text-line diff-viewer-text-line-${line.kind}`"
+                :aria-label="line.ariaLabel"
+              >
+                <span class="diff-viewer-text-number" aria-hidden="true">{{ line.number }}</span>
+                <span class="diff-viewer-text-kind" aria-hidden="true">{{ line.marker }}</span>
+                <code>{{ line.text || " " }}</code>
+              </li>
+            </ol>
+          </section>
           <div
             ref="editorContainerRef"
             class="diff-viewer-editor"
-            :style="{ display: fileDiff && monacoLoaded ? 'block' : 'none' }"
+            :style="{
+              display: fileDiff && monacoLoaded && readingMode === 'visual' ? 'block' : 'none',
+            }"
           />
           <div
-            v-if="!isMobile && vimEnabled && fileDiff && monacoLoaded"
+            v-if="!isMobile && vimEnabled && fileDiff && monacoLoaded && readingMode === 'visual'"
             ref="vimStatusRef"
             class="monaco-vim-status"
           />
@@ -462,6 +503,8 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from "vue";
 import type * as Monaco from "monaco-editor";
 import { api } from "../../services/api";
+import { announceA11y } from "../../services/a11yAnnouncer";
+import { getScreenReaderMode } from "../../services/a11yPreferences";
 import { loadMonaco } from "../../services/monaco";
 import { isDarkModeActive } from "../../services/theme";
 import { useVimEnabled, useMonacoVim } from "../composables/monacoVim";
@@ -470,6 +513,7 @@ import CommitPicker from "./CommitPicker.vue";
 import RangeToggle from "./RangeToggle.vue";
 import DirectoryPickerModal from "./DirectoryPickerModal.vue";
 import DiffFileTree from "./DiffFileTree.vue";
+import { linearDiff } from "./linearDiff";
 import { COMMIT_MESSAGES_DIR, treeRealPathOrder, type DiffFileTreeEntry } from "./diffFileTree";
 import type { GitDiffInfo, GitFileInfo, GitFileDiff, GitCommitMessage } from "../../types";
 
@@ -485,6 +529,15 @@ const emit = defineEmits<{
 }>();
 
 type ViewMode = "comment" | "edit";
+type ReadingMode = "visual" | "text";
+type LinearDiffLine = {
+  key: string;
+  kind: "context" | "added" | "removed";
+  marker: string;
+  number: string;
+  text: string;
+  ariaLabel: string;
+};
 
 const COMMIT_MSG_PREFIX = "commit-message:";
 const MOBILE_LINE_DECORATIONS_WIDTH = 8;
@@ -591,6 +644,7 @@ function endDialogDrag() {
   window.removeEventListener("mouseup", endDialogDrag);
 }
 const mode = ref<ViewMode>("comment");
+const readingMode = ref<ReadingMode>(getScreenReaderMode() ? "text" : "visual");
 const commitMessages = ref<GitCommitMessage[]>([]);
 const amendStatus = ref<"idle" | "saving" | "saved" | "error">("idle");
 const showKeyboardHint = ref(false);
@@ -611,6 +665,46 @@ const layout = ref<"header" | "sidebar">(
     }
   })(),
 );
+
+function toggleReadingMode() {
+  readingMode.value = readingMode.value === "text" ? "visual" : "text";
+  announceA11y(`${readingMode.value === "text" ? "Linear text" : "Visual"} diff view.`);
+}
+
+const linearDiffLines = computed<LinearDiffLine[]>(() => {
+  if (!fileDiff.value) return [];
+  const rows: LinearDiffLine[] = [];
+  let oldNumber = 0;
+  let newNumber = 0;
+  for (const edit of linearDiff(fileDiff.value.oldContent, fileDiff.value.newContent)) {
+    if (edit.kind !== "added") oldNumber++;
+    if (edit.kind !== "removed") newNumber++;
+    const spokenKind =
+      edit.kind === "added" ? "Added" : edit.kind === "removed" ? "Removed" : "Unchanged";
+    const number = edit.kind === "added" ? `${newNumber}` : `${oldNumber}`;
+    const location =
+      edit.kind === "context"
+        ? `old line ${oldNumber}, new line ${newNumber}`
+        : edit.kind === "removed"
+          ? `old line ${oldNumber}`
+          : `new line ${newNumber}`;
+    rows.push({
+      key: `${edit.kind}:${oldNumber}:${newNumber}:${rows.length}`,
+      kind: edit.kind,
+      marker: edit.kind === "added" ? "+" : edit.kind === "removed" ? "−" : " ",
+      number,
+      text: edit.text,
+      ariaLabel: `${spokenKind}, ${location}: ${edit.text || "blank line"}`,
+    });
+  }
+  return rows;
+});
+
+const linearDiffSummary = computed(() => {
+  const added = linearDiffLines.value.filter((line) => line.kind === "added").length;
+  const removed = linearDiffLines.value.filter((line) => line.kind === "removed").length;
+  return `${added} ${added === 1 ? "line" : "lines"} added, ${removed} ${removed === 1 ? "line" : "lines"} removed.`;
+});
 function setLayout(v: "header" | "sidebar") {
   layout.value = v;
   try {

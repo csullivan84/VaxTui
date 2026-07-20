@@ -5,7 +5,7 @@ import { browserNotificationHandler } from "./handlers/browser";
 import { setChannelEnabled } from "./preferences";
 
 export { handleNotificationEvent } from "./handlers";
-export { isChannelEnabled, setChannelEnabled } from "./preferences";
+export { getQuietHours, isChannelEnabled, setChannelEnabled, setQuietHours } from "./preferences";
 
 export function initializeNotifications(): void {
   initializeFavicon();

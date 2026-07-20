@@ -339,6 +339,7 @@ import { useI18n } from "../composables/i18n";
 import { pickPlaceholderHint } from "../../utils/placeholderHints";
 import { SLASH_COMMANDS } from "../../utils/slashCommands";
 import { isImeComposing } from "../../utils/imeComposing";
+import { getSendKeystroke, type SendKeystroke } from "../../services/a11yPreferences";
 import { THINKING_LEVELS } from "./thinkingLevel";
 
 // Web Speech API types
@@ -461,6 +462,7 @@ const hasQueueHandler = computed(() => props.onQueue !== undefined);
 const canCompact = computed(() => props.onCompact !== undefined && !props.autoQueue);
 
 const message = ref(props.draftSeed?.value ?? "");
+const sendKeystroke = ref<SendKeystroke>(getSendKeystroke());
 // setMessage mirrors the React controlled-value path: surfaces every change via
 // draft-change so the parent can persist it.
 function setMessage(next: string | ((prev: string) => string)) {
@@ -1104,12 +1106,16 @@ function handleKeyDown(e: KeyboardEvent) {
     return;
   }
   if (e.key === "Enter" && !e.shiftKey) {
-    // On mobile, let Enter create newlines since there's a send button.
-    const isMobile = "ontouchstart" in window;
-    if (isMobile && !(e.ctrlKey || e.metaKey)) return;
+    const hasModifier = e.ctrlKey || e.metaKey;
+    const shouldSend = sendKeystroke.value === "modifier-enter" ? hasModifier : !hasModifier;
+    if (!shouldSend) return;
     e.preventDefault();
     void handleSubmit(e);
   }
+}
+
+function onSendKeystrokeChange(event: Event) {
+  sendKeystroke.value = (event as CustomEvent<SendKeystroke>).detail;
 }
 
 // Re-focus textarea after submission completes and it's re-enabled.
@@ -1142,6 +1148,7 @@ function handleViewportResize() {
 
 onMounted(() => {
   window.addEventListener("resize", handleResize);
+  window.addEventListener("shelley:send-keystroke-change", onSendKeystrokeChange);
   if (typeof window !== "undefined" && window.visualViewport) {
     window.visualViewport.addEventListener("resize", handleViewportResize);
   }
@@ -1149,6 +1156,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   window.removeEventListener("resize", handleResize);
+  window.removeEventListener("shelley:send-keystroke-change", onSendKeystrokeChange);
   if (typeof window !== "undefined" && window.visualViewport) {
     window.visualViewport.removeEventListener("resize", handleViewportResize);
   }

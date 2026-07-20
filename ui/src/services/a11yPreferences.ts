@@ -1,6 +1,9 @@
 const SCREEN_READER_MODE_KEY = "shelley-screen-reader-mode";
 const A11Y_STRICT_KEY = "shelley-a11y-strict";
 const MUTED_TOOL_ANNOUNCEMENTS_KEY = "shelley-muted-tool-announcements";
+const SEND_KEYSTROKE_KEY = "shelley-send-keystroke";
+
+export type SendKeystroke = "enter" | "modifier-enter";
 
 /** When on, tool/terminal bodies stay expanded and auto-expand on completion. */
 export function getScreenReaderMode(): boolean {
@@ -21,7 +24,9 @@ export function setA11yStrict(on: boolean): void {
 export function getMutedToolAnnouncements(): string[] {
   try {
     const parsed = JSON.parse(localStorage.getItem(MUTED_TOOL_ANNOUNCEMENTS_KEY) || "[]");
-    return Array.isArray(parsed) ? parsed.filter((name): name is string => typeof name === "string") : [];
+    return Array.isArray(parsed)
+      ? parsed.filter((name): name is string => typeof name === "string")
+      : [];
   } catch {
     return [];
   }
@@ -42,4 +47,13 @@ export function isToolAnnouncementMuted(toolName: string): boolean {
 export function setScreenReaderMode(on: boolean): void {
   if (on) localStorage.setItem(SCREEN_READER_MODE_KEY, "1");
   else localStorage.removeItem(SCREEN_READER_MODE_KEY);
+}
+
+export function getSendKeystroke(): SendKeystroke {
+  return localStorage.getItem(SEND_KEYSTROKE_KEY) === "modifier-enter" ? "modifier-enter" : "enter";
+}
+
+export function setSendKeystroke(value: SendKeystroke): void {
+  localStorage.setItem(SEND_KEYSTROKE_KEY, value);
+  window.dispatchEvent(new CustomEvent("shelley:send-keystroke-change", { detail: value }));
 }

@@ -49,6 +49,8 @@
             text
             severity="secondary"
             :aria-label="t('groupConversations')"
+            aria-haspopup="menu"
+            :aria-expanded="groupMenuOpen"
             v-tooltip.top="t('groupConversations')"
             @click="groupMenuOpen = !groupMenuOpen"
           >
@@ -61,11 +63,18 @@
               />
             </svg>
           </Button>
-          <div v-if="groupMenuOpen" class="group-by-menu">
+          <div
+            v-if="groupMenuOpen"
+            class="group-by-menu"
+            role="menu"
+            aria-label="Conversation grouping and sorting"
+          >
             <button
               v-for="value in ['none', 'cwd', 'git_repo'] as GroupBy[]"
               :key="value"
               :class="`group-by-menu-item${groupBy === value ? ' active' : ''}`"
+              role="menuitemradio"
+              :aria-checked="groupBy === value"
               @click="
                 handleGroupByChange(value);
                 groupMenuOpen = false;
@@ -74,13 +83,7 @@
               {{ groupByLabel(value) }}
             </button>
             <div class="group-by-menu-separator" />
-            <button
-              class="group-by-menu-item"
-              @click="
-                resortKey += 1;
-                groupMenuOpen = false;
-              "
-            >
+            <button class="group-by-menu-item" role="menuitem" @click="resortConversations">
               <svg
                 fill="none"
                 stroke="currentColor"
@@ -302,6 +305,7 @@
 import { computed, nextTick, onMounted, onUnmounted, provide, ref, watch } from "vue";
 import type { Conversation, ConversationWithState } from "../../types";
 import { api } from "../../services/api";
+import { announceA11y } from "../../services/a11yAnnouncer";
 import { useI18n } from "../composables/i18n";
 import {
   sortConversationsByBucket,
@@ -799,6 +803,12 @@ function handleGroupByChange(value: GroupBy) {
   groupBy.value = value;
   localStorage.setItem("shelley-group-by", value);
   collapsedGroups.value = new Set();
+  announceA11y(`Conversations grouped by ${groupByLabel(value)}.`);
+}
+function resortConversations() {
+  resortKey.value += 1;
+  groupMenuOpen.value = false;
+  announceA11y("Conversations sorted by latest activity.");
 }
 function groupByLabel(value: GroupBy): string {
   const labels: Record<GroupBy, string> = {

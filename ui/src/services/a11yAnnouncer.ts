@@ -10,6 +10,9 @@ export interface A11yAnnouncementDetail {
 /** Sends one message through the app-level StatusAnnouncer. */
 export function announceA11y(text: string, politeness: A11yPoliteness = "polite") {
   if (!text || typeof window === "undefined") return;
+  void import("./a11yTrace").then(({ recordA11yTrace }) =>
+    recordA11yTrace("announcement", `${politeness}: ${text}`),
+  );
   window.dispatchEvent(
     new CustomEvent<A11yAnnouncementDetail>(A11Y_ANNOUNCE_EVENT, {
       detail: { text, politeness },

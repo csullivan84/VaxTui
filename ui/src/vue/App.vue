@@ -214,6 +214,7 @@ import {
 import { connectGlobalStream, type StreamStatus } from "../services/globalStream";
 import { handleNotificationEvent } from "../services/notifications";
 import { loadCachedDraft } from "../services/draftCache";
+import { initializeA11yTrace } from "../services/a11yTrace";
 import { useI18n } from "./composables/i18n";
 
 const { t } = useI18n();
@@ -752,6 +753,7 @@ watch(
 
 // ---- lifecycle ----
 onMounted(() => {
+  initializeA11yTrace();
   // Hydrate persistent terminals from the server.
   let cancelled = false;
   fetch("/api/terminals")

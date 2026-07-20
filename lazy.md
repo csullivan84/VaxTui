@@ -479,3 +479,38 @@ Codex started run2 then died mid-flight. Grok finished wiring.
 — Grok
 
 ---
+
+## Run 3 complete — Codex (tasks 41–60)
+
+Shipped:
+
+- **41** — `DiffFileTree` now uses a roving tab stop, `aria-level`, and standard Left/Right/Up/Down/Home/End tree navigation; existing spoken status and line-change counts remain intact.
+- **42** — `DiffViewer` has a linear, line-numbered text mode backed by a tested Myers line diff. Screen-reader mode opens it by default; visual Monaco remains one button away.
+- **44** — the modal stack now records each exact invoker, closes only the top entry, and restores focus in nested close order.
+- **45** — Help → Screen reader preferences selects Enter or Control/Command+Enter, persists it in localStorage, updates the live composer, and announces the concrete setting.
+- **46** — drawer grouping/sorting is a labeled menu with checked grouping choices and spoken result announcements.
+- **47** — rendered Markdown code blocks are named and focusable; Alt+Up/Down moves among blocks and Control/Command+Shift+C copies the focused block with success/failure announcements.
+- **48** — the accessibility dialog can filter the current last-turn tool index by tool name or summary and reports the match count.
+- **49** — verified already complete in the OAI path: DeepSeek `reasoning_content` becomes `ContentTypeThinking`, round-trips on tool turns, renders through `ThinkingContent`, and its focused package tests pass.
+- **52** — the mobile composer is a sticky safe-area-aware dock and retains the existing visual-viewport keyboard handling.
+- **53** — verified drawer actions already expose labeled touch/keyboard buttons; no swipe-only action remains.
+- **54** — external-keyboard help now documents composer, code-block, transcript, and command-palette shortcuts; configurable modifier-send and existing global shortcuts work on mobile hardware keyboards.
+- **55** — verified completion notification payloads already include conversation title, model, completion state, URL, and final response; no duplicate payload shape added.
+- **56** — browser completion/error notifications deep-link to the conversation's focusable completion summary.
+- **57** — local quiet hours persist start/end/enabled in localStorage, describe timezone and overnight schedules, announce changes, and mute client notification handlers. Boundary tests cover daytime and overnight schedules.
+- **60** — a 200-event sessionStorage ring records live-region announcements, focus moves, and keyboard actions. Help downloads JSON; developers can also call `window.exportShelleyA11yTrace()`.
+
+Deferred:
+
+- **43** — changed-symbol extraction needs language-aware server metadata; not safe to fake from line text.
+- **50** — capability/cost profiles need an authoritative catalog shape beyond the existing DeepSeek reasoning/tool flags.
+- **51** — `ModelBar` has no first-token/retry telemetry source to render yet.
+- **58** — idle rendering needs profiling and separation of semantic rendering from Monaco/highlighting lifecycles; a blind `requestIdleCallback` wrapper would delay useful content.
+- **59** — a plain-text cache needs identified consumers and invalidation semantics; an unused map in `messageStore` would be cargo cult.
+
+Validation:
+
+- UI TypeScript and Vue type-checks pass; lint passes; all 22 UI test files pass; production UI build succeeds.
+- `go test ./llm/oai` passes. `go test ./server` is blocked by existing macOS temp-path assertions comparing `/var/...` with `/private/var/...` in Git/CWD tests.
+
+— Codex

@@ -16,8 +16,11 @@
       :style="{ paddingLeft: `calc(0.375rem + ${row.depth} * 0.85rem)` }"
       :title="row.label"
       role="treeitem"
+      :aria-level="row.depth + 1"
       :aria-expanded="row.isOpen"
+      :tabindex="row.key === activeKey ? 0 : -1"
       @click="emit('toggle', row.pathsCovered)"
+      @focus="emit('active', row.key)"
     >
       <span class="diff-tree-icon" v-html="row.isOpen ? CHEVRON_OPEN : CHEVRON_CLOSED" />
       <span class="diff-tree-label">{{ row.label }}</span>
@@ -30,8 +33,11 @@
       :style="{ paddingLeft: `calc(0.375rem + ${row.depth} * 0.85rem)` }"
       :title="row.label"
       role="treeitem"
+      :aria-level="row.depth + 1"
       :aria-selected="row.isSelected"
+      :tabindex="row.key === activeKey ? 0 : -1"
       @click="emit('select', row.realPath)"
+      @focus="emit('active', row.key)"
     >
       <span class="diff-tree-icon" v-html="FILE_ICON" />
       <span class="diff-tree-label">{{ row.label }}</span>
@@ -67,11 +73,13 @@ import type { RenderedRow } from "./diffFileTree";
 defineProps<{
   rows: RenderedRow[];
   selectedRealPath: string | null;
+  activeKey: string;
 }>();
 const emit = defineEmits<{
   (e: "select", realPath: string): void;
   (e: "toggle", pathsCovered: string[]): void;
   (e: "selected-row", el: HTMLButtonElement | null): void;
+  (e: "active", key: string): void;
 }>();
 
 const CHEVRON_OPEN =

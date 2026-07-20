@@ -15,12 +15,20 @@
         @input="query = ($event.target as HTMLInputElement).value"
       />
     </div>
-    <div class="diff-tree-scroll" role="tree" aria-label="Files">
+    <div
+      ref="treeRef"
+      class="diff-tree-scroll"
+      role="tree"
+      aria-label="Changed files"
+      @keydown="onTreeKeydown"
+    >
       <DiffTreeRows
         :rows="renderedRows"
         :selected-real-path="selectedRealPath"
+        :active-key="activeKey"
         @select="onSelect"
         @toggle="toggle"
+        @active="activeKey = $event"
         @selected-row="(el: HTMLButtonElement | null) => (selectedRowEl = el)"
       />
     </div>
@@ -45,6 +53,8 @@ const props = defineProps<{
   selectedRealPath: string | null;
 }>();
 const emit = defineEmits<{ (e: "select", realPath: string): void }>();
+const treeRef = ref<HTMLDivElement | null>(null);
+const activeKey = ref("");
 
 function onSelect(realPath: string) {
   emit("select", realPath);
@@ -178,6 +188,48 @@ const renderedRows = computed<RenderedRow[]>(() => {
   walk(tree.value, 0);
   return out;
 });
+
+watch(
+  [renderedRows, () => props.selectedRealPath],
+  ([rows, selected]) => {
+    const selectedRow = rows.find((row) => row.kind === "file" && row.realPath === selected);
+    if (selectedRow) activeKey.value = selectedRow.key;
+    else if (!rows.some((row) => row.key === activeKey.value)) activeKey.value = rows[0]?.key ?? "";
+  },
+  { immediate: true },
+);
+
+function onTreeKeydown(event: KeyboardEvent) {
+  const target = event.target as HTMLButtonElement;
+  if (!target.classList.contains("diff-tree-row")) return;
+  const rows = Array.from(
+    treeRef.value?.querySelectorAll<HTMLButtonElement>(".diff-tree-row") ?? [],
+  );
+  const index = rows.indexOf(target);
+  if (index < 0) return;
+  let next = -1;
+  if (event.key === "ArrowDown") next = Math.min(index + 1, rows.length - 1);
+  else if (event.key === "ArrowUp") next = Math.max(index - 1, 0);
+  else if (event.key === "Home") next = 0;
+  else if (event.key === "End") next = rows.length - 1;
+  else if (event.key === "ArrowRight") {
+    if (target.getAttribute("aria-expanded") === "false") target.click();
+    else if (target.hasAttribute("aria-expanded")) next = Math.min(index + 1, rows.length - 1);
+  } else if (event.key === "ArrowLeft") {
+    if (target.getAttribute("aria-expanded") === "true") target.click();
+    else {
+      const level = Number(target.getAttribute("aria-level"));
+      for (let i = index - 1; i >= 0; i--) {
+        if (Number(rows[i].getAttribute("aria-level")) < level) {
+          next = i;
+          break;
+        }
+      }
+    }
+  } else return;
+  event.preventDefault();
+  if (next >= 0) rows[next].focus();
+}
 
 // Keep the selected row in view when the parent moves the selection.
 const selectedRowEl = ref<HTMLButtonElement | null>(null);

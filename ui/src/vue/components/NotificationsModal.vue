@@ -150,6 +150,23 @@
           @click="toggleFavicon"
         />
       </div>
+
+      <fieldset class="model-card notifications-card">
+        <legend class="notifications-card-title">Quiet hours</legend>
+        <label class="a11y-preference-row">
+          <input v-model="quietHours.enabled" type="checkbox" @change="saveQuietHours" />
+          Mute local notifications during quiet hours
+        </label>
+        <label>
+          Start
+          <input v-model="quietHours.start" type="time" @change="saveQuietHours" />
+        </label>
+        <label>
+          End
+          <input v-model="quietHours.end" type="time" @change="saveQuietHours" />
+        </label>
+        <div class="notifications-card-description" role="status">{{ quietHoursDescription }}</div>
+      </fieldset>
     </div>
 
     <!-- Backend channels section -->
@@ -218,7 +235,10 @@ import {
   requestBrowserNotificationPermission,
   isChannelEnabled,
   setChannelEnabled,
+  getQuietHours,
+  setQuietHours,
 } from "../../services/notifications";
+import { announceA11y } from "../../services/a11yAnnouncer";
 
 interface FormData {
   channel_type: string;
@@ -248,6 +268,18 @@ const error = ref<string | null>(null);
 const browserEnabled = ref(isChannelEnabled("browser"));
 const faviconEnabled = ref(isChannelEnabled("favicon"));
 const browserPermission = ref(getBrowserNotificationState());
+const quietHours = reactive(getQuietHours());
+const quietHoursDescription = computed(() => {
+  if (!quietHours.enabled) return "Quiet hours are off.";
+  const overnight = quietHours.start >= quietHours.end;
+  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  return `Notifications are muted from ${quietHours.start} to ${quietHours.end} in ${zone}${overnight ? ", continuing overnight" : ""}.`;
+});
+
+function saveQuietHours() {
+  setQuietHours({ ...quietHours });
+  announceA11y(quietHoursDescription.value);
+}
 
 const exeNotifyAvailable = window.__SHELLEY_INIT__?.exe_notify_available ?? false;
 const exeNotifyEnabled = ref(true);

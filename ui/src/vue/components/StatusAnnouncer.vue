@@ -4,6 +4,8 @@
 <template>
   <div
     class="sr-only"
+    id="turn-completion-summary"
+    tabindex="-1"
     :aria-live="politeness"
     aria-atomic="true"
     data-testid="status-announcer"
@@ -14,10 +16,7 @@
 
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref, watch } from "vue";
-import {
-  A11Y_ANNOUNCE_EVENT,
-  type A11yAnnouncementDetail,
-} from "../../services/a11yAnnouncer";
+import { A11Y_ANNOUNCE_EVENT, type A11yAnnouncementDetail } from "../../services/a11yAnnouncer";
 import {
   agentAnnouncement,
   errorAnnouncement,
@@ -73,9 +72,7 @@ function apply(next: Announcement | null) {
 watch(
   () => props.agentWorking,
   (working, wasWorking) => {
-    apply(
-      agentAnnouncement(working, wasWorking, props.toolsCompleted, props.assistantPreview),
-    );
+    apply(agentAnnouncement(working, wasWorking, props.toolsCompleted, props.assistantPreview));
   },
 );
 
