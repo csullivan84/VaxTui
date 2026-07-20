@@ -82,7 +82,10 @@
           Output{{ hasError ? " (Error)" : "" }}:
           <span v-if="executionTime" class="tool-time">{{ executionTime }}</span>
         </div>
-        <pre :class="`tool-code ${hasError ? 'error' : ''}`">{{ output || "(no output)" }}</pre>
+        <ul v-if="outputAsRows" class="tool-code tool-json-rows" :class="{ error: hasError }">
+          <li v-for="(row, i) in outputAsRows" :key="i">{{ row }}</li>
+        </ul>
+        <pre v-else :class="`tool-code ${hasError ? 'error' : ''}`">{{ output || "(no output)" }}</pre>
       </div>
     </ToolAccessibleBody>
   </div>
@@ -121,6 +124,22 @@ const output = computed(() =>
     ? props.toolResult.map((result) => result.Text || formatData(result)).join("\n")
     : "",
 );
+
+/** Prefer list-of-rows when output is a JSON array of objects/scalars (rotor-friendly). */
+const outputAsRows = computed((): string[] | null => {
+  const raw = output.value.trim();
+  if (!raw.startsWith("[")) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed) || parsed.length === 0 || parsed.length > 200) return null;
+    return parsed.map((item, i) => {
+      if (item === null || typeof item !== "object") return `${i + 1}. ${String(item)}`;
+      return `${i + 1}. ${JSON.stringify(item)}`;
+    });
+  } catch {
+    return null;
+  }
+});
 
 const isComplete = computed(() => !props.isRunning && props.toolResult !== undefined);
 

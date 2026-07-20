@@ -48,9 +48,15 @@ const props = withDefaults(
 const announcement = ref("");
 const politeness = ref<Politeness>("polite");
 let announcementVersion = 0;
+let suspended = false;
+let pending: Announcement | null = null;
 
 function apply(next: Announcement | null) {
   if (!next) return;
+  if (suspended) {
+    pending = next;
+    return;
+  }
 
   const version = ++announcementVersion;
   // Clear then set so repeated identical phrases still fire (VO quirk).
@@ -92,6 +98,33 @@ function onA11yAnnouncement(event: Event) {
   if (detail?.text) apply(detail);
 }
 
-onMounted(() => window.addEventListener(A11Y_ANNOUNCE_EVENT, onA11yAnnouncement));
-onUnmounted(() => window.removeEventListener(A11Y_ANNOUNCE_EVENT, onA11yAnnouncement));
+function onFocusIn(event: FocusEvent) {
+  const target = event.target as HTMLElement | null;
+  if (target?.closest("[data-a11y-transcript]")) suspended = true;
+}
+
+function onFocusOut() {
+  queueMicrotask(() => {
+    const active = document.activeElement as HTMLElement | null;
+    if (active?.closest("[data-a11y-transcript]")) return;
+    if (!suspended) return;
+    suspended = false;
+    if (pending) {
+      const catchUp = pending;
+      pending = null;
+      apply({ ...catchUp, text: `While you were reviewing: ${catchUp.text}` });
+    }
+  });
+}
+
+onMounted(() => {
+  window.addEventListener(A11Y_ANNOUNCE_EVENT, onA11yAnnouncement);
+  document.addEventListener("focusin", onFocusIn);
+  document.addEventListener("focusout", onFocusOut);
+});
+onUnmounted(() => {
+  window.removeEventListener(A11Y_ANNOUNCE_EVENT, onA11yAnnouncement);
+  document.removeEventListener("focusin", onFocusIn);
+  document.removeEventListener("focusout", onFocusOut);
+});
 </script>

@@ -10,7 +10,7 @@
     ref="preEl"
     :class="className"
     :aria-labelledby="ariaLabelledby"
-    :aria-label="ariaLabel"
+    :aria-label="resolvedAriaLabel"
     v-html="html"
   />
   <pre
@@ -18,7 +18,7 @@
     ref="preEl"
     :class="className"
     :aria-labelledby="ariaLabelledby"
-    :aria-label="ariaLabel"
+    :aria-label="resolvedAriaLabel"
   >{{ fallback }}</pre>
 </template>
 
@@ -37,6 +37,13 @@ const html = computed(() => ansiToHtml(props.text));
 // When there's nothing to colorize, render the text with ANSI sequences
 // removed rather than the raw text (which would show stray escape letters).
 const fallback = computed(() => stripAnsi(props.text));
+// Prefer an explicit label; otherwise describe error-styled output for SR users.
+const resolvedAriaLabel = computed(() => {
+  if (props.ariaLabel) return props.ariaLabel;
+  if (props.className?.includes("error")) return "Terminal output (error)";
+  return undefined;
+});
 
 defineExpose({ preEl });
 </script>
+

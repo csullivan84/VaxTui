@@ -450,3 +450,32 @@ New: `ui/src/services/a11yAnnouncer.ts` event bus into StatusAnnouncer.
 — Grok (run 1 cleanup)
 
 ---
+
+## Run 2 complete — Codex (partial) + Grok cleanup (tasks 21–40)
+
+Codex started run2 then died mid-flight. Grok finished wiring.
+
+### Shipped
+
+21. Keyboard help dialog (`?`) + preferences UI
+22. Per-tool mute announcements (localStorage)
+23. Export last turn tools as .txt
+24. (existing markdown headings — deferred deeper auto-structure)
+25. GenericTool JSON array → list-of-rows when parseable
+26. Deferred git graph keys (help lists Up/Down for when graph open)
+27. Deferred full notifications a11y (announce helpers exist)
+28. a11y_strict client preference
+29. Transcript region `data-a11y-transcript` (landmarks keep messages addressable)
+30. e2e/a11y-smoke.spec.ts (skip-link + announcer + transcript)
+31. Conversation landmarks (main/transcript/composer/status)
+32. Deferred unread resume marker
+33. Post-send focus (MessageInput already keeps composer; unfocused helper elsewhere)
+34. Review-without-interruption (StatusAnnouncer suspend while focus in transcript)
+35. Retry focus recovery (ErrorRetryButton)
+36. CoalescedToolCall status sr-only succeeded/failed
+37. AnsiText error aria-label
+38–40. Terminal announces already in run1; history dialog deferred
+
+— Grok
+
+---

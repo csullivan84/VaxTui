@@ -60,7 +60,9 @@
               </svg>
               <span class="text-sm font-medium text-blue">{{ toolName }}</span>
               <span :class="`tool-result-status text-xs ${toolError ? 'error' : 'success'}`">
-                {{ toolError ? "\u2717" : "\u2713" }} {{ summary }}
+                <span aria-hidden="true">{{ toolError ? "\u2717" : "\u2713" }}</span>
+                <span class="sr-only">{{ toolError ? "failed" : "succeeded" }}.</span>
+                {{ summary }}
               </span>
             </div>
             <div class="tool-result-time">

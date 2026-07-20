@@ -16,3 +16,13 @@ export function announceA11y(text: string, politeness: A11yPoliteness = "polite"
     }),
   );
 }
+
+/** Announces tool activity unless the user muted that tool in accessibility preferences. */
+export async function announceToolA11y(
+  toolName: string,
+  text: string,
+  politeness: A11yPoliteness = "polite",
+) {
+  const { isToolAnnouncementMuted } = await import("./a11yPreferences");
+  if (!isToolAnnouncementMuted(toolName)) announceA11y(text, politeness);
+}

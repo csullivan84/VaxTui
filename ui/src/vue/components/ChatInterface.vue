@@ -3,7 +3,7 @@
      bar, terminal/diff/git panels, model/thinking pickers, distill, TOC,
      scroll behavior. Preserves the e2e DOM/ARIA/CSS contract. -->
 <template>
-  <div class="full-height flex flex-col">
+  <div class="full-height flex flex-col" role="main" aria-label="Shelley conversation">
     <a href="#shelley-message-input" class="skip-link">Skip to message input</a>
     <StatusAnnouncer
       :agent-working="agentWorking"
@@ -13,7 +13,7 @@
       :assistant-preview="assistantTurnPreview"
     />
     <!-- Header -->
-    <div class="header">
+    <div class="header" role="banner" aria-label="Conversation header">
       <div class="header-left">
         <Button
           class="btn-icon hide-on-desktop"
@@ -91,8 +91,13 @@
     </div>
 
     <!-- Messages area -->
-    <div class="messages-area-wrapper">
-      <div ref="messagesContainerRef" class="messages-container scrollable">
+    <div class="messages-area-wrapper" role="region" aria-label="Conversation transcript">
+      <div
+        ref="messagesContainerRef"
+        class="messages-container scrollable"
+        data-a11y-transcript
+        tabindex="-1"
+      >
         <template v-if="loading">
           <div v-if="showLoadingProgressUI" class="conversation-loading full-height">
             <div class="spinner" />
@@ -272,13 +277,14 @@
     />
 
     <!-- Status bar -->
-    <div :class="statusBarClass" role="status" aria-label="Conversation status">
+    <div :class="statusBarClass" role="region" aria-label="Conversation status">
       <div class="status-bar-content">
         <ChatStatusContent v-if="showStatusContent" v-bind="statusContentProps" />
       </div>
     </div>
 
     <!-- Message input -->
+    <div role="region" aria-label="Message composer">
     <!-- No :key here, matching React: MessageInput must NOT remount on the
          first-message conversationId flip, or its post-await setMessage("")
          would run on a destroyed instance and the fresh instance would
@@ -312,6 +318,15 @@
         <ChatStatusContent v-bind="statusContentProps" />
       </template>
     </MessageInput>
+    </div>
+
+    <KeyboardHelpDialog
+      :is-open="showKeyboardHelp"
+      :tools="availableTools.map((t) => ({ name: t.name, summary: t.summary }))"
+      :can-export-tools="canExportLastTurnTools"
+      @close="showKeyboardHelp = false"
+      @export-tools="exportLastTurnTools"
+    />
 
     <!-- Directory Picker Modal -->
     <DirectoryPickerModal
@@ -429,6 +444,7 @@ import MessageRenderNode from "./MessageRenderNode.vue";
 import QueuedGhostMessage from "./QueuedGhostMessage.vue";
 import ChatStatusContent from "./ChatStatusContent.vue";
 import StatusAnnouncer from "./StatusAnnouncer.vue";
+import KeyboardHelpDialog from "./KeyboardHelpDialog.vue";
 import MarkdownContent from "./MarkdownContent.vue";
 
 // Props mirror ChatInterfaceProps in the React source. Callbacks that
@@ -670,6 +686,7 @@ const diffCommentText = ref("");
 const agentWorking = ref(false);
 /** Tools that finished during the turn that just ended (for StatusAnnouncer). */
 const toolsCompletedThisTurn = ref(0);
+const showKeyboardHelp = ref(false);
 const cancelling = ref(false);
 const contextWindowSize = ref(0);
 const toolProgress = ref<Record<string, ToolProgress>>({});
@@ -2564,19 +2581,67 @@ function handleVisibilityChange() {
   if (hiddenFor > 5000) catchingUp = true;
 }
 
-// Cmd/Ctrl+ArrowDown scrolls to bottom.
+// Cmd/Ctrl+ArrowDown scrolls to bottom. "?" opens accessibility help.
 function handleScrollKeyDown(e: KeyboardEvent) {
+  const target = e.target as HTMLElement | null;
+  const inField =
+    !!target &&
+    (target.tagName === "INPUT" ||
+      target.tagName === "TEXTAREA" ||
+      target.isContentEditable);
+
+  // "?" help (shift+/). Skip when typing in fields.
+  if ((e.key === "?" || (e.key === "/" && e.shiftKey)) && !inField && !e.metaKey && !e.ctrlKey) {
+    e.preventDefault();
+    showKeyboardHelp.value = true;
+    return;
+  }
+
   if (e.key !== "ArrowDown") return;
   const mod = e.metaKey || e.ctrlKey;
   if (!mod || e.altKey || e.shiftKey) return;
-  const target = e.target as HTMLElement | null;
-  if (target) {
-    const tag = target.tagName;
-    if (tag === "INPUT" || tag === "TEXTAREA" || target.isContentEditable) return;
-  }
+  if (inField) return;
   if (!messagesContainerRef.value) return;
   e.preventDefault();
   scrollToBottom();
+}
+
+const canExportLastTurnTools = computed(() => {
+  for (let i = messages.value.length - 1; i >= 0; i--) {
+    if (messages.value[i].type === "tool") return true;
+    if (messages.value[i].type === "user") break;
+  }
+  return false;
+});
+
+function exportLastTurnTools() {
+  const lines: string[] = [];
+  const slice: typeof messages.value = [];
+  for (let i = messages.value.length - 1; i >= 0; i--) {
+    const m = messages.value[i];
+    if (m.type === "user") break;
+    slice.unshift(m);
+  }
+  for (const m of slice) {
+    if (m.type !== "tool") continue;
+    lines.push(`### tool message ${m.message_id}`);
+    try {
+      lines.push(JSON.stringify(m, null, 2));
+    } catch {
+      lines.push(String(m));
+    }
+    lines.push("");
+  }
+  const text = lines.join("\n") || "(no tools in last turn)";
+  const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `shelley-tools-${props.conversationId || "turn"}.txt`;
+  a.click();
+  URL.revokeObjectURL(url);
+  announceA11y("Downloaded last turn tools as text.");
+  showKeyboardHelp.value = false;
 }
 
 // ?diff=<hash> on mount opens the diff viewer for that commit.

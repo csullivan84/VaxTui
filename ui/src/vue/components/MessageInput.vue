@@ -956,6 +956,8 @@ async function handleSubmit(e: Event) {
       setMessage("");
       clearAttachments();
       emit("draft-cleared");
+      // Sending never moves keyboard or screen-reader focus into the transcript.
+      requestAnimationFrame(() => textareaRef.value?.focus());
     } catch {
       // Keep the message on error so user can retry.
     } finally {
