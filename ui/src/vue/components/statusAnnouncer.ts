@@ -10,18 +10,24 @@ export function agentAnnouncement(
   working: boolean,
   wasWorking: boolean | undefined,
   toolsCompleted = 0,
+  assistantPreview = "",
 ): Announcement | null {
   if (working === wasWorking) return null;
   if (working) return { text: "Agent working", politeness: "polite" };
   if (wasWorking) {
+    const preview = assistantPreview.trim();
+    const response = preview ? ` Response: ${preview}` : "";
     if (toolsCompleted > 0) {
       const noun = toolsCompleted === 1 ? "tool" : "tools";
       return {
-        text: `Agent finished. ${toolsCompleted} ${noun} completed.`,
+        text: `Agent finished. ${toolsCompleted} ${noun} completed.${response}`,
         politeness: "polite",
       };
     }
-    return { text: "Agent finished", politeness: "polite" };
+    return {
+      text: preview ? `Agent finished.${response}` : "Agent finished",
+      politeness: "polite",
+    };
   }
   return null;
 }

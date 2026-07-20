@@ -53,6 +53,11 @@
           class="command-palette-input"
           :placeholder="t('searchPlaceholder')"
           :value="query"
+          role="combobox"
+          aria-autocomplete="list"
+          aria-controls="command-palette-results"
+          :aria-expanded="isOpen"
+          :aria-activedescendant="activeOptionId"
           @input="query = ($event.target as HTMLInputElement).value"
           @keydown="handleKeyDown"
         />
@@ -62,7 +67,13 @@
         </div>
       </div>
 
-      <div ref="listRef" class="command-palette-list">
+      <div
+        id="command-palette-results"
+        ref="listRef"
+        class="command-palette-list"
+        role="listbox"
+        aria-label="Command palette results"
+      >
         <div v-if="displayItems.length === 0" class="command-palette-empty">
           {{ isSearching ? t("searching") : t("noResults") }}
         </div>
@@ -71,6 +82,9 @@
             v-for="(item, index) in displayItems"
             :key="item.id"
             :data-index="index"
+            :id="optionId(index)"
+            role="option"
+            :aria-selected="index === selectedIndex"
             :class="`command-palette-item ${index === selectedIndex ? 'selected' : ''}`"
             @click="onItemClick($event, item)"
             @auxclick="onItemAuxClick($event, item)"
@@ -91,6 +105,10 @@
             </div>
           </div>
         </template>
+      </div>
+
+      <div class="sr-only" role="status" aria-live="polite" aria-atomic="true">
+        {{ resultAnnouncement }}
       </div>
 
       <div class="command-palette-footer">
@@ -170,6 +188,10 @@ const newConvGitWorktreeRoot = ref<string | null>(null);
 const inputRef = ref<HTMLInputElement | null>(null);
 const listRef = ref<HTMLDivElement | null>(null);
 let searchTimeout: number | null = null;
+
+function optionId(index: number) {
+  return `command-palette-option-${index}`;
+}
 
 // --- Icon markup (identical to the React JSX icons) ---
 const SVG_OPEN =
@@ -742,6 +764,15 @@ const displayItems = computed<CommandItem[]>(() => {
   const conversationsToShow = trimmedQuery ? searchResults.value : props.conversations;
   const conversationItems = conversationsToShow.map(conversationToItem);
   return [...filteredActions, ...conversationItems];
+});
+const activeOptionId = computed(() =>
+  displayItems.value[selectedIndex.value] ? optionId(selectedIndex.value) : undefined,
+);
+const resultAnnouncement = computed(() => {
+  if (!query.value.trim()) return "";
+  if (isSearching.value) return `Searching for ${query.value.trim()}.`;
+  const count = displayItems.value.length;
+  return `${count} ${count === 1 ? "result" : "results"} for ${query.value.trim()}.`;
 });
 
 // Reset selection when items change.

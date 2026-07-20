@@ -57,16 +57,18 @@
       >
         ⚠️
       </span>
-      <div
+      <button
+        type="button"
         class="context-usage-bar"
         :title="`Context: ${formatTokens(contextWindowSize)} / ${formatTokens(maxContextTokens)} tokens (${percentage.toFixed(1)}%)`"
+        :aria-label="spokenSummary"
         @click="popoverRef?.toggle($event)"
       >
         <div
           class="context-usage-fill"
           :style="{ width: clampedPercentage + '%', backgroundColor: barColor }"
         />
-      </div>
+      </button>
     </div>
   </div>
 </template>
@@ -101,6 +103,10 @@ const percentage = computed(() =>
 );
 const clampedPercentage = computed(() => Math.min(percentage.value, 100));
 const showLongConversationWarning = computed(() => props.contextWindowSize >= 100000);
+const spokenSummary = computed(() => {
+  const remaining = Math.max(0, props.maxContextTokens - props.contextWindowSize);
+  return `Context usage: ${percentage.value.toFixed(1)} percent of window, approximately ${formatTokens(remaining)} tokens left. Press for details.`;
+});
 
 const barColor = computed(() => {
   if (percentage.value >= 90) return "var(--error-text)";

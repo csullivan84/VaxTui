@@ -29,7 +29,15 @@
          (e: "unarchived", c: Conversation): void   // onConversationUnarchived
          (e: "renamed", c: Conversation): void      // onConversationRenamed -->
 <template>
-  <div :class="`drawer ${isOpen ? 'open' : ''} ${isCollapsed ? 'collapsed' : ''}`">
+  <div
+    ref="drawerRef"
+    :class="`drawer ${isOpen ? 'open' : ''} ${isCollapsed ? 'collapsed' : ''}`"
+    :role="isOpen && isMobileDrawer() ? 'dialog' : undefined"
+    :aria-modal="isOpen && isMobileDrawer() ? 'true' : undefined"
+    :aria-label="isOpen && isMobileDrawer() ? 'Conversations' : undefined"
+    :tabindex="isOpen && isMobileDrawer() ? -1 : undefined"
+    @keydown="handleDrawerKeydown"
+  >
     <!-- Header -->
     <div class="drawer-header">
       <h2 class="drawer-title">{{ showArchived ? t("archived") : t("conversations") }}</h2>
@@ -186,6 +194,9 @@
 
     <!-- Conversations list -->
     <div class="drawer-body scrollable">
+      <div class="sr-only" role="status" aria-live="polite" aria-atomic="true">
+        {{ searchAnnouncement }}
+      </div>
       <div
         v-if="isSearching && searching && searchResults === null"
         class="text-secondary drawer-empty-state"
@@ -288,7 +299,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, provide, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, provide, ref, watch } from "vue";
 import type { Conversation, ConversationWithState } from "../../types";
 import { api } from "../../services/api";
 import { useI18n } from "../composables/i18n";
@@ -324,6 +335,61 @@ const emit = defineEmits<{
   (e: "unarchived", c: Conversation): void;
   (e: "renamed", c: Conversation): void;
 }>();
+
+const drawerRef = ref<HTMLElement | null>(null);
+function isMobileDrawer() {
+  return window.matchMedia("(max-width: 767px)").matches;
+}
+let drawerInvoker: HTMLElement | null = null;
+
+function drawerFocusables() {
+  return Array.from(
+    drawerRef.value?.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), [href], input:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    ) || [],
+  ).filter((el) => el.offsetParent !== null);
+}
+
+function handleDrawerKeydown(event: KeyboardEvent) {
+  if (!props.isOpen || !isMobileDrawer()) return;
+  if (event.key === "Escape") {
+    event.preventDefault();
+    emit("close");
+    void nextTick(() => drawerInvoker?.focus());
+    return;
+  }
+  if (event.key !== "Tab") return;
+  const focusable = drawerFocusables();
+  if (focusable.length === 0) {
+    event.preventDefault();
+    drawerRef.value?.focus();
+    return;
+  }
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
+watch(
+  () => props.isOpen,
+  (open, wasOpen) => {
+    if (!isMobileDrawer()) return;
+    if (open && !wasOpen) {
+      drawerInvoker = document.activeElement as HTMLElement | null;
+      void nextTick(() => {
+        const first = drawerFocusables()[0];
+        if (first) first.focus();
+        else drawerRef.value?.focus();
+      });
+    }
+  },
+);
 
 const { t } = useI18n();
 
@@ -470,6 +536,14 @@ watch(searchQuery, () => {
       if (seq === searchSeq) searching.value = false;
     }
   }, 150);
+});
+
+const searchAnnouncement = computed(() => {
+  const query = searchQuery.value.trim();
+  if (!query) return "";
+  if (searching.value) return `Searching conversations for ${query}.`;
+  const count = searchResults.value?.length ?? 0;
+  return `${count} ${count === 1 ? "hit" : "hits"} for ${query}. Select a result to open it.`;
 });
 
 // Switch back to active conversations when triggered externally.

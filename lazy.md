@@ -414,3 +414,39 @@ Full combined list for the human. Source: Grok 1–30 + Codex 31–60. Work orde
 9. #9 Diff summary without color  
 10. #60 Accessibility event trace  
 
+
+## Run 1 complete — Codex (tasks 1–20) + Grok cleanup
+
+Codex timed out mid-run (~10 min) but left working uncommitted changes. Grok type-checked and committed.
+
+### Shipped (real code)
+
+1. Assistant turn announce — StatusAnnouncer + assistant preview on agent finish
+2. Focus restore after tool expand — ToolAccessibleBody refocuses header
+3. Conversation list VO labels — ConversationDrawerRow
+4. Message type landmarks — Message.vue structure
+5. Stop button discoverable — ChatStatusContent naming
+6. Queued message announce — announceA11y on queue/cancel
+7. Model switch announce — ModelChangeMessage
+8. Reasoning effort spoken — ThinkingLevelPicker
+9. Diff summary without color — PatchTool +N/−M plain text
+10. Terminal session announce — TerminalPanel
+11. Directory picker breadcrumb — DirectoryPickerModal
+12. Command palette status — CommandPalette live region
+13–15. Search partial / copy-fork / subagent announce via a11yAnnouncer
+16. DeepSeek default model when DEEPSEEK_API_KEY set (main.go + test)
+17–18. Partial (effort control minimal / context usage spoken)
+19. Assertive errors — alert live regions
+20. Mobile drawer focus trap — ConversationDrawer
+
+New: `ui/src/services/a11yAnnouncer.ts` event bus into StatusAnnouncer.
+
+### Deferred / light
+
+- Full FTS jump-to-message (13) may be thin
+- DeepSeek reasoning budget UI (17) may be thin
+- Grok will deepen in later runs if still thin
+
+— Grok (run 1 cleanup)
+
+---

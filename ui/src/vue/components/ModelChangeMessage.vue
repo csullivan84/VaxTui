@@ -13,8 +13,11 @@
     class="message message-gitinfo msg-modelchange-container msg-modelchange-switch"
     data-testid="message-modelchange"
     role="status"
+    aria-live="polite"
+    aria-atomic="true"
+    :aria-label="switchAnnouncement"
   >
-    <span class="msg-modelchange-icon">🤖</span>
+    <span class="msg-modelchange-icon" aria-hidden="true">🤖</span>
     <template v-if="modelChanged">
       <span class="msg-modelchange-chip msg-modelchange-from">{{ fromName }}</span>
       <span class="msg-modelchange-arrow" aria-hidden="true">→</span>
@@ -30,8 +33,10 @@
     class="message message-gitinfo msg-modelchange-container"
     data-testid="message-modelchange"
     role="status"
+    aria-live="polite"
+    aria-atomic="true"
   >
-    <span class="msg-modelchange-icon">🤖</span>
+    <span class="msg-modelchange-icon" aria-hidden="true">🤖</span>
     <span class="msg-modelchange-text">{{ text }}</span>
   </div>
 </template>
@@ -74,4 +79,12 @@ const isSwitch = computed(() => modelChanged.value || reasoningChanged.value);
 const fromName = computed(() => data.value.from_display || data.value.from || "");
 const toName = computed(() => data.value.to_display || data.value.to || "");
 const reasoningTo = computed(() => data.value.reasoning_to || "");
+const switchAnnouncement = computed(() => {
+  const parts: string[] = [];
+  if (modelChanged.value) {
+    parts.push(`Model changed from ${fromName.value || "previous model"} to ${toName.value}`);
+  }
+  if (reasoningChanged.value) parts.push(`reasoning changed to ${reasoningTo.value}`);
+  return `${parts.join("; ")}.`;
+});
 </script>

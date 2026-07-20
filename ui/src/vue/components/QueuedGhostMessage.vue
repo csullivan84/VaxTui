@@ -2,7 +2,13 @@
      the bottom of the conversation. Derived from conversation.queued_messages
      (NOT a messages row); offers a per-message cancel affordance. -->
 <template>
-  <div class="message message-user message-queued" data-testid="queued-ghost">
+  <div
+    class="message message-user message-queued"
+    data-testid="queued-ghost"
+    role="article"
+    aria-label="Queued user message"
+  >
+    <h2 class="sr-only">Queued user message</h2>
     <div class="message-content" data-testid="message-content">
       <div class="whitespace-pre-wrap break-words">{{ text }}</div>
       <div class="queued-message-badge" data-testid="queued-badge">

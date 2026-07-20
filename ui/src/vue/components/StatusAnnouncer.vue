@@ -13,7 +13,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from "vue";
+import { onMounted, onUnmounted, ref, watch } from "vue";
+import {
+  A11Y_ANNOUNCE_EVENT,
+  type A11yAnnouncementDetail,
+} from "../../services/a11yAnnouncer";
 import {
   agentAnnouncement,
   errorAnnouncement,
@@ -30,11 +34,14 @@ const props = withDefaults(
     error?: string | null;
     /** Tool cards that finished during the turn that just ended. */
     toolsCompleted?: number;
+    /** Plain-text preview of the assistant response that just completed. */
+    assistantPreview?: string;
   }>(),
   {
     streamStatus: "connected",
     error: null,
     toolsCompleted: 0,
+    assistantPreview: "",
   },
 );
 
@@ -60,7 +67,9 @@ function apply(next: Announcement | null) {
 watch(
   () => props.agentWorking,
   (working, wasWorking) => {
-    apply(agentAnnouncement(working, wasWorking, props.toolsCompleted));
+    apply(
+      agentAnnouncement(working, wasWorking, props.toolsCompleted, props.assistantPreview),
+    );
   },
 );
 
@@ -77,4 +86,12 @@ watch(
     apply(errorAnnouncement(err, prev));
   },
 );
+
+function onA11yAnnouncement(event: Event) {
+  const detail = (event as CustomEvent<A11yAnnouncementDetail>).detail;
+  if (detail?.text) apply(detail);
+}
+
+onMounted(() => window.addEventListener(A11Y_ANNOUNCE_EVENT, onA11yAnnouncement));
+onUnmounted(() => window.removeEventListener(A11Y_ANNOUNCE_EVENT, onA11yAnnouncement));
 </script>

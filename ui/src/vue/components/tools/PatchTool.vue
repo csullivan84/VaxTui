@@ -289,7 +289,8 @@ const toggleLabel = computed(() =>
 const collapsedPlainText = computed(() => {
   if (!isComplete.value) return "";
   if (props.hasError) return errorMessage.value || "Patch failed";
-  return rawDiff.value || `(patch applied: ${filename.value})`;
+  const summary = `${filename.value}: +${lineChanges.value.additions} −${lineChanges.value.deletions} lines`;
+  return rawDiff.value ? `${summary}\n\n${rawDiff.value}` : summary;
 });
 
 watch(
@@ -397,6 +398,40 @@ const showDiffToggle = computed(
 const rawDiff = computed(() => {
   if (!displayData.value) return "";
   return displayData.value.diff ?? "";
+});
+
+const lineChanges = computed(() => {
+  const diff = rawDiff.value;
+  if (diff) {
+    let additions = 0;
+    let deletions = 0;
+    for (const line of diff.split("\n")) {
+      if (line.startsWith("+++") || line.startsWith("---")) continue;
+      if (line.startsWith("+")) additions++;
+      else if (line.startsWith("-")) deletions++;
+    }
+    return { additions, deletions };
+  }
+  const oldLines = displayData.value?.oldContent?.split("\n") ?? [];
+  const newLines = displayData.value?.newContent?.split("\n") ?? [];
+  let start = 0;
+  while (start < oldLines.length && start < newLines.length && oldLines[start] === newLines[start]) {
+    start++;
+  }
+  let oldEnd = oldLines.length;
+  let newEnd = newLines.length;
+  while (
+    oldEnd > start &&
+    newEnd > start &&
+    oldLines[oldEnd - 1] === newLines[newEnd - 1]
+  ) {
+    oldEnd--;
+    newEnd--;
+  }
+  return {
+    additions: newEnd - start,
+    deletions: oldEnd - start,
+  };
 });
 
 // FileDiff render options derived from the current side-by-side + theme state.

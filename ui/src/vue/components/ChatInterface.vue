@@ -10,6 +10,7 @@
       :stream-status="streamStatus"
       :error="error"
       :tools-completed="toolsCompletedThisTurn"
+      :assistant-preview="assistantTurnPreview"
     />
     <!-- Header -->
     <div class="header">
@@ -271,7 +272,7 @@
     />
 
     <!-- Status bar -->
-    <div :class="statusBarClass">
+    <div :class="statusBarClass" role="status" aria-label="Conversation status">
       <div class="status-bar-content">
         <ChatStatusContent v-if="showStatusContent" v-bind="statusContentProps" />
       </div>
@@ -384,6 +385,7 @@ import {
   parseQueuedMessages,
 } from "../../types";
 import { api } from "../../services/api";
+import { announceA11y } from "../../services/a11yAnnouncer";
 import { messageStore } from "../../services/messageStore";
 import {
   loadCachedDraft,
@@ -680,6 +682,27 @@ const showScrollToBottom = ref(false);
 const lastKnownMessageCount = ref<number | null>(null);
 const terminalInjectedText = ref<string | null>(null);
 const terminalAutoFocusId = ref<string | null>(null);
+
+const assistantTurnPreview = computed(() => {
+  for (let i = messages.value.length - 1; i >= 0; i--) {
+    const message = messages.value[i];
+    if (message.type !== "agent") continue;
+    try {
+      const llm =
+        typeof message.llm_data === "string" ? JSON.parse(message.llm_data) : message.llm_data;
+      const text = (llm?.Content || [])
+        .filter((content: LLMContent) => content.Type === 2 && content.Text)
+        .map((content: LLMContent) => content.Text!.replace(/\s+/g, " ").trim())
+        .filter(Boolean)
+        .join(" ");
+      if (!text) continue;
+      return text.length > 180 ? `${text.slice(0, 177).trimEnd()}…` : text;
+    } catch {
+      return "";
+    }
+  }
+  return "";
+});
 
 // ---- refs to DOM ----
 const messagesContainerRef = ref<HTMLDivElement | null>(null);
@@ -1437,6 +1460,7 @@ async function queueMessage(message: string) {
       model: selectedModel.value,
       queue: true,
     });
+    announceA11y("Message queued.");
   } catch (err) {
     console.error("Failed to queue message:", err);
     throw err;
@@ -1447,6 +1471,7 @@ async function cancelQueuedMessages() {
   if (!props.conversationId) return;
   try {
     await api.cancelQueuedMessages(props.conversationId);
+    announceA11y("Queued messages cancelled.");
   } catch (err) {
     console.error("Failed to cancel queued messages:", err);
   }
@@ -1456,6 +1481,7 @@ async function cancelQueuedMessage(queuedId: string) {
   if (!props.conversationId) return;
   try {
     await api.cancelQueuedMessage(props.conversationId, queuedId);
+    announceA11y("Queued message cancelled.");
   } catch (err) {
     console.error("Failed to cancel queued message:", err);
   }
@@ -1506,6 +1532,7 @@ async function forkConversation(messageId?: string) {
   if (!props.conversationId) return;
   try {
     const forked = await api.forkConversation(props.conversationId, { messageId });
+    announceA11y("Forked conversation.");
     props.onSelectConversation?.(forked);
   } catch (err) {
     console.error("Failed to fork conversation:", err);

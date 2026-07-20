@@ -8,9 +8,15 @@
   <div
     :class="`conversation-item ${isActive ? 'active' : ''}${isNew ? ' conversation-item-enter' : ''}`"
     :data-conversation-id="conversation.conversation_id"
+    role="link"
+    tabindex="0"
+    :aria-current="isActive ? 'page' : undefined"
+    :aria-label="conversationAriaLabel"
     style="cursor: pointer"
     @click="onRowClick"
     @auxclick="ctx.handleAuxClick($event, conversation)"
+    @keydown.enter.prevent="ctx.selectConversation(conversation)"
+    @keydown.space.prevent="ctx.selectConversation(conversation)"
   >
     <div class="drawer-conversation-item-flex-container">
       <div class="drawer-conversation-header-row">
@@ -256,8 +262,13 @@
       v-for="sub in conversationSubagents"
       :key="sub.conversation_id"
       :class="`conversation-item subagent-item drawer-subagent-item-style ${sub.conversation_id === ctx.currentConversationId.value ? 'active' : ''}${ctx.seenIds.value !== null && !ctx.seenIds.value.has(sub.conversation_id) ? ' conversation-item-enter' : ''}`"
+      role="link"
+      tabindex="0"
+      :aria-label="`${sub.slug || 'untitled'}, subagent, ${sub.working ? 'working' : 'idle'}, model ${sub.model || 'unknown'}`"
       @click="onSubClick($event, sub)"
       @auxclick="ctx.handleAuxClick($event, sub)"
+      @keydown.enter.prevent="ctx.selectConversation(sub)"
+      @keydown.space.prevent="ctx.selectConversation(sub)"
     >
       <div class="drawer-conversation-item-flex-container">
         <div class="drawer-conversation-header-row">
@@ -329,6 +340,14 @@ const isNew = computed(
     ctx.seenIds.value !== null &&
     !ctx.seenIds.value.has(props.conversation.conversation_id),
 );
+const conversationAriaLabel = computed(() => {
+  const slug = isDraft.value
+    ? ctx.draftLabels.value[props.conversation.conversation_id] || "draft"
+    : props.conversation.slug || "untitled";
+  return `${slug}, ${convState.value.working ? "working" : "idle"}${
+    isNew.value ? ", unread" : ""
+  }, model ${props.conversation.model || "unknown"}`;
+});
 const conversationTags = computed(() => (isDraft.value ? [] : parseTags(props.conversation)));
 const tagsEditing = computed(
   () => !isDraft.value && ctx.tagEditorId.value === props.conversation.conversation_id,

@@ -26,9 +26,24 @@
         v-if="displayDir"
         :class="`directory-picker-current${displayDir.git_head_subject ? ' directory-picker-current-git' : ''}`"
       >
-        <span class="directory-picker-current-path">
-          {{ displayDir.path }}
+        <nav class="directory-picker-current-path" aria-label="Current directory breadcrumb">
+          <ol class="directory-picker-breadcrumb">
+            <li v-for="(crumb, index) in pathBreadcrumbs" :key="crumb.path">
+              <button
+                type="button"
+                class="directory-picker-breadcrumb-button"
+                :aria-current="index === pathBreadcrumbs.length - 1 ? 'location' : undefined"
+                :aria-label="`Go to ${crumb.path}`"
+                @click="inputPath = crumb.path.endsWith('/') ? crumb.path : `${crumb.path}/`"
+              >
+                {{ crumb.label }}
+              </button>
+            </li>
+          </ol>
           <span v-if="filterPrefix" class="directory-picker-filter">/{{ filterPrefix }}*</span>
+        </nav>
+        <span class="sr-only" role="status" aria-live="polite">
+          Current directory: {{ displayDir.path }}
         </span>
         <span
           v-if="displayDir.git_head_subject"
@@ -79,7 +94,7 @@
         </button>
       </div>
 
-      <div v-if="error" class="directory-picker-error">{{ error }}</div>
+      <div v-if="error" class="directory-picker-error" role="alert">{{ error }}</div>
 
       <div v-if="loading" class="directory-picker-loading">
         <div class="spinner spinner-small"></div>
@@ -191,7 +206,9 @@
           </button>
         </div>
 
-        <div v-if="createError" class="directory-picker-create-error">{{ createError }}</div>
+        <div v-if="createError" class="directory-picker-create-error" role="alert">
+          {{ createError }}
+        </div>
 
         <div v-if="hiddenEntryCount > 0" class="directory-picker-truncated">
           {{ hiddenEntryCount.toLocaleString() }} more — type to filter
@@ -289,6 +306,18 @@ const cache = new Map<string, CachedDirectory>();
 const displayDir = ref<CachedDirectory | null>(null);
 const filterPrefix = ref("");
 let expectedPath = "";
+
+const pathBreadcrumbs = computed(() => {
+  const current = displayDir.value?.path || "/";
+  const parts = current.split("/").filter(Boolean);
+  const crumbs = [{ label: "/", path: "/" }];
+  let path = "";
+  for (const part of parts) {
+    path += `/${part}`;
+    crumbs.push({ label: part, path });
+  }
+  return crumbs;
+});
 
 function parseInputPath(path: string): { dirPath: string; prefix: string } {
   if (!path) return { dirPath: "", prefix: "" };

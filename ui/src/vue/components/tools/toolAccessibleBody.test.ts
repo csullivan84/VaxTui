@@ -21,5 +21,6 @@ check("v-show for expanded (keeps DOM)", src.includes("v-show=\"expanded\""));
 check("data-testid tool-output-sr", src.includes('data-testid="tool-output-sr"'));
 check("plainText prop exists", src.includes("plainText"));
 check("no display:none pattern for collapsed", !src.includes("display: none"));
+check("restores focus to expanded header", src.includes("owner?.focus()"));
 
 console.log("toolAccessibleBody tests passed");

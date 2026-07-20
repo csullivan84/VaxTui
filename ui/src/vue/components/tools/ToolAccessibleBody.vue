@@ -16,6 +16,7 @@
   <!-- Expanded: visual details (v-show keeps DOM stable for heavy tools) -->
   <div
     v-show="expanded"
+    ref="bodyRef"
     :id="bodyId"
     :class="bodyClass"
     role="region"
@@ -27,7 +28,9 @@
 </template>
 
 <script setup lang="ts">
-withDefaults(
+import { nextTick, ref, watch } from "vue";
+
+const props = withDefaults(
   defineProps<{
     expanded: boolean;
     label: string;
@@ -40,6 +43,27 @@ withDefaults(
     plainText: "",
     bodyClass: "tool-details",
     bodyId: undefined,
+  },
+);
+
+const bodyRef = ref<HTMLElement | null>(null);
+
+// Pointer activation of the nested chevron can move focus onto that
+// presentation-only button. Once expansion settles, restore the single useful
+// tab stop: the card header that owns aria-expanded.
+watch(
+  () => props.expanded,
+  async (expanded) => {
+    if (!expanded) return;
+    const active = document.activeElement as HTMLElement | null;
+    if (!active?.closest(".tool-header, .patch-tool-header, .bash-tool-header, .browser-tool-header, .screenshot-tool-header, .think-tool-header, .keyword-search-tool-header, .change-dir-tool-header")) {
+      return;
+    }
+    await nextTick();
+    const owner = bodyRef.value?.parentElement?.querySelector<HTMLElement>(
+      '[role="button"][aria-expanded="true"]',
+    );
+    owner?.focus();
   },
 );
 </script>

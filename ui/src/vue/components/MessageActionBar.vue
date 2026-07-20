@@ -90,6 +90,7 @@
 
 <script setup lang="ts">
 import { ref } from "vue";
+import { announceA11y } from "../../services/a11yAnnouncer";
 
 const props = defineProps<{
   onCopy?: () => void;
@@ -103,6 +104,7 @@ function handleCopy(e: MouseEvent) {
   e.stopPropagation();
   if (props.onCopy) {
     props.onCopy();
+    announceA11y("Copied message.");
     copyFeedback.value = true;
     setTimeout(() => (copyFeedback.value = false), 1500);
   }

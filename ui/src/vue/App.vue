@@ -17,7 +17,12 @@
     </div>
   </div>
 
-  <div v-else-if="error && conversations.length === 0" class="error-container">
+  <div
+    v-else-if="error && conversations.length === 0"
+    class="error-container"
+    role="alert"
+    aria-live="assertive"
+  >
     <div class="error-content">
       <p class="error-message" style="margin-bottom: 1rem">{{ error }}</p>
       <Button :label="t('retry')" @click="loadConversations" />

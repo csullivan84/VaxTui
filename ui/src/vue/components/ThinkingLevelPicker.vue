@@ -27,6 +27,7 @@
 import { computed } from "vue";
 import Select from "primevue/select";
 import { statusPickerDt } from "./statusPickerDt";
+import { announceA11y } from "../../services/a11yAnnouncer";
 import { THINKING_LEVELS, DEFAULT_THINKING_LEVEL, type ThinkingLevel } from "./thinkingLevel";
 
 const props = withDefaults(
@@ -91,5 +92,7 @@ const current = computed(
 
 function select(level: ThinkingLevel) {
   emit("change", level);
+  const label = availableLevels.value.find((item) => item.value === level)?.label || level;
+  announceA11y(`Reasoning effort changed to ${label}.`);
 }
 </script>

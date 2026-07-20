@@ -2,7 +2,13 @@
      components/Message.tsx). Preserves .message.message-warning, data-testid
      "message-warning", role="status", and the .message-content wrapper. -->
 <template>
-  <div class="message message-warning" data-testid="message-warning" role="status">
+  <div
+    class="message message-warning"
+    data-testid="message-warning"
+    role="status"
+    aria-label="Warning message"
+  >
+    <h2 class="sr-only">Warning message</h2>
     <div class="message-content">{{ warningText }}</div>
   </div>
 </template>

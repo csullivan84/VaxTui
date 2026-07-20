@@ -38,6 +38,7 @@
       @mouseenter="isHovered = true"
       @mouseleave="isHovered = false"
     >
+      <h2 class="sr-only">Error message</h2>
       <MessageActionBar
         v-if="actionBarVisible && (hasCopyAction || hasUsageAction || hasForkAction)"
         :on-copy="hasCopyAction ? handleCopy : undefined"
@@ -72,10 +73,12 @@
       :class="`${messageClasses} msg-container-relative`"
       data-testid="message"
       role="article"
+      aria-label="Tool message"
       @click="handleMessageClick"
       @mouseenter="isHovered = true"
       @mouseleave="isHovered = false"
     >
+      <h2 class="sr-only">Tool message</h2>
       <MessageActionBar
         v-if="actionBarVisible && (hasCopyAction || hasUsageAction || hasForkAction)"
         :on-copy="hasCopyAction ? handleCopy : undefined"
@@ -113,10 +116,12 @@
       :data-message-id="message.message_id"
       :data-commentable="isCommentable ? 'true' : undefined"
       role="article"
+      :aria-label="messageLandmarkLabel"
       @click="handleMessageClick"
       @mouseenter="isHovered = true"
       @mouseleave="isHovered = false"
     >
+      <h2 class="sr-only">{{ messageLandmarkLabel }}</h2>
       <MessageActionBar
         v-if="actionBarVisible && (hasCopyAction || hasUsageAction || hasForkAction)"
         :on-copy="hasCopyAction ? handleCopy : undefined"
@@ -525,6 +530,11 @@ const messageClasses = computed(() => {
   if (isError.value) return "message message-error";
   if (isTool.value) return "message message-tool";
   return "message message-agent";
+});
+const messageLandmarkLabel = computed(() => {
+  if (isUser.value && !isDistilledUser.value) return "User message";
+  if (isTool.value) return "Tool message";
+  return "Assistant message";
 });
 
 // ---- Handlers ----

@@ -23,7 +23,7 @@
 
   <!-- Error -->
   <template v-else-if="error">
-    <span class="status-message status-error">{{ error }}</span>
+    <span class="status-message status-error" role="alert" aria-live="assertive">{{ error }}</span>
     <button class="status-button status-button-text" @click="onClearError">
       <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path
@@ -41,6 +41,8 @@
     v-else-if="agentWorking && conversationId"
     class="status-bar-active"
     data-testid="agent-thinking"
+    role="status"
+    aria-label="Agent status"
   >
     <div class="status-working-group">
       <AnimatedWorkingStatus />

@@ -146,7 +146,7 @@
         @status-change="handleStatusChange"
         @register="registerXterm"
         @unregister="unregisterXterm"
-        @attached="(id, termId) => emit('attached', id, termId)"
+        @attached="handleAttached"
       />
     </div>
   </div>
@@ -167,6 +167,7 @@ import CheckIcon from "./terminalIcons/CheckIcon.vue";
 import CloseIcon from "./terminalIcons/CloseIcon.vue";
 import ChevronUpIcon from "./terminalIcons/ChevronUpIcon.vue";
 import ChevronDownIcon from "./terminalIcons/ChevronDownIcon.vue";
+import { announceA11y } from "../../services/a11yAnnouncer";
 
 // Re-export EphemeralTerminal so importers can keep importing it from this
 // module (the canonical definition lives in terminalTypes.ts).
@@ -222,11 +223,14 @@ onUnmounted(() => observer?.disconnect());
 // activeTabId stays null and every terminal renders hidden.
 watch(
   () => props.terminals.length,
-  (len) => {
+  (len, previousLength) => {
     if (len > 0) {
       const lastTerminal = props.terminals[props.terminals.length - 1];
       activeTabId.value = lastTerminal.id;
       minimized.value = false; // expand when a new terminal arrives
+      if (len > (previousLength ?? 0)) {
+        announceA11y(`Terminal opened for ${lastTerminal.command}.`);
+      }
     } else {
       activeTabId.value = null;
     }
@@ -262,6 +266,26 @@ function handleStatusChange(id: string, status: TermStatus, exitCode: number | n
     exitCode: exitCode ?? existing?.exitCode ?? null,
   });
   statusMap.value = next;
+  const terminal = props.terminals.find((item) => item.id === id);
+  const command = terminal?.command || "terminal session";
+  if (status === "running" && existing?.status !== "running") {
+    announceA11y(`${terminal?.termId ? "Terminal attached" : "Terminal connected"}: ${command}.`);
+  } else if (status === "exited" && existing?.status !== "exited") {
+    announceA11y(
+      exitCode === null
+        ? `Terminal disconnected: ${command}.`
+        : `Terminal exited with code ${exitCode}: ${command}.`,
+      exitCode && exitCode !== 0 ? "assertive" : "polite",
+    );
+  } else if (status === "error" && existing?.status !== "error") {
+    announceA11y(`Terminal error: ${command}.`, "assertive");
+  }
+}
+
+function handleAttached(id: string, termId: string) {
+  emit("attached", id, termId);
+  const terminal = props.terminals.find((item) => item.id === id);
+  announceA11y(`Terminal session attached: ${terminal?.command || termId}.`);
 }
 
 // Resize drag

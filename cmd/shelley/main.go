@@ -40,12 +40,11 @@ var discoverLLMIntegrations = modelsources.DiscoverLLMIntegrations
 func main() {
 	// Define global flags
 	var global GlobalConfig
-	defaultModelID := models.Default().ID
 	flag.StringVar(&global.DBPath, "db", "shelley.db", "Path to SQLite database file")
 	flag.BoolVar(&global.Debug, "debug", false, "Enable debug logging")
 	flag.BoolVar(&global.PredictableOnly, "predictable-only", false, "Use only the predictable service, ignoring all other models")
 	flag.StringVar(&global.ConfigPath, "config", "", "Path to shelley.json configuration file (optional)")
-	flag.StringVar(&global.DefaultModel, "default-model", defaultModelID, "Default model for web UI")
+	flag.StringVar(&global.DefaultModel, "default-model", "", "Default model for web UI")
 	flag.BoolVar(&global.DisableLLMIntegration, "disable-llm-integration", false, "Ignore any discovered exe.dev llm integration")
 	flag.BoolVar(&global.DisableGateway, "disable-gateway", false, "Ignore llm_gateway from shelley.json")
 
@@ -465,6 +464,13 @@ func buildLLMModelSources(ctx context.Context, global GlobalConfig, logger *slog
 
 	if global.DisableGateway {
 		gateway = ""
+	}
+
+	// A direct DeepSeek key is an intentional one-shot profile: when neither
+	// --default-model nor shelley.json selected a model, prefer the ready native
+	// Flash model. Without the key, the server's normal process default remains.
+	if defaultModel == "" && deepseekKey != "" {
+		defaultModel = "deepseek-v4-flash"
 	}
 
 	// 2. Gateway (Anthropic, OpenAI, Fireworks, xAI). Per-provider env vars
