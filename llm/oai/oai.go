@@ -309,7 +309,7 @@ var (
 		TextVerbosity:      "",
 		URL:                FireworksURL,
 		APIKeyEnv:          FireworksAPIKeyEnv,
-		IsReasoningModel:   false,
+		IsReasoningModel:   true,
 		UseSimplifiedPatch: false,
 		SupportsImages:     false,
 	}
@@ -320,7 +320,7 @@ var (
 		TextVerbosity:      "",
 		URL:                FireworksURL,
 		APIKeyEnv:          FireworksAPIKeyEnv,
-		IsReasoningModel:   false,
+		IsReasoningModel:   true,
 		UseSimplifiedPatch: false,
 		SupportsImages:     false,
 	}
@@ -1219,7 +1219,7 @@ func (s *Service) TokenContextWindow() int {
 		return 256000
 	case "gpt-oss-20b", "gpt-oss-120b":
 		return 128000
-	case "accounts/fireworks/models/deepseek-v4-pro", "accounts/fireworks/models/deepseek-v4-flash":
+	case "deepseek-v4-pro", "deepseek-v4-flash", "accounts/fireworks/models/deepseek-v4-pro", "accounts/fireworks/models/deepseek-v4-flash":
 		return 1048576
 	case "accounts/fireworks/models/qwen3p6-plus":
 		return 128000

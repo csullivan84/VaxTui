@@ -8,6 +8,8 @@
       <span class="model-bar-name" :title="modelTitle">{{ displayName }}</span>
       <span class="model-bar-label" title="Reasoning effort">Reasoning</span>
       <span class="model-bar-name">{{ effectiveReasoning }}</span>
+      <span class="model-bar-label">Health</span>
+      <span class="model-bar-name">{{ healthText }}</span>
     </div>
   </div>
 </template>
@@ -15,6 +17,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import type { Model } from "../../types";
+import { modelHealthText } from "../../services/modelHealth";
 
 const props = withDefaults(
   defineProps<{
@@ -25,6 +28,7 @@ const props = withDefaults(
     modelsUsed?: string[];
     models?: Model[];
     thinkingLevel?: string | null;
+    healthRevision?: number;
   }>(),
   { models: () => [], modelsUsed: () => [] },
 );
@@ -71,4 +75,9 @@ const modelTitle = computed(() =>
 const effectiveReasoning = computed(
   () => props.thinkingLevel || modelObj.value?.default_reasoning_level || "default",
 );
+
+const healthText = computed(() => {
+  void props.healthRevision;
+  return modelHealthText(modelObj.value?.id || props.model || "");
+});
 </script>

@@ -527,3 +527,27 @@ No extra code thrash needed.
 — Grok
 
 ---
+
+## Deferred cleared — Codex
+
+- **43 — Changed-symbol summary:** heuristic extractor and focused test in `ui/src/utils/changedSymbols.ts` and `ui/src/utils/changedSymbols.test.ts`; surfaced in collapsed patch text by `ui/src/vue/components/tools/PatchTool.vue`.
+- **50 — DeepSeek capability profiles:** concise 1M-context, reasoning, tool-use, text-only/no-image descriptions in `models/models.go`; matching context/reasoning capability fixes and tests in `llm/oai/oai.go`, `llm/oai/oai_test.go`, and `models/models_test.go`.
+- **51 — Model health feedback:** request/first-content/error telemetry and test in `ui/src/services/modelHealth.ts` and `ui/src/services/modelHealth.test.ts`; wired and displayed by `ui/src/vue/components/ChatInterface.vue` and `ui/src/vue/components/ModelBar.vue`.
+- **58 — Idle visual rendering:** Monaco initialization now uses `requestIdleCallback` with a timeout fallback while linear semantic diff text renders immediately in `ui/src/vue/components/DiffViewer.vue`.
+- **59 — Plain-text cache:** content-hash cache with update invalidation and focused test in `ui/src/services/plainTextCache.ts` and `ui/src/services/plainTextCache.test.ts`; consumed by the StatusAnnouncer assistant preview path in `ui/src/vue/components/ChatInterface.vue`.
+- **Quick additions:** recent terminal-command history inserts without running via `ui/src/vue/components/TerminalPanel.vue` and `ui/src/styles.css`; GitGraph Up/Down selection announces subject and hash in `ui/src/vue/components/GitGraphViewer.vue`.
+
+## Grok collab on deferred
+
+Codex cleared 43/50/51/58/59 with real code + tests. Grok added/kept:
+
+- **32 unread resume** — localStorage last-reviewed seq + "Resume from unread" button in ChatInterface
+- **26 git graph announce** — subject+hash on selection (shared with Codex)
+- **38–39 terminal history** — H button dialog, insert without run (shared with Codex)
+- CSS for history + resume row
+
+Type-check clean. Unit tests for changedSymbols / modelHealth / plainTextCache green.
+
+— Grok
+
+---

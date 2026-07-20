@@ -285,7 +285,7 @@ func All() []Model {
 		},
 		{
 			ID: "deepseek-v4-pro-fireworks", Provider: ProviderFireworks,
-			Description: "DeepSeek V4 Pro on Fireworks", APIModelName: oai.DeepseekV4ProFireworks.ModelName,
+			Description: "DeepSeek V4 Pro on Fireworks — 1M-token context, reasoning and tool use; text-only, no images", APIModelName: oai.DeepseekV4ProFireworks.ModelName,
 			APIType: APITypeOpenAIChat, DefaultBaseURL: DefaultFireworksBaseURL,
 			Build: oaiChatSvc(oai.DeepseekV4ProFireworks, "fireworks"),
 		},
@@ -363,19 +363,19 @@ func All() []Model {
 		},
 		{
 			ID: "deepseek-v4-flash", Provider: ProviderDeepSeek,
-			Description: "DeepSeek V4 Flash", APIModelName: oai.DeepseekV4Flash.ModelName,
+			Description: "DeepSeek V4 Flash — 1M-token context, reasoning and tool use; text-only, no images", APIModelName: oai.DeepseekV4Flash.ModelName,
 			APIType: APITypeOpenAIChat, DefaultBaseURL: DefaultDeepSeekBaseURL,
 			Build: oaiChatSvc(oai.DeepseekV4Flash, "deepseek"),
 		},
 		{
 			ID: "deepseek-v4-pro", Provider: ProviderDeepSeek,
-			Description: "DeepSeek V4 Pro", APIModelName: oai.DeepseekV4Pro.ModelName,
+			Description: "DeepSeek V4 Pro — 1M-token context, reasoning and tool use; text-only, no images", APIModelName: oai.DeepseekV4Pro.ModelName,
 			APIType: APITypeOpenAIChat, DefaultBaseURL: DefaultDeepSeekBaseURL,
 			Build: oaiChatSvc(oai.DeepseekV4Pro, "deepseek"),
 		},
 		{
 			ID: "deepseek-v4-flash-fireworks", Provider: ProviderFireworks,
-			Description: "DeepSeek V4 Flash on Fireworks", APIModelName: oai.DeepseekV4FlashFireworks.ModelName,
+			Description: "DeepSeek V4 Flash on Fireworks — 1M-token context, reasoning and tool use; text-only, no images", APIModelName: oai.DeepseekV4FlashFireworks.ModelName,
 			APIType: APITypeOpenAIChat, DefaultBaseURL: DefaultFireworksBaseURL,
 			Build: oaiChatSvc(oai.DeepseekV4FlashFireworks, "fireworks"),
 		},

@@ -45,6 +45,20 @@ func TestAll(t *testing.T) {
 	}
 }
 
+func TestDeepSeekV4CapabilityDescriptions(t *testing.T) {
+	for _, id := range []string{"deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-fireworks", "deepseek-v4-pro-fireworks"} {
+		model := ByID(id)
+		if model == nil {
+			t.Fatalf("model %q missing", id)
+		}
+		for _, capability := range []string{"1M-token context", "reasoning", "tool use", "text-only", "no images"} {
+			if !strings.Contains(model.Description, capability) {
+				t.Errorf("%s description %q missing %q", id, model.Description, capability)
+			}
+		}
+	}
+}
+
 func TestByID(t *testing.T) {
 	tests := []struct {
 		id      string

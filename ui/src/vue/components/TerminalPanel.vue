@@ -123,6 +123,16 @@
         </template>
         <div class="terminal-panel-actions-divider" />
         <button
+          v-tooltip.top="'Command history'"
+          class="terminal-panel-action-btn"
+          aria-label="Command history"
+          aria-haspopup="dialog"
+          :aria-expanded="historyOpen"
+          @click="historyOpen = !historyOpen"
+        >
+          H
+        </button>
+        <button
           v-tooltip.top="'Close active terminal'"
           class="terminal-panel-action-btn"
           aria-label="Close active terminal"
@@ -131,6 +141,28 @@
           <CloseIcon />
         </button>
       </div>
+    </div>
+
+    <div
+      v-if="historyOpen && !minimized"
+      class="terminal-panel-history"
+      role="dialog"
+      aria-label="Terminal command history"
+    >
+      <div class="terminal-panel-history-header">
+        <span>Recent commands</span>
+        <button type="button" class="terminal-panel-action-btn" aria-label="Close history" @click="historyOpen = false">
+          ×
+        </button>
+      </div>
+      <ul class="terminal-panel-history-list">
+        <li v-if="commandHistory.length === 0" class="terminal-panel-history-empty">No history yet.</li>
+        <li v-for="(cmd, i) in commandHistory" :key="i">
+          <button type="button" class="terminal-panel-history-item" @click="insertHistoryCommand(cmd)">
+            {{ cmd }}
+          </button>
+        </li>
+      </ul>
     </div>
 
     <!-- Terminal content area — hidden (not unmounted) when minimized -->
@@ -202,6 +234,40 @@ const statusMap = ref<Map<string, { status: TermStatus; exitCode: number | null 
 const isResizingRef = { current: false };
 const startYRef = { current: 0 };
 const startHeightRef = { current: 0 };
+const historyOpen = ref(false);
+const HISTORY_KEY = "shelley-terminal-command-history";
+const commandHistory = ref<string[]>(loadHistory());
+
+function loadHistory(): string[] {
+  try {
+    const raw = JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]");
+    return Array.isArray(raw) ? raw.filter((x): x is string => typeof x === "string").slice(0, 40) : [];
+  } catch {
+    return [];
+  }
+}
+
+function pushHistory(command: string) {
+  const cmd = command.trim();
+  if (!cmd) return;
+  const next = [cmd, ...commandHistory.value.filter((c) => c !== cmd)].slice(0, 40);
+  commandHistory.value = next;
+  try {
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(next));
+  } catch {
+    /* ignore */
+  }
+}
+
+function insertHistoryCommand(cmd: string) {
+  if (!props.canInsertIntoInput) {
+    announceA11y("Cannot insert command: composer insert is unavailable.");
+    return;
+  }
+  emit("insert-into-input", cmd);
+  historyOpen.value = false;
+  announceA11y(`Inserted command into input: ${cmd}`);
+}
 
 // Detect dark mode
 const isDark = ref(isDarkModeActive());
@@ -229,6 +295,7 @@ watch(
       activeTabId.value = lastTerminal.id;
       minimized.value = false; // expand when a new terminal arrives
       if (len > (previousLength ?? 0)) {
+        pushHistory(lastTerminal.command);
         announceA11y(`Terminal opened for ${lastTerminal.command}.`);
       }
     } else {

@@ -174,6 +174,7 @@ import type {
 import { getSingularPatch, parseDiffFromFile } from "@pierre/diffs";
 import { isDarkModeActive } from "../../../services/theme";
 import { useFileDiffInstance } from "../../composables/fileDiffInstance";
+import { extractChangedSymbols } from "../../../utils/changedSymbols";
 
 // LocalStorage key for side-by-side preference
 const STORAGE_KEY_SIDE_BY_SIDE = "shelley-diff-side-by-side";
@@ -290,7 +291,11 @@ const collapsedPlainText = computed(() => {
   if (!isComplete.value) return "";
   if (props.hasError) return errorMessage.value || "Patch failed";
   const summary = `${filename.value}: +${lineChanges.value.additions} −${lineChanges.value.deletions} lines`;
-  return rawDiff.value ? `${summary}\n\n${rawDiff.value}` : summary;
+  const symbols = changedSymbols.value;
+  const symbolSummary = symbols.length
+    ? `\nChanged symbols (heuristic): ${symbols.slice(0, 12).join(", ")}${symbols.length > 12 ? ", …" : ""}`
+    : "";
+  return rawDiff.value ? `${summary}${symbolSummary}\n\n${rawDiff.value}` : `${summary}${symbolSummary}`;
 });
 
 watch(
@@ -399,6 +404,8 @@ const rawDiff = computed(() => {
   if (!displayData.value) return "";
   return displayData.value.diff ?? "";
 });
+
+const changedSymbols = computed(() => extractChangedSymbols(rawDiff.value));
 
 const lineChanges = computed(() => {
   const diff = rawDiff.value;

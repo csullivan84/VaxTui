@@ -332,7 +332,7 @@
             <div class="spinner"></div>
             <span>Loading...</span>
           </div>
-          <div v-if="!loading && !monacoLoaded && !error" class="diff-viewer-loading">
+          <div v-if="!loading && !monacoLoaded && !fileDiff && !error" class="diff-viewer-loading">
             <div class="spinner"></div>
             <span>Loading editor...</span>
           </div>
@@ -343,7 +343,7 @@
             </p>
           </div>
           <section
-            v-if="fileDiff && readingMode === 'text'"
+            v-if="fileDiff && (readingMode === 'text' || !monacoLoaded)"
             class="diff-viewer-text"
             :aria-label="`Linear diff for ${fileDiff.path}`"
           >
@@ -791,21 +791,50 @@ watch(showCommentDialog, (v) => {
   }
 });
 
+let monacoLoadStarted = false;
+let monacoIdleHandle: number | null = null;
+let monacoIdleUsesRIC = false;
+
+function cancelScheduledMonacoLoad() {
+  if (monacoIdleHandle === null) return;
+  if (monacoIdleUsesRIC) window.cancelIdleCallback(monacoIdleHandle);
+  else window.clearTimeout(monacoIdleHandle);
+  monacoIdleHandle = null;
+}
+
+function startMonacoLoad() {
+  monacoIdleHandle = null;
+  if (monacoLoadStarted || monacoLoaded.value) return;
+  monacoLoadStarted = true;
+  loadMonaco()
+    .then((monaco) => {
+      monacoMod = monaco;
+      monacoLoaded.value = true;
+    })
+    .catch((err) => {
+      console.error("Failed to load Monaco:", err);
+      error.value = "Failed to load diff editor";
+    });
+}
+
+function scheduleMonacoLoad() {
+  if (monacoLoadStarted || monacoLoaded.value || monacoIdleHandle !== null) return;
+  // Linear semantic text renders now; expensive visual-editor setup waits for idle time.
+  if (typeof window.requestIdleCallback === "function") {
+    monacoIdleUsesRIC = true;
+    monacoIdleHandle = window.requestIdleCallback(startMonacoLoad, { timeout: 500 });
+  } else {
+    monacoIdleUsesRIC = false;
+    monacoIdleHandle = window.setTimeout(startMonacoLoad, 0);
+  }
+}
+
 // Load Monaco when viewer opens.
 watch(
-  [() => props.isOpen, monacoLoaded],
-  () => {
-    if (props.isOpen && !monacoLoaded.value) {
-      loadMonaco()
-        .then((monaco) => {
-          monacoMod = monaco;
-          monacoLoaded.value = true;
-        })
-        .catch((err) => {
-          console.error("Failed to load Monaco:", err);
-          error.value = "Failed to load diff editor";
-        });
-    }
+  () => props.isOpen,
+  (open) => {
+    if (open) scheduleMonacoLoad();
+    else cancelScheduledMonacoLoad();
   },
   { immediate: true },
 );
@@ -1785,6 +1814,7 @@ onMounted(() => {
   window.addEventListener("resize", handleResize);
 });
 onUnmounted(() => {
+  cancelScheduledMonacoLoad();
   window.removeEventListener("resize", handleResize);
   window.removeEventListener("keydown", handleKeyDown, true);
   themeObserver?.disconnect();

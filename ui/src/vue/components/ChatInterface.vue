@@ -92,11 +92,22 @@
 
     <!-- Messages area -->
     <div class="messages-area-wrapper" role="region" aria-label="Conversation transcript">
+      <div v-if="showResumeUnread" class="resume-unread-row">
+        <button
+          type="button"
+          class="status-button status-button-primary resume-unread-button"
+          data-testid="resume-unread"
+          @click="resumeFromUnread"
+        >
+          Resume from unread
+        </button>
+      </div>
       <div
         ref="messagesContainerRef"
         class="messages-container scrollable"
         data-a11y-transcript
         tabindex="-1"
+        @focusin="markTranscriptReviewed"
       >
         <template v-if="loading">
           <div v-if="showLoadingProgressUI" class="conversation-loading full-height">
@@ -180,6 +191,7 @@
                 :models-used="block.modelBar.modelsUsed"
                 :models="models"
                 :thinking-level="conversationThinkingLevel"
+                :health-revision="modelHealthRevision"
               />
               <SystemPromptView
                 v-for="sp in block.systemPrompts"
@@ -402,6 +414,12 @@ import {
 import { api } from "../../services/api";
 import { announceA11y } from "../../services/a11yAnnouncer";
 import { messageStore } from "../../services/messageStore";
+import { plainTextCache } from "../../services/plainTextCache";
+import {
+  recordModelError,
+  recordModelFirstContent,
+  recordModelRequestStart,
+} from "../../services/modelHealth";
 import {
   loadCachedDraft,
   saveCachedDraft,
@@ -687,10 +705,14 @@ const agentWorking = ref(false);
 /** Tools that finished during the turn that just ended (for StatusAnnouncer). */
 const toolsCompletedThisTurn = ref(0);
 const showKeyboardHelp = ref(false);
+/** Highest sequence_id the user has reviewed in the current conversation. */
+const lastReviewedSeq = ref(0);
+const showResumeUnread = ref(false);
 const cancelling = ref(false);
 const contextWindowSize = ref(0);
 const toolProgress = ref<Record<string, ToolProgress>>({});
 const streamingText = ref("");
+const modelHealthRevision = ref(0);
 const showAdvancedSettings = ref(false);
 const advancedSettingsRef = ref<HTMLDivElement | null>(null);
 const availableTools = ref<Array<{ name: string; summary: string; default_on: boolean }>>([]);
@@ -709,11 +731,13 @@ const assistantTurnPreview = computed(() => {
         typeof message.llm_data === "string" ? JSON.parse(message.llm_data) : message.llm_data;
       const text = (llm?.Content || [])
         .filter((content: LLMContent) => content.Type === 2 && content.Text)
-        .map((content: LLMContent) => content.Text!.replace(/\s+/g, " ").trim())
+        .map((content: LLMContent) => content.Text!.trim())
         .filter(Boolean)
-        .join(" ");
+        .join("\n\n");
       if (!text) continue;
-      return text.length > 180 ? `${text.slice(0, 177).trimEnd()}…` : text;
+      const plainText = plainTextCache.get(message.message_id, text);
+      if (!plainText) continue;
+      return plainText.length > 180 ? `${plainText.slice(0, 177).trimEnd()}…` : plainText;
     } catch {
       return "";
     }
@@ -733,6 +757,8 @@ let loadingFlag = false;
 let pendingScroll: number | null | undefined = undefined;
 let loadingProgressDelay: number | null = null;
 let currentConversationId: string | null = props.conversationId;
+let activeModelHealth: { modelId: string; startSequence: number; handledErrors: Set<string> } | null =
+  null;
 let catchingUp = false;
 let hiddenAt: number | null = null;
 let lastGeneration: { id: string | null; gen: number } | null = null;
@@ -740,6 +766,25 @@ let lastGeneration: { id: string | null; gen: number } | null = null;
 const terminalURL = window.__SHELLEY_INIT__?.terminal_url || null;
 const links = window.__SHELLEY_INIT__?.links || [];
 const hostname = window.__SHELLEY_INIT__?.hostname || "localhost";
+
+function beginModelHealthRequest(): void {
+  if (activeModelHealth) return;
+  const modelId = selectedModel.value;
+  activeModelHealth = {
+    modelId,
+    startSequence: messages.value.reduce((max, message) => Math.max(max, message.sequence_id), -1),
+    handledErrors: new Set(),
+  };
+  recordModelRequestStart(modelId);
+  modelHealthRevision.value++;
+}
+
+function recordActiveModelError(error: unknown): void {
+  if (!activeModelHealth) return;
+  const text = error instanceof Error ? error.message : String(error);
+  recordModelError(activeModelHealth.modelId, text);
+  modelHealthRevision.value++;
+}
 
 // ---- tool overrides (persisted) ----
 const TOOL_OVERRIDES_KEY = "shelley.toolOverrides";
@@ -1536,6 +1581,7 @@ async function sendFirstMessage(prompt: string) {
       throw new Error(`Invalid working directory: ${validation.error}`);
     }
   }
+  beginModelHealthRequest();
   await props.onFirstMessage(
     prompt,
     selectedModel.value,
@@ -1652,6 +1698,7 @@ async function sendMessage(message: string) {
     } catch (err) {
       console.error("Failed to send /new message:", err);
       error.value = err instanceof Error ? err.message : "Unknown error";
+      recordActiveModelError(err);
       agentWorking.value = false;
     } finally {
       sending.value = false;
@@ -1709,6 +1756,7 @@ async function sendMessage(message: string) {
       // is silently disabled for adaptive models. Follow-up messages on an
       // already-promoted conversation must NOT resend options (they're locked).
       const promoting = isDraftConv || (!props.conversationId && !!draftConvId);
+      beginModelHealthRequest();
       await api.sendMessage(effectiveId, {
         message: message.trim(),
         model: selectedModel.value,
@@ -1722,6 +1770,7 @@ async function sendMessage(message: string) {
   } catch (err) {
     console.error("Failed to send message:", err);
     error.value = err instanceof Error ? err.message : "Unknown error";
+    recordActiveModelError(err);
     agentWorking.value = false;
     throw err;
   } finally {
@@ -2199,9 +2248,64 @@ const mobileMq = window.matchMedia("(max-width: 767px)");
 const onMobileChange = (e: MediaQueryListEvent) => (isMobile.value = e.matches);
 mobileMq.addEventListener("change", onMobileChange);
 
+// Show resume control when conversation has messages beyond last reviewed.
+watch(
+  () => [props.conversationId, messages.value.length, lastReviewedSeq.value] as const,
+  () => {
+    if (!props.conversationId || messages.value.length === 0) {
+      showResumeUnread.value = false;
+      return;
+    }
+    const maxSeq = messages.value.reduce((m, msg) => Math.max(m, msg.sequence_id || 0), 0);
+    showResumeUnread.value = maxSeq > lastReviewedSeq.value && lastReviewedSeq.value > 0;
+  },
+);
+
+watch(streamingText, (text) => {
+  if (!text.trim() || !activeModelHealth) return;
+  if (recordModelFirstContent(activeModelHealth.modelId)) modelHealthRevision.value++;
+});
+
+watch(messages, (current) => {
+  const active = activeModelHealth;
+  if (!active) return;
+  for (const message of current) {
+    if (message.sequence_id <= active.startSequence) continue;
+    if (message.type === "agent" && message.llm_data) {
+      try {
+        const llm =
+          typeof message.llm_data === "string" ? JSON.parse(message.llm_data) : message.llm_data;
+        const hasText = (llm?.Content || []).some(
+          (content: LLMContent) => content.Type === LLM_TYPE_TEXT && content.Text?.trim(),
+        );
+        if (hasText && recordModelFirstContent(active.modelId)) modelHealthRevision.value++;
+      } catch {
+        // Message rendering owns malformed-payload reporting.
+      }
+    }
+    if (message.type === "error" && !active.handledErrors.has(message.message_id)) {
+      active.handledErrors.add(message.message_id);
+      let text = "Unknown error";
+      try {
+        const llm =
+          typeof message.llm_data === "string" ? JSON.parse(message.llm_data) : message.llm_data;
+        text =
+          (llm?.Content || []).find(
+            (content: LLMContent) => content.Type === LLM_TYPE_TEXT && content.Text,
+          )?.Text || text;
+      } catch {
+        // Keep the concise generic error when payload parsing fails.
+      }
+      recordModelError(active.modelId, text);
+      modelHealthRevision.value++;
+    }
+  }
+});
+
 // Favicon working indicator + tool-count for end-of-turn SR announce.
 watch(agentWorking, (working, wasWorking) => {
   if (working) {
+    beginModelHealthRequest();
     setFaviconStatus("working");
     toolsCompletedThisTurn.value = 0;
     return;
@@ -2215,6 +2319,7 @@ watch(agentWorking, (working, wasWorking) => {
       if (m.type === "tool") n++;
     }
     toolsCompletedThisTurn.value = n;
+    activeModelHealth = null;
   }
 });
 
@@ -2233,7 +2338,10 @@ watch(
   () => props.conversationId,
   (id) => {
     currentConversationId = id;
+    activeModelHealth = null;
     teardownSubscriptions();
+    lastReviewedSeq.value = loadReviewedSeq(id);
+    showResumeUnread.value = false;
     if (!id) {
       messages.value = [];
       contextWindowSize.value = 0;
@@ -2613,6 +2721,57 @@ const canExportLastTurnTools = computed(() => {
   }
   return false;
 });
+
+function reviewedKey(id: string | null): string {
+  return id ? `shelley-reviewed-seq:${id}` : "";
+}
+
+function loadReviewedSeq(id: string | null): number {
+  if (!id) return 0;
+  try {
+    return Number(localStorage.getItem(reviewedKey(id)) || "0") || 0;
+  } catch {
+    return 0;
+  }
+}
+
+function markTranscriptReviewed() {
+  const id = props.conversationId;
+  if (!id || messages.value.length === 0) return;
+  const maxSeq = messages.value.reduce((m, msg) => Math.max(m, msg.sequence_id || 0), 0);
+  if (maxSeq <= lastReviewedSeq.value) return;
+  lastReviewedSeq.value = maxSeq;
+  showResumeUnread.value = false;
+  try {
+    localStorage.setItem(reviewedKey(id), String(maxSeq));
+  } catch {
+    /* ignore */
+  }
+}
+
+function resumeFromUnread() {
+  const id = props.conversationId;
+  if (!id) return;
+  const target = messages.value.find((m) => (m.sequence_id || 0) > lastReviewedSeq.value);
+  if (!target) {
+    announceA11y("No unread messages.");
+    showResumeUnread.value = false;
+    return;
+  }
+  const el = document.querySelector(
+    `[data-message-id="${CSS.escape(target.message_id)}"], [data-sequence-id="${target.sequence_id}"]`,
+  ) as HTMLElement | null;
+  if (el) {
+    el.scrollIntoView({ block: "center" });
+    el.focus?.();
+    announceA11y("Jumped to first unread message.");
+  } else {
+    // Fallback: scroll container and announce.
+    messagesContainerRef.value?.scrollTo({ top: 0 });
+    announceA11y("Unread marker found; scroll the transcript to continue.");
+  }
+  showResumeUnread.value = false;
+}
 
 function exportLastTurnTools() {
   const lines: string[] = [];

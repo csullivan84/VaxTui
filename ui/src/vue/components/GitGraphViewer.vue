@@ -303,6 +303,7 @@ import CopyButton from "./gitGraph/CopyButton.vue";
 import DiffstatList from "./gitGraph/DiffstatList.vue";
 import OctocatIcon from "./gitGraph/OctocatIcon.vue";
 import LoadMoreRow from "./gitGraph/LoadMoreRow.vue";
+import { announceA11y } from "../../services/a11yAnnouncer";
 import {
   computeLayout,
   normalizeCommits,
@@ -545,6 +546,13 @@ function rowWidth(i: number): number {
 function selectCommit(hash: string) {
   selected.value = hash;
   sheetOpen.value = true;
+  const c = commits.value.find((x) => x.hash === hash);
+  if (c) {
+    const subject = c.subject.replace(/\s+/g, " ").trim();
+    announceA11y(
+      `Commit ${c.shortHash || hash.slice(0, 7)}${subject ? `: ${subject}` : ""}`,
+    );
+  }
 }
 
 // Esc handling (React effect on [isOpen, covered, onClose, sheetOpen]).
