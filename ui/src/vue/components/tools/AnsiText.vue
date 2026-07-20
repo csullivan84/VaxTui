@@ -5,15 +5,33 @@
      element is exposed via a `preRef` template ref for callers that
      auto-scroll. -->
 <template>
-  <pre v-if="html" ref="preEl" :class="className" v-html="html" />
-  <pre v-else ref="preEl" :class="className">{{ fallback }}</pre>
+  <pre
+    v-if="html"
+    ref="preEl"
+    :class="className"
+    :aria-labelledby="ariaLabelledby"
+    :aria-label="ariaLabel"
+    v-html="html"
+  />
+  <pre
+    v-else
+    ref="preEl"
+    :class="className"
+    :aria-labelledby="ariaLabelledby"
+    :aria-label="ariaLabel"
+  >{{ fallback }}</pre>
 </template>
 
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { ansiToHtml, stripAnsi } from "../../../utils/ansi";
 
-const props = defineProps<{ text: string; className?: string }>();
+const props = defineProps<{
+  text: string;
+  className?: string;
+  ariaLabel?: string;
+  ariaLabelledby?: string;
+}>();
 const preEl = ref<HTMLPreElement | null>(null);
 const html = computed(() => ansiToHtml(props.text));
 // When there's nothing to colorize, render the text with ANSI sequences

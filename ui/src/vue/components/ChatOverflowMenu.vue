@@ -204,6 +204,22 @@
         />
       </div>
 
+      <!-- Screen reader mode: keep tool/terminal output expanded & in the a11y tree -->
+      <div class="overflow-menu-control">
+        <div class="md-toggle-label">Screen reader</div>
+        <SelectButton
+          v-model="srMode"
+          :options="srModeOptions"
+          option-label="label"
+          option-value="value"
+          data-key="value"
+          :allow-empty="false"
+          aria-label="Screen reader mode"
+          data-testid="screen-reader-mode-toggle"
+          @update:model-value="onSrModeChange"
+        />
+      </div>
+
       <!-- Language + report-a-bug link -->
       <div class="overflow-menu-divider" />
       <div class="overflow-menu-control">
@@ -253,6 +269,7 @@ import type { Link } from "../../types";
 import type { Locale } from "../../i18n/types";
 import { useI18n } from "../composables/i18n";
 import { useMarkdownMode, type MarkdownMode } from "../composables/markdownMode";
+import { useScreenReaderMode } from "../composables/screenReaderMode";
 import { type ThemeMode, getStoredTheme, setStoredTheme, applyTheme } from "../../services/theme";
 import {
   isChannelEnabled,
@@ -283,6 +300,7 @@ const emit = defineEmits<{
 
 const { t, locale, setLocale } = useI18n();
 const { markdownMode, setMarkdownMode } = useMarkdownMode();
+const { screenReaderMode, setScreenReaderMode } = useScreenReaderMode();
 
 const popoverRef = ref<InstanceType<typeof Popover> | null>(null);
 const open = ref(false);
@@ -360,6 +378,18 @@ const markdownOptions = computed(() => [
 function onMarkdownChange(mode: MarkdownMode) {
   markdown.value = mode;
   setMarkdownMode(mode);
+}
+
+// ---- Screen reader mode (Off / On) — expands tool output automatically ----
+// Labels spell out the concrete value (AGENTS: never surface bare "default").
+const srMode = ref<boolean>(screenReaderMode.value);
+const srModeOptions = [
+  { value: false, label: "Off" },
+  { value: true, label: "On (expand tools)" },
+];
+function onSrModeChange(on: boolean) {
+  srMode.value = on;
+  setScreenReaderMode(on);
 }
 
 // ---- Language picker ----
