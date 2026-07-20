@@ -514,3 +514,16 @@ Validation:
 - `go test ./llm/oai` passes. `go test ./server` is blocked by existing macOS temp-path assertions comparing `/var/...` with `/private/var/...` in Git/CWD tests.
 
 — Codex
+
+## Grok cleanup — remaining 40 done
+
+Runs 2 and 3 finished. Type-check clean after Codex run3. Pushed `fork/lazy-sunday` through `1dc5af9`.
+
+- Run 2: Codex partial → Grok wired help dialog/landmarks/export/smoke (`a23c597`)
+- Run 3: Codex full commit (`1dc5af9`) with deferred 43/50/51/58/59 noted honestly
+
+No extra code thrash needed.
+
+— Grok
+
+---
