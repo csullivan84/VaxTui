@@ -1,20 +1,40 @@
 <!-- Vue port of components/KeywordSearchTool.tsx.
      Preserves: .tool, .tool-header, .tool-summary, .tool-emoji 🔍, .tool-command,
      .tool-toggle, .tool-details, .tool-section, .tool-label, .tool-code,
-     .tool-time, .tool-error, .tool-success, data-testid tool-call-running/completed. -->
+     .tool-time, .tool-error, .tool-success, data-testid tool-call-running/completed.
+
+     shelley-a11y: collapsed results stay in the a11y tree. -->
 <template>
   <div class="tool" :data-testid="isComplete ? 'tool-call-completed' : 'tool-call-running'">
-    <div class="tool-header" @click="isExpanded = !isExpanded">
+    <div
+      class="tool-header"
+      role="button"
+      tabindex="0"
+      :aria-expanded="isExpanded"
+      :aria-label="toggleLabel"
+      @click="isExpanded = !isExpanded"
+      @keydown.enter.prevent="isExpanded = !isExpanded"
+      @keydown.space.prevent="isExpanded = !isExpanded"
+    >
       <div class="tool-summary">
-        <span class="tool-emoji" :class="{ running: isRunning }">🔍</span>
+        <span class="tool-emoji" :class="{ running: isRunning }" aria-hidden="true">🔍</span>
         <span class="tool-command" :title="fullText">{{ displayText }}</span>
-        <span v-if="isComplete && hasError" class="tool-error">✗</span>
-        <span v-if="isComplete && !hasError" class="tool-success">✓</span>
+        <span v-if="isComplete && hasError" class="tool-error">
+          <span aria-hidden="true">✗</span>
+          <span class="sr-only">failed</span>
+        </span>
+        <span v-if="isComplete && !hasError" class="tool-success">
+          <span aria-hidden="true">✓</span>
+          <span class="sr-only">succeeded</span>
+        </span>
       </div>
       <button
+        type="button"
         class="tool-toggle"
-        :aria-label="isExpanded ? 'Collapse' : 'Expand'"
+        tabindex="-1"
+        :aria-label="toggleLabel"
         :aria-expanded="isExpanded"
+        @click.stop="isExpanded = !isExpanded"
       >
         <svg
           width="12"
@@ -24,6 +44,7 @@
           xmlns="http://www.w3.org/2000/svg"
           class="tool-chevron"
           :class="{ 'tool-chevron-expanded': isExpanded }"
+          aria-hidden="true"
         >
           <path
             d="M4.5 3L7.5 6L4.5 9"
@@ -36,7 +57,16 @@
       </button>
     </div>
 
-    <div v-if="isExpanded" class="tool-details">
+    <div class="sr-only" role="status" aria-live="polite" aria-atomic="true">
+      {{ completionAnnounce }}
+    </div>
+
+    <ToolAccessibleBody
+      :expanded="isExpanded"
+      :label="outputLabel"
+      :plain-text="collapsedPlainText"
+      body-class="tool-details"
+    >
       <div v-if="query" class="tool-section">
         <div class="tool-label">Query:</div>
         <pre class="tool-code">{{ query }}</pre>
@@ -54,14 +84,15 @@
         </div>
         <pre :class="`tool-code ${hasError ? 'error' : ''}`">{{ output || "(no output)" }}</pre>
       </div>
-    </div>
+    </ToolAccessibleBody>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref, watch } from "vue";
 import type { LLMContent } from "../../../types";
 import { useToolExpanded } from "../../composables/toolDetail";
+import ToolAccessibleBody from "./ToolAccessibleBody.vue";
 
 const props = defineProps<{
   toolInput?: unknown;
@@ -72,6 +103,7 @@ const props = defineProps<{
 }>();
 
 const isExpanded = useToolExpanded();
+const completionAnnounce = ref("");
 
 const query = computed(() => {
   const ti = props.toolInput;
@@ -114,4 +146,35 @@ const truncateSearchTerms = (terms: string[], maxLen = 300) => {
 const fullText = computed(() => query.value || searchTerms.value.join(", "));
 const displayText = computed(() => query.value || truncateSearchTerms(searchTerms.value));
 const isComplete = computed(() => !props.isRunning && props.toolResult !== undefined);
+
+const searchSubject = computed(() => fullText.value || "keyword search");
+const outputLabel = computed(() => `Search results for \`${searchSubject.value}\``);
+const toggleLabel = computed(() =>
+  isExpanded.value
+    ? `Collapse search results for \`${searchSubject.value}\``
+    : `Expand search results for \`${searchSubject.value}\``,
+);
+
+const collapsedPlainText = computed(() => {
+  if (!isComplete.value) return "";
+  const parts: string[] = [];
+  if (query.value) parts.push(`Query:\n${query.value}`);
+  if (searchTerms.value.length) parts.push(`Search Terms:\n${searchTerms.value.join(", ")}`);
+  parts.push(`Results${props.hasError ? " (Error)" : ""}:\n${output.value || "(no output)"}`);
+  return parts.join("\n\n");
+});
+
+watch(
+  () => [props.isRunning, props.toolResult] as const,
+  ([running, result], prev) => {
+    if (prev?.[0] && !running && result !== undefined) {
+      completionAnnounce.value = "";
+      queueMicrotask(() => {
+        completionAnnounce.value = props.hasError
+          ? `Search failed: ${searchSubject.value}`
+          : `Search finished: ${searchSubject.value}`;
+      });
+    }
+  },
+);
 </script>

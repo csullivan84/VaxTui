@@ -19,6 +19,10 @@ check("working finishes", agentAnnouncement(false, true), {
   text: "Agent finished",
   politeness: "polite",
 });
+check("working finishes with tools", agentAnnouncement(false, true, 3), {
+  text: "Agent finished. 3 tools completed.",
+  politeness: "polite",
+});
 check("unchanged idle state stays silent", agentAnnouncement(false, false), null);
 
 check("disconnect is assertive", streamAnnouncement("disconnected", "connected"), {

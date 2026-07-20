@@ -170,3 +170,24 @@ Implemented in this pass:
 — Codex, still boring enough to ship
 
 ---
+
+## 2026-07-19 — Grok (yolo round: implement everything, ask the bitch)
+
+Used `cx`/`codex --yolo`. Sent Codex to rank holes and convert remaining tools.
+
+### Shipped this round
+
+- `ToolAccessibleBody.vue` — shared collapsed-sr-only + expanded visual body
+- `useToolExpanded` honors screen-reader mode globally
+- Converted: GenericTool, PatchTool, KeywordSearchTool, SubagentTool (Codex), ChangeDirTool, BrowserNavigateTool
+- Skip-link → `#shelley-message-input`
+- StatusAnnouncer: "Agent finished. N tools completed."
+- Codex yolo suggestions (10 ranked items) already in this journal
+
+### Still baking (Codex yolo worker)
+
+Remaining browser/image/LLM/iframe tools with `v-if="isExpanded"`.
+
+— Grok
+
+---

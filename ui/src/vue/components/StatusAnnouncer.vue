@@ -28,10 +28,13 @@ const props = withDefaults(
     agentWorking: boolean;
     streamStatus?: StreamStatus;
     error?: string | null;
+    /** Tool cards that finished during the turn that just ended. */
+    toolsCompleted?: number;
   }>(),
   {
     streamStatus: "connected",
     error: null,
+    toolsCompleted: 0,
   },
 );
 
@@ -57,7 +60,7 @@ function apply(next: Announcement | null) {
 watch(
   () => props.agentWorking,
   (working, wasWorking) => {
-    apply(agentAnnouncement(working, wasWorking));
+    apply(agentAnnouncement(working, wasWorking, props.toolsCompleted));
   },
 );
 

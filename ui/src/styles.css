@@ -4614,6 +4614,27 @@ svg {
   border: 0;
 }
 
+/* Skip link: visually hidden until focused (keyboard / VO). */
+.skip-link {
+  position: absolute;
+  left: 0.5rem;
+  top: 0.5rem;
+  z-index: 10000;
+  padding: 0.5rem 0.75rem;
+  background: var(--bg-base, #fff);
+  color: var(--text-primary, #111);
+  border: 2px solid var(--accent-primary, #2563eb);
+  border-radius: 0.25rem;
+  font-size: 0.875rem;
+  text-decoration: none;
+  transform: translateY(-200%);
+}
+.skip-link:focus {
+  transform: translateY(0);
+  outline: 2px solid var(--accent-primary, #2563eb);
+  outline-offset: 2px;
+}
+
 /* Context Usage Bar */
 /* Status bar for active conversation */
 .status-bar-active {

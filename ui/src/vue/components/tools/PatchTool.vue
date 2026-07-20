@@ -19,12 +19,27 @@
      and all other classes from the React original. -->
 <template>
   <div class="patch-tool" :data-testid="isComplete ? 'tool-call-completed' : 'tool-call-running'">
-    <div class="patch-tool-header" @click="isExpanded = !isExpanded">
+    <div
+      class="patch-tool-header"
+      role="button"
+      tabindex="0"
+      :aria-expanded="isExpanded"
+      :aria-label="toggleLabel"
+      @click="isExpanded = !isExpanded"
+      @keydown.enter.prevent="isExpanded = !isExpanded"
+      @keydown.space.prevent="isExpanded = !isExpanded"
+    >
       <div class="patch-tool-summary">
-        <span class="patch-tool-emoji" :class="{ running: isRunning }">🖋️</span>
+        <span class="patch-tool-emoji" :class="{ running: isRunning }" aria-hidden="true">🖋️</span>
         <span class="patch-tool-filename" :title="filename">{{ filename }}</span>
-        <span v-if="isComplete && hasError" class="patch-tool-error">✗</span>
-        <span v-if="isComplete && !hasError" class="patch-tool-success">✓</span>
+        <span v-if="isComplete && hasError" class="patch-tool-error">
+          <span aria-hidden="true">✗</span>
+          <span class="sr-only">failed</span>
+        </span>
+        <span v-if="isComplete && !hasError" class="patch-tool-success">
+          <span aria-hidden="true">✓</span>
+          <span class="sr-only">succeeded</span>
+        </span>
       </div>
       <div class="patch-tool-header-controls">
         <button
@@ -82,9 +97,12 @@
           </svg>
         </button>
         <button
+          type="button"
           class="patch-tool-toggle"
-          :aria-label="isExpanded ? 'Collapse' : 'Expand'"
+          tabindex="-1"
+          :aria-label="toggleLabel"
           :aria-expanded="isExpanded"
+          @click.stop="isExpanded = !isExpanded"
         >
           <svg
             width="12"
@@ -107,7 +125,16 @@
       </div>
     </div>
 
-    <div v-if="isExpanded" class="patch-tool-details">
+    <div class="sr-only" role="status" aria-live="polite" aria-atomic="true">
+      {{ completionAnnounce }}
+    </div>
+
+    <ToolAccessibleBody
+      :expanded="isExpanded"
+      :label="outputLabel"
+      :plain-text="collapsedPlainText"
+      body-class="patch-tool-details"
+    >
       <div v-if="isComplete && !hasError && hasDiff" class="patch-tool-section">
         <div class="patch-tool-diffs-container">
           <!-- The FileDiff renderer (driven by useFileDiffInstance) creates its
@@ -127,13 +154,15 @@
       <div v-if="isRunning" class="patch-tool-section">
         <div class="patch-tool-label">Applying patch...</div>
       </div>
-    </div>
+    </ToolAccessibleBody>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, ref, onMounted, onUnmounted } from "vue";
+import { computed, ref, watch, onMounted, onUnmounted } from "vue";
 import type { LLMContent } from "../../../types";
+import { useToolExpanded } from "../../composables/toolDetail";
+import ToolAccessibleBody from "./ToolAccessibleBody.vue";
 import type {
   FileContents,
   SupportedLanguages,
@@ -245,7 +274,37 @@ const props = defineProps<{
 }>();
 
 // State
-const isExpanded = ref(!props.hasError);
+// Prefer expanded by default on success (visual diffs); errors / SR mode also expand.
+const isExpanded = useToolExpanded();
+if (!props.hasError) {
+  isExpanded.value = true;
+}
+const completionAnnounce = ref("");
+const outputLabel = computed(() => `Patch output for \`${filename.value}\``);
+const toggleLabel = computed(() =>
+  isExpanded.value
+    ? `Collapse patch for \`${filename.value}\``
+    : `Expand patch for \`${filename.value}\``,
+);
+const collapsedPlainText = computed(() => {
+  if (!isComplete.value) return "";
+  if (props.hasError) return errorMessage.value || "Patch failed";
+  return rawDiff.value || `(patch applied: ${filename.value})`;
+});
+
+watch(
+  () => [props.isRunning, isComplete.value] as const,
+  ([running, complete], prev) => {
+    if (prev?.[0] && !running && complete) {
+      completionAnnounce.value = "";
+      queueMicrotask(() => {
+        completionAnnounce.value = props.hasError
+          ? `Patch failed: ${filename.value}`
+          : `Patch applied: ${filename.value}`;
+      });
+    }
+  },
+);
 const isMobile = ref(window.innerWidth < 768);
 const sideBySide = ref(!isMobile.value && getSideBySidePreference());
 // Host element for the FileDiff renderer's <diffs-container>.

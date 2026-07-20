@@ -4,10 +4,12 @@
      scroll behavior. Preserves the e2e DOM/ARIA/CSS contract. -->
 <template>
   <div class="full-height flex flex-col">
+    <a href="#shelley-message-input" class="skip-link">Skip to message input</a>
     <StatusAnnouncer
       :agent-working="agentWorking"
       :stream-status="streamStatus"
       :error="error"
+      :tools-completed="toolsCompletedThisTurn"
     />
     <!-- Header -->
     <div class="header">
@@ -664,6 +666,8 @@ const diffViewerInitialCommit = ref<string | undefined>(undefined);
 const diffViewerCwd = ref<string | undefined>(undefined);
 const diffCommentText = ref("");
 const agentWorking = ref(false);
+/** Tools that finished during the turn that just ended (for StatusAnnouncer). */
+const toolsCompletedThisTurn = ref(0);
 const cancelling = ref(false);
 const contextWindowSize = ref(0);
 const toolProgress = ref<Record<string, ToolProgress>>({});
@@ -2151,9 +2155,23 @@ const mobileMq = window.matchMedia("(max-width: 767px)");
 const onMobileChange = (e: MediaQueryListEvent) => (isMobile.value = e.matches);
 mobileMq.addEventListener("change", onMobileChange);
 
-// Favicon working indicator.
-watch(agentWorking, (working) => {
-  if (working) setFaviconStatus("working");
+// Favicon working indicator + tool-count for end-of-turn SR announce.
+watch(agentWorking, (working, wasWorking) => {
+  if (working) {
+    setFaviconStatus("working");
+    toolsCompletedThisTurn.value = 0;
+    return;
+  }
+  if (wasWorking) {
+    // Count tool messages after the latest user turn.
+    let n = 0;
+    for (let i = messages.value.length - 1; i >= 0; i--) {
+      const m = messages.value[i];
+      if (m.type === "user") break;
+      if (m.type === "tool") n++;
+    }
+    toolsCompletedThisTurn.value = n;
+  }
 });
 
 // ---- conversation switch: hydrate + subscribe ----

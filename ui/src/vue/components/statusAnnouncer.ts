@@ -9,10 +9,20 @@ export interface Announcement {
 export function agentAnnouncement(
   working: boolean,
   wasWorking: boolean | undefined,
+  toolsCompleted = 0,
 ): Announcement | null {
   if (working === wasWorking) return null;
   if (working) return { text: "Agent working", politeness: "polite" };
-  if (wasWorking) return { text: "Agent finished", politeness: "polite" };
+  if (wasWorking) {
+    if (toolsCompleted > 0) {
+      const noun = toolsCompleted === 1 ? "tool" : "tools";
+      return {
+        text: `Agent finished. ${toolsCompleted} ${noun} completed.`,
+        politeness: "polite",
+      };
+    }
+    return { text: "Agent finished", politeness: "polite" };
+  }
   return null;
 }
 
