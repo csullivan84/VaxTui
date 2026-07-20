@@ -7,17 +7,35 @@
     class="screencast-tool"
     :data-testid="isComplete ? 'tool-call-completed' : 'tool-call-running'"
   >
-    <div class="screencast-tool-header" @click="isExpanded = !isExpanded">
+    <div
+      class="screencast-tool-header"
+      role="button"
+      tabindex="0"
+      :aria-expanded="isExpanded"
+      :aria-label="toggleLabel"
+      @click="isExpanded = !isExpanded"
+      @keydown.enter.prevent="isExpanded = !isExpanded"
+      @keydown.space.prevent="isExpanded = !isExpanded"
+    >
       <div class="screencast-tool-summary">
-        <span class="screencast-tool-emoji" :class="{ running: isRunning }">{{ emoji }}</span>
+        <span class="screencast-tool-emoji" :class="{ running: isRunning }" aria-hidden="true">{{
+          emoji
+        }}</span>
         <span class="screencast-tool-label">{{ label }}</span>
-        <span v-if="isComplete && hasError" class="screencast-tool-error">✗</span>
-        <span v-if="isComplete && !hasError" class="screencast-tool-success">✓</span>
+        <span v-if="isComplete && hasError" class="screencast-tool-error">
+          <span aria-hidden="true">✗</span><span class="sr-only">failed</span>
+        </span>
+        <span v-if="isComplete && !hasError" class="screencast-tool-success">
+          <span aria-hidden="true">✓</span><span class="sr-only">succeeded</span>
+        </span>
       </div>
       <button
+        type="button"
         class="screencast-tool-toggle"
-        :aria-label="isExpanded ? 'Collapse' : 'Expand'"
+        tabindex="-1"
+        :aria-label="toggleLabel"
         :aria-expanded="isExpanded"
+        @click.stop="isExpanded = !isExpanded"
       >
         <svg
           width="12"
@@ -27,6 +45,7 @@
           xmlns="http://www.w3.org/2000/svg"
           class="tool-chevron"
           :class="{ 'tool-chevron-expanded': isExpanded }"
+          aria-hidden="true"
         >
           <path
             d="M4.5 3L7.5 6L4.5 9"
@@ -39,7 +58,12 @@
       </button>
     </div>
 
-    <div v-if="isExpanded" class="screencast-tool-details">
+    <ToolAccessibleBody
+      :expanded="isExpanded"
+      :label="outputLabel"
+      :plain-text="collapsedPlainText"
+      body-class="screencast-tool-details"
+    >
       <div v-if="isRunning" class="screencast-tool-section">
         <div class="screencast-tool-status">
           <template v-if="action === 'screencast_start'">Starting screencast recording...</template>
@@ -75,13 +99,14 @@
           output || "Screencast operation failed"
         }}</pre>
       </div>
-    </div>
+    </ToolAccessibleBody>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import type { LLMContent } from "../../../types";
+import ToolAccessibleBody from "./ToolAccessibleBody.vue";
 
 const props = defineProps<{
   toolInput?: unknown;
@@ -152,4 +177,18 @@ const videoUrl = computed<string | undefined>(() => {
 });
 
 const isComplete = computed(() => !props.isRunning && props.toolResult !== undefined);
+const outputLabel = computed(() => `Browser screencast: ${label.value}`);
+const toggleLabel = computed(() =>
+  isExpanded.value
+    ? `Collapse browser screencast: ${label.value}`
+    : `Expand browser screencast: ${label.value}`,
+);
+const collapsedPlainText = computed(() => {
+  const parts = [`Action: ${action.value}`];
+  if (props.isRunning) parts.push("Status: running");
+  if (isComplete.value) parts.push(`Status: ${props.hasError ? "failed" : "completed"}`);
+  if (props.executionTime) parts.push(`Execution time: ${props.executionTime}`);
+  if (videoUrl.value) parts.push(`Recording link: ${videoUrl.value}`);
+  return parts.join("\n");
+});
 </script>

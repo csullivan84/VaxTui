@@ -5,18 +5,34 @@
      data-testid tool-call-running/completed. -->
 <template>
   <div class="tool" :data-testid="isComplete ? 'tool-call-completed' : 'tool-call-running'">
-    <div class="tool-header" @click="isExpanded = !isExpanded">
+    <div
+      class="tool-header"
+      role="button"
+      tabindex="0"
+      :aria-expanded="isExpanded"
+      :aria-label="toggleLabel"
+      @click="isExpanded = !isExpanded"
+      @keydown.enter.prevent="isExpanded = !isExpanded"
+      @keydown.space.prevent="isExpanded = !isExpanded"
+    >
       <div class="tool-summary">
-        <span class="tool-emoji" :class="{ running: isRunning }">🤖</span>
+        <span class="tool-emoji" :class="{ running: isRunning }" aria-hidden="true">🤖</span>
         <span class="tool-name">llm_one_shot</span>
-        <span v-if="isComplete && hasError" class="tool-error">✗</span>
-        <span v-if="isComplete && !hasError" class="tool-success">✓</span>
+        <span v-if="isComplete && hasError" class="tool-error">
+          <span aria-hidden="true">✗</span><span class="sr-only">failed</span>
+        </span>
+        <span v-if="isComplete && !hasError" class="tool-success">
+          <span aria-hidden="true">✓</span><span class="sr-only">succeeded</span>
+        </span>
         <span class="tool-command">{{ summary }}</span>
       </div>
       <button
+        type="button"
         class="tool-toggle"
-        :aria-label="isExpanded ? 'Collapse' : 'Expand'"
+        tabindex="-1"
+        :aria-label="toggleLabel"
         :aria-expanded="isExpanded"
+        @click.stop="isExpanded = !isExpanded"
       >
         <svg
           width="12"
@@ -26,6 +42,7 @@
           xmlns="http://www.w3.org/2000/svg"
           class="tool-chevron"
           :class="{ 'tool-chevron-expanded': isExpanded }"
+          aria-hidden="true"
         >
           <path
             d="M4.5 3L7.5 6L4.5 9"
@@ -38,7 +55,12 @@
       </button>
     </div>
 
-    <div v-if="isExpanded" class="tool-details">
+    <ToolAccessibleBody
+      :expanded="isExpanded"
+      :label="outputLabel"
+      :plain-text="collapsedPlainText"
+      body-class="tool-details"
+    >
       <div class="tool-section">
         <div class="tool-label">Prompt file:</div>
         <pre class="tool-code">{{ promptFile || "(none)" }}</pre>
@@ -66,7 +88,7 @@
         </div>
         <pre :class="`tool-code ${hasError ? 'error' : ''}`">{{ resultText || "(no output)" }}</pre>
       </div>
-    </div>
+    </ToolAccessibleBody>
   </div>
 </template>
 
@@ -74,6 +96,7 @@
 import { computed } from "vue";
 import type { LLMContent } from "../../../types";
 import { useToolExpanded } from "../../composables/toolDetail";
+import ToolAccessibleBody from "./ToolAccessibleBody.vue";
 
 interface LLMOneShotInput {
   prompt_file?: string;
@@ -116,5 +139,19 @@ const summary = computed(() => {
   if (promptFile.value) parts.push(promptFile.value);
   if (model.value) parts.push(`model: ${model.value}`);
   return parts.join(" · ") || "llm_one_shot";
+});
+const outputLabel = computed(() => "LLM one-shot result");
+const toggleLabel = computed(() =>
+  isExpanded.value ? "Collapse LLM one-shot result" : "Expand LLM one-shot result",
+);
+const collapsedPlainText = computed(() => {
+  const parts = [`Prompt file:\n${promptFile.value || "(none)"}`];
+  if (model.value) parts.push(`Model:\n${model.value}`);
+  if (input.value.system_prompt) parts.push(`System prompt:\n${input.value.system_prompt}`);
+  if (input.value.output_file) parts.push(`Output file:\n${input.value.output_file}`);
+  if (isComplete.value) {
+    parts.push(`Result${props.hasError ? " (Error)" : ""}:\n${resultText.value || "(no output)"}`);
+  }
+  return parts.join("\n\n");
 });
 </script>

@@ -2,17 +2,33 @@
      classes, data-testid, and aria contracts the e2e tests rely on. -->
 <template>
   <div class="tool" :data-testid="isComplete ? 'tool-call-completed' : 'tool-call-running'">
-    <div class="tool-header" @click="isExpanded = !isExpanded">
+    <div
+      class="tool-header"
+      role="button"
+      tabindex="0"
+      :aria-expanded="isExpanded"
+      :aria-label="toggleLabel"
+      @click="isExpanded = !isExpanded"
+      @keydown.enter.prevent="isExpanded = !isExpanded"
+      @keydown.space.prevent="isExpanded = !isExpanded"
+    >
       <div class="tool-summary">
-        <span class="tool-emoji" :class="{ running: isRunning }">📡</span>
+        <span class="tool-emoji" :class="{ running: isRunning }" aria-hidden="true">📡</span>
         <span class="tool-command">{{ summary }}</span>
-        <span v-if="isComplete && hasError" class="tool-error">✗</span>
-        <span v-if="isComplete && !hasError" class="tool-success">✓</span>
+        <span v-if="isComplete && hasError" class="tool-error">
+          <span aria-hidden="true">✗</span><span class="sr-only">failed</span>
+        </span>
+        <span v-if="isComplete && !hasError" class="tool-success">
+          <span aria-hidden="true">✓</span><span class="sr-only">succeeded</span>
+        </span>
       </div>
       <button
+        type="button"
         class="tool-toggle"
-        :aria-label="isExpanded ? 'Collapse' : 'Expand'"
+        tabindex="-1"
+        :aria-label="toggleLabel"
         :aria-expanded="isExpanded"
+        @click.stop="isExpanded = !isExpanded"
       >
         <svg
           width="12"
@@ -22,6 +38,7 @@
           xmlns="http://www.w3.org/2000/svg"
           class="tool-chevron"
           :class="{ 'tool-chevron-expanded': isExpanded }"
+          aria-hidden="true"
         >
           <path
             d="M4.5 3L7.5 6L4.5 9"
@@ -34,7 +51,12 @@
       </button>
     </div>
 
-    <div v-if="isExpanded" class="tool-details">
+    <ToolAccessibleBody
+      :expanded="isExpanded"
+      :label="outputLabel"
+      :plain-text="collapsedPlainText"
+      body-class="tool-details"
+    >
       <div class="tool-section">
         <div class="tool-label">Action:</div>
         <pre class="tool-code">{{ action || "(none)" }}</pre>
@@ -57,7 +79,7 @@
         </div>
         <pre :class="`tool-code ${hasError ? 'error' : ''}`">{{ output }}</pre>
       </div>
-    </div>
+    </ToolAccessibleBody>
   </div>
 </template>
 
@@ -65,6 +87,7 @@
 import { computed } from "vue";
 import type { LLMContent } from "../../../types";
 import { useToolExpanded } from "../../composables/toolDetail";
+import ToolAccessibleBody from "./ToolAccessibleBody.vue";
 
 interface NetworkInput {
   action?: string;
@@ -102,5 +125,20 @@ const summary = computed(() => {
   const summaryParts: string[] = [action.value];
   if (input.value.filter) summaryParts.push(`filter: ${input.value.filter}`);
   return summaryParts.filter(Boolean).join(" ") || "network";
+});
+const outputLabel = computed(() => `Browser network: ${summary.value}`);
+const toggleLabel = computed(() =>
+  isExpanded.value
+    ? `Collapse browser network: ${summary.value}`
+    : `Expand browser network: ${summary.value}`,
+);
+const collapsedPlainText = computed(() => {
+  const parts = [`Action:\n${action.value || "(none)"}`];
+  if (input.value.filter) parts.push(`Filter:\n${input.value.filter}`);
+  if (input.value.limit !== undefined) parts.push(`Limit:\n${input.value.limit}`);
+  if (isComplete.value && output.value) {
+    parts.push(`Output${props.hasError ? " (Error)" : ""}:\n${output.value}`);
+  }
+  return parts.join("\n\n");
 });
 </script>

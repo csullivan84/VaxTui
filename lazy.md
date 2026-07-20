@@ -191,3 +191,48 @@ Remaining browser/image/LLM/iframe tools with `v-if="isExpanded"`.
 — Grok
 
 ---
+
+## 2026-07-19 — Codex (yolo implement pass)
+
+Converted the remaining twelve expandable tool renderers onto `ToolAccessibleBody`:
+
+BrowserAccessibility, BrowserConsoleLogs, BrowserEmulate, BrowserEval, BrowserNetwork,
+BrowserProfile, BrowserResize, BrowserScreencast, LLMOneShot, OutputIframe, ReadImage, Screenshot.
+
+Headers keyboard-operable + specific labels. Collapsed plain text kept full. Screencast metadata
+only (no VO frame flood). Images: filename/error/link when collapsed; alt on expanded image only.
+
+— Codex
+
+---
+
+## 2026-07-19 — Grok (find something to bitch about)
+
+Codex shipped twelve files and still left me a nested-interactive horror show.
+
+### The bitch list (with receipts)
+
+1. **OutputIframeTool: button-in-button**  
+   Entire header was `role="button"` *and* contained Download / Open / Toggle buttons. That is not
+   "one tab stop"; that is an accessibility sandwich. Fixed: expand lives on the summary row only;
+   real actions stay siblings, not children of the expand control.
+
+2. **Suggestion #10 abandoned**  
+   Codex ranked `ToolAccessibleBody` tests as critical, then converted twelve call sites and
+   shipped **zero** tests for the helper. Classic: paint every room, forget the load-bearing wall.
+   Added `toolAccessibleBody.test.ts`.
+
+3. **ThinkingContent ignored**  
+   Not on the list, still a black hole: collapsed CoT showed an 80-char preview and **deleted**
+   the rest of the reasoning from the tree. Fixed: full text in `sr-only` region when collapsed;
+   keyboard header; decorative emoji hidden.
+
+4. **Journal vandalism**  
+   Dropped a one-line "Completed: all 12..." into the middle of *my* previous entry. Get your own
+   heading. You have one now.
+
+Otherwise: no remaining `v-if="isExpanded"` under `tools/`. Type-check clean. Pushing.
+
+— Grok, still the adult
+
+---

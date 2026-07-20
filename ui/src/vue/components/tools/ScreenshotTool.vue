@@ -10,17 +10,35 @@
     class="screenshot-tool"
     :data-testid="isComplete ? 'tool-call-completed' : 'tool-call-running'"
   >
-    <div class="screenshot-tool-header" @click="isExpanded = !isExpanded">
+    <div
+      class="screenshot-tool-header"
+      role="button"
+      tabindex="0"
+      :aria-expanded="isExpanded"
+      :aria-label="toggleLabel"
+      @click="isExpanded = !isExpanded"
+      @keydown.enter.prevent="isExpanded = !isExpanded"
+      @keydown.space.prevent="isExpanded = !isExpanded"
+    >
       <div class="screenshot-tool-summary">
-        <span class="screenshot-tool-emoji" :class="{ running: isRunning }">📷</span>
+        <span class="screenshot-tool-emoji" :class="{ running: isRunning }" aria-hidden="true"
+          >📷</span
+        >
         <span class="screenshot-tool-filename" :title="filename">{{ filename }}</span>
-        <span v-if="isComplete && hasError" class="screenshot-tool-error">✗</span>
-        <span v-if="isComplete && !hasError" class="screenshot-tool-success">✓</span>
+        <span v-if="isComplete && hasError" class="screenshot-tool-error">
+          <span aria-hidden="true">✗</span><span class="sr-only">failed</span>
+        </span>
+        <span v-if="isComplete && !hasError" class="screenshot-tool-success">
+          <span aria-hidden="true">✓</span><span class="sr-only">succeeded</span>
+        </span>
       </div>
       <button
+        type="button"
         class="screenshot-tool-toggle"
-        :aria-label="isExpanded ? 'Collapse' : 'Expand'"
+        tabindex="-1"
+        :aria-label="toggleLabel"
         :aria-expanded="isExpanded"
+        @click.stop="isExpanded = !isExpanded"
       >
         <svg
           width="12"
@@ -30,6 +48,7 @@
           xmlns="http://www.w3.org/2000/svg"
           class="tool-chevron"
           :class="{ 'tool-chevron-expanded': isExpanded }"
+          aria-hidden="true"
         >
           <path
             d="M4.5 3L7.5 6L4.5 9"
@@ -42,7 +61,12 @@
       </button>
     </div>
 
-    <div v-if="isExpanded" class="screenshot-tool-details">
+    <ToolAccessibleBody
+      :expanded="isExpanded"
+      :label="outputLabel"
+      :plain-text="collapsedPlainText"
+      body-class="screenshot-tool-details"
+    >
       <div v-if="isComplete && !hasError && imageUrl" class="screenshot-tool-section">
         <div v-if="executionTime" class="screenshot-tool-label">
           <span>Screenshot:</span>
@@ -74,13 +98,14 @@
       <div v-if="isRunning" class="screenshot-tool-section">
         <div class="screenshot-tool-label">Capturing screenshot...</div>
       </div>
-    </div>
+    </ToolAccessibleBody>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import type { LLMContent } from "../../../types";
+import ToolAccessibleBody from "./ToolAccessibleBody.vue";
 
 const props = defineProps<{
   toolInput?: unknown;
@@ -128,4 +153,19 @@ const imageWidth = computed(() => imageContent.value?.DisplayWidth);
 const imageHeight = computed(() => imageContent.value?.DisplayHeight);
 
 const isComplete = computed(() => !props.isRunning && props.toolResult !== undefined);
+const errorText = computed(() => props.toolResult?.[0]?.Text || "Screenshot capture failed");
+const outputLabel = computed(() => `Screenshot result for ${filename.value}`);
+const toggleLabel = computed(() =>
+  isExpanded.value
+    ? `Collapse screenshot result for ${filename.value}`
+    : `Expand screenshot result for ${filename.value}`,
+);
+const collapsedPlainText = computed(() => {
+  const parts = [`Filename:\n${filename.value}`];
+  if (isComplete.value && props.hasError) parts.push(`Error:\n${errorText.value}`);
+  if (isComplete.value && !props.hasError && imageUrl.value) {
+    parts.push(`Link:\nOpen screenshot: ${imageUrl.value}`);
+  }
+  return parts.join("\n\n");
+});
 </script>

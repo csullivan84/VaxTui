@@ -14,12 +14,31 @@
     class="output-iframe-tool"
     :data-testid="isComplete ? 'tool-call-completed' : 'tool-call-running'"
   >
-    <div class="output-iframe-tool-header" @click="isExpanded = !isExpanded">
-      <div class="output-iframe-tool-summary">
-        <span class="output-iframe-tool-emoji" :class="{ running: isRunning }">✨</span>
+    <!--
+      Expand control is ONLY the summary row — never wrap download/open buttons
+      in role=button (nested interactive controls; Codex's leftover sin).
+    -->
+    <div class="output-iframe-tool-header">
+      <div
+        class="output-iframe-tool-summary"
+        role="button"
+        tabindex="0"
+        :aria-expanded="isExpanded"
+        :aria-label="toggleLabel"
+        @click="isExpanded = !isExpanded"
+        @keydown.enter.prevent="isExpanded = !isExpanded"
+        @keydown.space.prevent="isExpanded = !isExpanded"
+      >
+        <span class="output-iframe-tool-emoji" :class="{ running: isRunning }" aria-hidden="true"
+          >✨</span
+        >
         <span class="output-iframe-tool-title" :title="title">{{ title }}</span>
-        <span v-if="isComplete && hasError" class="output-iframe-tool-error">✗</span>
-        <span v-if="isComplete && !hasError" class="output-iframe-tool-success">✓</span>
+        <span v-if="isComplete && hasError" class="output-iframe-tool-error">
+          <span aria-hidden="true">✗</span><span class="sr-only">failed</span>
+        </span>
+        <span v-if="isComplete && !hasError" class="output-iframe-tool-success">
+          <span aria-hidden="true">✓</span><span class="sr-only">succeeded</span>
+        </span>
       </div>
       <div class="output-iframe-tool-actions">
         <template v-if="isComplete && !hasError && html">
@@ -38,6 +57,7 @@
               stroke-width="2"
               stroke-linecap="round"
               stroke-linejoin="round"
+              aria-hidden="true"
             >
               <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
               <polyline points="7 10 12 15 17 10" />
@@ -59,6 +79,7 @@
               stroke-width="2"
               stroke-linecap="round"
               stroke-linejoin="round"
+              aria-hidden="true"
             >
               <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
               <polyline points="15 3 21 3 21 9" />
@@ -67,8 +88,10 @@
           </button>
         </template>
         <button
+          type="button"
           class="output-iframe-tool-toggle"
-          :aria-label="isExpanded ? 'Collapse' : 'Expand'"
+          tabindex="-1"
+          :aria-label="toggleLabel"
           :aria-expanded="isExpanded"
           @click.stop="isExpanded = !isExpanded"
         >
@@ -80,6 +103,7 @@
             xmlns="http://www.w3.org/2000/svg"
             class="tool-chevron"
             :class="{ 'tool-chevron-expanded': isExpanded }"
+            aria-hidden="true"
           >
             <path
               d="M4.5 3L7.5 6L4.5 9"
@@ -93,7 +117,12 @@
       </div>
     </div>
 
-    <div v-if="isExpanded" class="output-iframe-tool-details">
+    <ToolAccessibleBody
+      :expanded="isExpanded"
+      :label="outputLabel"
+      :plain-text="collapsedPlainText"
+      body-class="output-iframe-tool-details"
+    >
       <div
         v-if="isComplete && !hasError && htmlWithHeightReporter"
         class="output-iframe-tool-section"
@@ -129,7 +158,7 @@
       <div v-if="isRunning" class="output-iframe-tool-section">
         <div class="output-iframe-tool-label">Preparing HTML output...</div>
       </div>
-    </div>
+    </ToolAccessibleBody>
   </div>
 </template>
 
@@ -137,6 +166,7 @@
 import { computed, ref, onMounted, onUnmounted } from "vue";
 import JSZip from "jszip";
 import type { LLMContent } from "../../../types";
+import ToolAccessibleBody from "./ToolAccessibleBody.vue";
 
 interface EmbeddedFile {
   name: string;
@@ -478,4 +508,16 @@ async function handleDownload(e: MouseEvent) {
 
 const isComplete = computed(() => !props.isRunning && props.toolResult !== undefined);
 const downloadLabel = computed(() => (hasMultipleFiles.value ? "Download ZIP" : "Download HTML"));
+const errorText = computed(() => props.toolResult?.[0]?.Text || "Failed to display HTML content");
+const outputLabel = computed(() => `HTML output: ${title.value}`);
+const toggleLabel = computed(() =>
+  isExpanded.value ? `Collapse HTML output: ${title.value}` : `Expand HTML output: ${title.value}`,
+);
+const collapsedPlainText = computed(() => {
+  const parts = [`Title:\n${title.value}`, `Filename:\n${filename.value}`];
+  if (isComplete.value && props.hasError) parts.push(`Error:\n${errorText.value}`);
+  if (isComplete.value && !props.hasError && html.value) parts.push(`HTML:\n${html.value}`);
+  if (props.isRunning) parts.push("Status:\nPreparing HTML output...");
+  return parts.join("\n\n");
+});
 </script>
