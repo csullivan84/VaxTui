@@ -423,6 +423,7 @@ import { api } from "../../services/api";
 import { announceA11y } from "../../services/a11yAnnouncer";
 import { messageStore } from "../../services/messageStore";
 import { plainTextCache } from "../../services/plainTextCache";
+import { currentTurnAssistantPreview } from "./assistantTurnPreview";
 import {
   recordModelError,
   recordModelFirstContent,
@@ -730,28 +731,12 @@ const lastKnownMessageCount = ref<number | null>(null);
 const terminalInjectedText = ref<string | null>(null);
 const terminalAutoFocusId = ref<string | null>(null);
 
-const assistantTurnPreview = computed(() => {
-  for (let i = messages.value.length - 1; i >= 0; i--) {
-    const message = messages.value[i];
-    if (message.type !== "agent") continue;
-    try {
-      const llm =
-        typeof message.llm_data === "string" ? JSON.parse(message.llm_data) : message.llm_data;
-      const text = (llm?.Content || [])
-        .filter((content: LLMContent) => content.Type === 2 && content.Text)
-        .map((content: LLMContent) => content.Text!.trim())
-        .filter(Boolean)
-        .join("\n\n");
-      if (!text) continue;
-      const plainText = plainTextCache.get(message.message_id, text);
-      if (!plainText) continue;
-      return plainText.length > 180 ? `${plainText.slice(0, 177).trimEnd()}…` : plainText;
-    } catch {
-      return "";
-    }
-  }
-  return "";
-});
+// Only the current turn (after the latest user message). Never fall back to
+// an earlier agent reply — that made VO announce the previous turn's text
+// when agent_working flipped false before the new agent message arrived.
+const assistantTurnPreview = computed(() =>
+  currentTurnAssistantPreview(messages.value, (id, text) => plainTextCache.get(id, text)),
+);
 
 // ---- refs to DOM ----
 const messagesContainerRef = ref<HTMLDivElement | null>(null);
