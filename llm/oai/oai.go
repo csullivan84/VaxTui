@@ -201,17 +201,6 @@ var (
 		SupportsImages:     true,
 	}
 
-	FireworksLlama4Maverick = Model{
-		UserName:           "fireworks-llama4-maverick",
-		ModelName:          "accounts/fireworks/models/llama4-maverick-instruct-basic",
-		TextVerbosity:      "",
-		URL:                FireworksURL,
-		APIKeyEnv:          FireworksAPIKeyEnv,
-		IsReasoningModel:   false,
-		UseSimplifiedPatch: false,
-		SupportsImages:     true,
-	}
-
 	TogetherLlama3_3_70B = Model{
 		UserName:           "together-llama3-70b",
 		ModelName:          "meta-llama/Llama-3.3-70B-Instruct-Turbo",
@@ -267,17 +256,6 @@ var (
 		SupportsImages:     false,
 	}
 
-	FireworksDeepseekV3 = Model{
-		UserName:           "fireworks-deepseek-v3",
-		ModelName:          "accounts/fireworks/models/deepseek-v3p2",
-		TextVerbosity:      "",
-		URL:                FireworksURL,
-		APIKeyEnv:          FireworksAPIKeyEnv,
-		IsReasoningModel:   false,
-		UseSimplifiedPatch: false,
-		SupportsImages:     false,
-	}
-
 	// Direct api.deepseek.com (fork / DEEPSEEK_API_KEY). Wire model names
 	// match DeepSeek's public catalog; reasoning_content round-trips via
 	// isDeepSeekBaseURL.
@@ -325,15 +303,15 @@ var (
 		SupportsImages:     false,
 	}
 
-	Qwen36PlusFireworks = Model{
-		UserName:           "qwen3.6-plus-fireworks",
-		ModelName:          "accounts/fireworks/models/qwen3p6-plus",
+	Qwen37PlusFireworks = Model{
+		UserName:           "qwen3.7-plus-fireworks",
+		ModelName:          "accounts/fireworks/models/qwen3p7-plus",
 		TextVerbosity:      "",
 		URL:                FireworksURL,
 		APIKeyEnv:          FireworksAPIKeyEnv,
-		IsReasoningModel:   false,
+		IsReasoningModel:   true,
 		UseSimplifiedPatch: false,
-		SupportsImages:     false,
+		SupportsImages:     true,
 	}
 
 	MoonshotKimiK2 = Model{
@@ -386,9 +364,20 @@ var (
 		TextVerbosity:      "",
 		URL:                FireworksURL,
 		APIKeyEnv:          FireworksAPIKeyEnv,
-		IsReasoningModel:   false,
+		IsReasoningModel:   true,
 		UseSimplifiedPatch: false,
-		SupportsImages:     false,
+		SupportsImages:     true,
+	}
+
+	KimiK27CodeFireworks = Model{
+		UserName:           "kimi-k2.7-code-fireworks",
+		ModelName:          "accounts/fireworks/models/kimi-k2p7-code",
+		TextVerbosity:      "",
+		URL:                FireworksURL,
+		APIKeyEnv:          FireworksAPIKeyEnv,
+		IsReasoningModel:   true,
+		UseSimplifiedPatch: false,
+		SupportsImages:     true,
 	}
 
 	Grok45 = Model{
@@ -659,18 +648,17 @@ var ModelsRegistry = []Model{
 	TogetherQwen3,
 	TogetherMistralSmall,
 	// Fireworks / misc providers
-	FireworksDeepseekV3,
 	DeepseekV4Flash,
 	DeepseekV4Pro,
 	DeepseekV4ProFireworks,
 	DeepseekV4FlashFireworks,
-	FireworksLlama4Maverick,
 	MoonshotKimiK2,
 	MistralMedium,
 	DevstralSmall,
 	GLM52Fireworks,
 	KimiK26Fireworks,
-	Qwen36PlusFireworks,
+	KimiK27CodeFireworks,
+	Qwen37PlusFireworks,
 	GPTOSS120B,
 	GPTOSS20B,
 	LlamaCPP,
@@ -1221,8 +1209,8 @@ func (s *Service) TokenContextWindow() int {
 		return 128000
 	case "deepseek-v4-pro", "deepseek-v4-flash", "accounts/fireworks/models/deepseek-v4-pro", "accounts/fireworks/models/deepseek-v4-flash":
 		return 1048576
-	case "accounts/fireworks/models/qwen3p6-plus":
-		return 128000
+	case "accounts/fireworks/models/qwen3p7-plus", "accounts/fireworks/models/kimi-k2p7-code", "accounts/fireworks/models/kimi-k2p6":
+		return 262144
 	case "gpt-5.1", "gpt-5.1-mini", "gpt-5.1-nano":
 		return 256000
 	default:
