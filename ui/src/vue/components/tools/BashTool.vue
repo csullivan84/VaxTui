@@ -68,11 +68,6 @@
       </button>
     </div>
 
-    <!-- Live announcement of command completion / failure (once per run). -->
-    <div class="sr-only" role="status" aria-live="polite" aria-atomic="true" data-testid="bash-completion-announce">
-      {{ completionAnnounce }}
-    </div>
-
     <!-- Streaming preview — shown below header while running, outside details. -->
     <div v-if="isRunning && streamingOutput && !isExpanded" class="bash-tool-preview">
       <AnsiText ref="previewRef" class-name="bash-tool-preview-code" :text="visibleStreaming" />
@@ -151,6 +146,7 @@ import type { LLMContent } from "../../../types";
 import AnsiText from "./AnsiText.vue";
 import { useToolExpanded, useInToolDetail } from "../../composables/toolDetail";
 import { useScreenReaderMode } from "../../composables/screenReaderMode";
+import { announceToolA11y } from "../../../services/a11yAnnouncer";
 import {
   bashCompletionAnnouncement,
   completionKind,
@@ -194,7 +190,6 @@ const previewExpanded = ref(false);
 const previewRef = ref<InstanceType<typeof AnsiText> | null>(null);
 const expandedStreamRef = ref<InstanceType<typeof AnsiText> | null>(null);
 const inToolDetail = useInToolDetail();
-const completionAnnounce = ref("");
 
 function toggleExpanded() {
   isExpanded.value = !isExpanded.value;
@@ -219,17 +214,15 @@ watch(screenReaderMode, (on) => {
   if (on) isExpanded.value = true;
 });
 
-// Announce completion once when a result arrives.
+// Announce completion once via the app-level live region (not a per-card
+// role=status that would linger in the transcript for Safari VO Shift+Tab).
 watch(
   () => [props.isRunning, props.toolResult] as const,
   ([running, result], prev) => {
     const wasRunning = prev?.[0];
     if (wasRunning && !running && result !== undefined) {
       const kind = completionKind(props.hasError, isCancelled.value);
-      completionAnnounce.value = "";
-      queueMicrotask(() => {
-        completionAnnounce.value = bashCompletionAnnouncement(command.value, kind);
-      });
+      void announceToolA11y("bash", bashCompletionAnnouncement(command.value, kind));
     }
   },
 );

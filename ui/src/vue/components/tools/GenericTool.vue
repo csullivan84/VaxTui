@@ -57,10 +57,6 @@
       </button>
     </div>
 
-    <div class="sr-only" role="status" aria-live="polite" aria-atomic="true">
-      {{ completionAnnounce }}
-    </div>
-
     <ToolAccessibleBody
       :expanded="isExpanded"
       :label="outputLabel"
@@ -92,8 +88,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, watch } from "vue";
 import type { LLMContent } from "../../../types";
+import { announceToolA11y } from "../../../services/a11yAnnouncer";
 import { useToolExpanded } from "../../composables/toolDetail";
 import ToolAccessibleBody from "./ToolAccessibleBody.vue";
 
@@ -107,7 +104,6 @@ const props = defineProps<{
 }>();
 
 const isExpanded = useToolExpanded();
-const completionAnnounce = ref("");
 
 const formatData = (data: unknown): string => {
   if (data === undefined || data === null) return "";
@@ -165,12 +161,10 @@ watch(
   ([running, result], prev) => {
     const wasRunning = prev?.[0];
     if (wasRunning && !running && result !== undefined) {
-      completionAnnounce.value = "";
-      queueMicrotask(() => {
-        completionAnnounce.value = props.hasError
-          ? `Tool failed: ${props.toolName}`
-          : `Tool finished: ${props.toolName}`;
-      });
+      void announceToolA11y(
+        props.toolName,
+        props.hasError ? `Tool failed: ${props.toolName}` : `Tool finished: ${props.toolName}`,
+      );
     }
   },
 );

@@ -90,8 +90,15 @@
       </div>
     </div>
 
-    <!-- Messages area -->
-    <div class="messages-area-wrapper" role="region" aria-label="Conversation transcript">
+    <!-- Messages area. Positioning wrapper is NOT the transcript region —
+         floating TOC/scroll controls sit as siblings so focusing them does
+         not also announce "Conversation transcript region". -->
+    <div class="messages-area-wrapper">
+      <div
+        class="messages-transcript-region"
+        role="region"
+        aria-label="Conversation transcript"
+      >
       <div v-if="showResumeUnread" class="resume-unread-row">
         <button
           type="button"
@@ -245,8 +252,9 @@
           <div ref="bottomSentinelRef" class="messages-bottom-sentinel" aria-hidden="true" />
         </div>
       </div>
+      </div>
 
-      <!-- Floating nav cluster -->
+      <!-- Floating nav cluster: sibling of the transcript region, not a child. -->
       <div v-if="conversationId && messages.length > 0" class="chat-nav-cluster">
         <ConversationTOC
           :messages="messages"

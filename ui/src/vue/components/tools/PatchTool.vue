@@ -125,10 +125,6 @@
       </div>
     </div>
 
-    <div class="sr-only" role="status" aria-live="polite" aria-atomic="true">
-      {{ completionAnnounce }}
-    </div>
-
     <ToolAccessibleBody
       :expanded="isExpanded"
       :label="outputLabel"
@@ -161,6 +157,7 @@
 <script setup lang="ts">
 import { computed, ref, watch, onMounted, onUnmounted } from "vue";
 import type { LLMContent } from "../../../types";
+import { announceToolA11y } from "../../../services/a11yAnnouncer";
 import { useToolExpanded } from "../../composables/toolDetail";
 import ToolAccessibleBody from "./ToolAccessibleBody.vue";
 import type {
@@ -280,7 +277,6 @@ const isExpanded = useToolExpanded();
 if (!props.hasError) {
   isExpanded.value = true;
 }
-const completionAnnounce = ref("");
 const outputLabel = computed(() => `Patch output for \`${filename.value}\``);
 const toggleLabel = computed(() =>
   isExpanded.value
@@ -302,12 +298,10 @@ watch(
   () => [props.isRunning, isComplete.value] as const,
   ([running, complete], prev) => {
     if (prev?.[0] && !running && complete) {
-      completionAnnounce.value = "";
-      queueMicrotask(() => {
-        completionAnnounce.value = props.hasError
-          ? `Patch failed: ${filename.value}`
-          : `Patch applied: ${filename.value}`;
-      });
+      void announceToolA11y(
+        "patch",
+        props.hasError ? `Patch failed: ${filename.value}` : `Patch applied: ${filename.value}`,
+      );
     }
   },
 );
