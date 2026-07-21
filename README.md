@@ -1,5 +1,10 @@
 # Shelley: a coding agent for exe.dev
 
+> **This repository is the [VaxTui](https://github.com/csullivan84/VaxTui) fork** —
+> VoiceOver-first Shelley with a11y hardening and optional native DeepSeek.
+> Upstream lives at [boldsoftware/shelley](https://github.com/boldsoftware/shelley).
+> See [FORK.md](./FORK.md). The binary remains `shelley`.
+
 Shelley is a mobile-friendly, web-based, multi-conversation, multi-modal,
 multi-model, single-user coding agent built for but not exclusive to
 [exe.dev](https://exe.dev/). It does not come with authorization or sandboxing:

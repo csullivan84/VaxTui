@@ -1,16 +1,20 @@
-# shelley-a11y
+# VaxTui
 
-Fork of [boldsoftware/shelley](https://github.com/boldsoftware/shelley) by Christopher Sullivan.
+VoiceOver-first fork of [boldsoftware/shelley](https://github.com/boldsoftware/shelley) by Christopher Sullivan.
 
-**Purpose:** VoiceOver-first / screen-reader-friendly coding agent UI, plus practical BYO keys (including native DeepSeek) for a single-user blind operator.
+**Product name:** VaxTui  
+**Binary:** still `shelley` (upstream-compatible; rename later if needed)
+
+**Purpose:** Screen-reader-friendly coding agent UI, plus practical BYO keys (including native DeepSeek) for a single-user blind operator.
 
 **Upstream:** `upstream` remote → `boldsoftware/shelley`  
-**Origin:** `origin` remote → `csullivan84/shelley-a11y`
+**Origin:** `origin` remote → [`csullivan84/VaxTui`](https://github.com/csullivan84/VaxTui)
 
 ## Fork deltas (high level)
 
 - Native DeepSeek V4 Flash / Pro via `$DEEPSEEK_API_KEY` and `https://api.deepseek.com`
 - VoiceOver status announcements (agent working / idle / stream faults)
+- Tool and transcript a11y (collapsed output stays reachable, live-region hygiene)
 - Journal of agent collaboration: `lazy.md`
 
 ## Run with DeepSeek
@@ -18,10 +22,10 @@ Fork of [boldsoftware/shelley](https://github.com/boldsoftware/shelley) by Chris
 ```bash
 export DEEPSEEK_API_KEY=sk-...
 make build
-./bin/shelley serve -port 8002 -db /tmp/shelley-a11y.db
+./bin/shelley serve -port 8002 -db /tmp/vaxtui.db
 # pick model deepseek-v4-flash
 ```
 
 ## Merge discipline
 
-Prefer small, reviewable commits. Rebase onto upstream `main` when convenient. Do not pretend this is a CLA-bound upstream contribution unless it is deliberately upstreamed.
+Prefer small, reviewable commits. Rebase onto upstream `main` when convenient. Do not pretend this is a CLA-bound upstream contribution unless it is deliberately upstreamed. Upstream PRs should be focused a11y slices without fork-only DeepSeek or personal journal noise.
