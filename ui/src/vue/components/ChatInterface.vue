@@ -11,6 +11,9 @@
       :error="error"
       :tools-completed="toolsCompletedThisTurn"
       :assistant-preview="assistantTurnPreview"
+      :turn-cancelled="turnCancelled"
+      :tool-stats="toolStatsThisTurn"
+      :cancelled-subagents="cancelledSubagentsThisTurn"
     />
     <!-- Header -->
     <div class="header" role="banner" aria-label="Conversation header">
@@ -424,6 +427,8 @@ import { announceA11y } from "../../services/a11yAnnouncer";
 import { messageStore } from "../../services/messageStore";
 import { plainTextCache } from "../../services/plainTextCache";
 import { currentTurnAssistantPreview } from "./assistantTurnPreview";
+import { countTurnToolStats } from "./turnToolStats";
+import type { ToolTurnStats } from "./statusAnnouncer";
 import {
   recordModelError,
   recordModelFirstContent,
@@ -713,6 +718,10 @@ const diffCommentText = ref("");
 const agentWorking = ref(false);
 /** Tools that finished during the turn that just ended (for StatusAnnouncer). */
 const toolsCompletedThisTurn = ref(0);
+const toolStatsThisTurn = ref<ToolTurnStats | null>(null);
+/** True when the latest idle transition was a user cancel (not natural finish). */
+const turnCancelled = ref(false);
+const cancelledSubagentsThisTurn = ref(0);
 const showKeyboardHelp = ref(false);
 /** Highest sequence_id the user has reviewed in the current conversation. */
 const lastReviewedSeq = ref(0);
@@ -1789,11 +1798,17 @@ async function handleCancel() {
   if (!props.conversationId || cancelling.value) return;
   try {
     cancelling.value = true;
-    await api.cancelConversation(props.conversationId);
+    turnCancelled.value = true;
+    toolStatsThisTurn.value = countTurnToolStats(messages.value);
+    toolsCompletedThisTurn.value = toolStatsThisTurn.value.total;
+    const result = await api.cancelConversation(props.conversationId);
+    cancelledSubagentsThisTurn.value = result.cancelled_subagents;
     agentWorking.value = false;
   } catch (err) {
     console.error("Failed to cancel conversation:", err);
     error.value = "Failed to cancel. Please try again.";
+    turnCancelled.value = false;
+    cancelledSubagentsThisTurn.value = 0;
   } finally {
     cancelling.value = false;
   }
@@ -2315,17 +2330,28 @@ watch(agentWorking, (working, wasWorking) => {
     beginModelHealthRequest();
     setFaviconStatus("working");
     toolsCompletedThisTurn.value = 0;
+    toolStatsThisTurn.value = null;
+    turnCancelled.value = false;
+    cancelledSubagentsThisTurn.value = 0;
     return;
   }
   if (wasWorking) {
-    // Count tool messages after the latest user turn.
-    let n = 0;
-    for (let i = messages.value.length - 1; i >= 0; i--) {
-      const m = messages.value[i];
-      if (m.type === "user") break;
-      if (m.type === "tool") n++;
+    // Prefer tool_result stats (success/fail); fall back to type==="tool" count.
+    const stats = countTurnToolStats(messages.value);
+    if (stats.total === 0) {
+      let n = 0;
+      for (let i = messages.value.length - 1; i >= 0; i--) {
+        const m = messages.value[i];
+        if (m.type === "user") break;
+        if (m.type === "tool") n++;
+      }
+      toolsCompletedThisTurn.value = n;
+      toolStatsThisTurn.value =
+        n > 0 ? { total: n, succeeded: n, failed: 0 } : null;
+    } else {
+      toolsCompletedThisTurn.value = stats.total;
+      toolStatsThisTurn.value = stats;
     }
-    toolsCompletedThisTurn.value = n;
     activeModelHealth = null;
   }
 });

@@ -31,8 +31,9 @@ func startSlowTurn(t *testing.T, server *Server, conversationID string) {
 	})
 }
 
-// cancelConversation POSTs to the cancel endpoint for the given conversation.
-func cancelConversation(t *testing.T, server *Server, conversationID string) {
+// cancelConversation POSTs to the cancel endpoint for the given conversation
+// and returns the cancelled_subagents count from the response body.
+func cancelConversation(t *testing.T, server *Server, conversationID string) int {
 	t.Helper()
 	req := httptest.NewRequest("POST", "/api/conversation/"+conversationID+"/cancel", nil)
 	w := httptest.NewRecorder()
@@ -40,6 +41,14 @@ func cancelConversation(t *testing.T, server *Server, conversationID string) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d: %s", w.Code, w.Body.String())
 	}
+	var resp struct {
+		Status              string `json:"status"`
+		CancelledSubagents  int    `json:"cancelled_subagents"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode cancel response: %v body=%s", err, w.Body.String())
+	}
+	return resp.CancelledSubagents
 }
 
 // hasCancelledEndOfTurn reports whether the conversation contains the
@@ -95,7 +104,10 @@ func TestCancelParentCancelsRunningSubagent(t *testing.T) {
 
 	startSlowTurn(t, server, subConv.ConversationID)
 
-	cancelConversation(t, server, parentConv.ConversationID)
+	n := cancelConversation(t, server, parentConv.ConversationID)
+	if n != 1 {
+		t.Errorf("expected cancelled_subagents=1, got %d", n)
+	}
 
 	waitFor(t, 5*time.Second, func() bool {
 		return !server.IsAgentWorking(subConv.ConversationID)

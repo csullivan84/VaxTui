@@ -346,12 +346,26 @@ class ApiService {
     }
   }
 
-  async cancelConversation(conversationId: string): Promise<void> {
+  async cancelConversation(
+    conversationId: string,
+  ): Promise<{ status: string; cancelled_subagents: number }> {
     const response = await fetch(`${this.baseUrl}/conversation/${conversationId}/cancel`, {
       method: "POST",
     });
     if (!response.ok) {
       throw new Error(`Failed to cancel conversation: ${response.statusText}`);
+    }
+    try {
+      const data = (await response.json()) as {
+        status?: string;
+        cancelled_subagents?: number;
+      };
+      return {
+        status: data.status || "cancelled",
+        cancelled_subagents: Number(data.cancelled_subagents) || 0,
+      };
+    } catch {
+      return { status: "cancelled", cancelled_subagents: 0 };
     }
   }
 

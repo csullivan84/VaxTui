@@ -59,9 +59,7 @@ func TestGetGitRoot(t *testing.T) {
 	if err != nil {
 		t.Errorf("unexpected error for git directory: %v", err)
 	}
-	if root != gitDir {
-		t.Errorf("expected root %s, got %s", gitDir, root)
-	}
+	assertSamePath(t, root, gitDir)
 
 	// Test with subdirectory of git directory
 	subDir := filepath.Join(gitDir, "subdir")
@@ -74,9 +72,7 @@ func TestGetGitRoot(t *testing.T) {
 	if err != nil {
 		t.Errorf("unexpected error for git subdirectory: %v", err)
 	}
-	if root != gitDir {
-		t.Errorf("expected root %s, got %s", gitDir, root)
-	}
+	assertSamePath(t, root, gitDir)
 }
 
 // TestParseDiffStat tests the parseDiffStat function
@@ -266,9 +262,7 @@ func TestHandleGitDiffs(t *testing.T) {
 	}
 
 	// Check that git root is correct
-	if response.GitRoot != gitDir {
-		t.Errorf("expected git root %s, got %s", gitDir, response.GitRoot)
-	}
+	assertSamePath(t, response.GitRoot, gitDir)
 
 	// Test with subdirectory of git directory
 	subDir := filepath.Join(gitDir, "subdir")

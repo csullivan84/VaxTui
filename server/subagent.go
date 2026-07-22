@@ -675,8 +675,9 @@ var _ claudetool.SubagentRunner = (*SubagentRunner)(nil)
 // Only actively-working subagents are cancelled: an idle manager may still
 // hold a hydrated loop, and CancelConversation would record a spurious
 // "[Operation cancelled]" end-of-turn message on a turn that already
-// finished.
-func (s *Server) cancelSubagentTree(ctx context.Context, parentID string) {
+// finished. Returns how many subagent conversations were successfully cancelled.
+func (s *Server) cancelSubagentTree(ctx context.Context, parentID string) int {
+	cancelled := 0
 	visited := map[string]bool{parentID: true}
 	queue := []string{parentID}
 	for len(queue) > 0 {
@@ -705,9 +706,11 @@ func (s *Server) cancelSubagentTree(ctx context.Context, parentID string) {
 				s.logger.Error("Failed to cancel subagent conversation", "conversationID", child.ConversationID, "parent", id, "error", err)
 				continue
 			}
+			cancelled++
 			s.logger.Info("Cancelled subagent conversation", "conversationID", child.ConversationID, "parent", id)
 		}
 	}
+	return cancelled
 }
 
 // handleGetSubagents returns the list of subagents for a conversation.

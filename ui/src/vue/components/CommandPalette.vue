@@ -54,6 +54,7 @@
           :placeholder="t('searchPlaceholder')"
           :value="query"
           role="combobox"
+          aria-label="Search commands and conversations"
           aria-autocomplete="list"
           aria-controls="command-palette-results"
           :aria-expanded="isOpen"
@@ -109,6 +110,7 @@
 
       <div class="sr-only" role="status" aria-live="polite" aria-atomic="true">
         {{ resultAnnouncement }}
+        <span v-if="selectionAnnouncement">{{ selectionAnnouncement }}</span>
       </div>
 
       <div class="command-palette-footer">
@@ -773,6 +775,13 @@ const resultAnnouncement = computed(() => {
   if (isSearching.value) return `Searching for ${query.value.trim()}.`;
   const count = displayItems.value.length;
   return `${count} ${count === 1 ? "result" : "results"} for ${query.value.trim()}.`;
+});
+
+/** Spoken when arrow keys move the selected option (focus stays on the input). */
+const selectionAnnouncement = computed(() => {
+  const item = displayItems.value[selectedIndex.value];
+  if (!item) return "";
+  return item.subtitle ? `${item.title}. ${item.subtitle}.` : `${item.title}.`;
 });
 
 // Reset selection when items change.

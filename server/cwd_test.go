@@ -414,9 +414,7 @@ func TestListDirectory(t *testing.T) {
 		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 			t.Fatalf("failed to parse response: %v", err)
 		}
-		if resp.GitWorktreeRoot != mainRepo {
-			t.Errorf("expected git_worktree_root=%q, got %q", mainRepo, resp.GitWorktreeRoot)
-		}
+		assertSamePath(t, resp.GitWorktreeRoot, mainRepo)
 
 		// List the main repo directory - should NOT have git_worktree_root
 		req = httptest.NewRequest("GET", "/api/list-directory?path="+mainRepo, nil)
@@ -430,9 +428,7 @@ func TestListDirectory(t *testing.T) {
 		if resp2.GitWorktreeRoot != "" {
 			t.Errorf("main repo should not have git_worktree_root, got %q", resp2.GitWorktreeRoot)
 		}
-		if resp2.GitRepoRoot != mainRepo {
-			t.Errorf("expected git_repo_root=%q, got %q", mainRepo, resp2.GitRepoRoot)
-		}
+		assertSamePath(t, resp2.GitRepoRoot, mainRepo)
 
 		// Listing a subdirectory inside the worktree should still surface both
 		// roots so the directory picker's quick-jump buttons work from any path.
@@ -447,12 +443,8 @@ func TestListDirectory(t *testing.T) {
 		if err := json.Unmarshal(w.Body.Bytes(), &resp3); err != nil {
 			t.Fatalf("failed to parse response: %v", err)
 		}
-		if resp3.GitRepoRoot != worktreePath {
-			t.Errorf("subdir: expected git_repo_root=%q, got %q", worktreePath, resp3.GitRepoRoot)
-		}
-		if resp3.GitWorktreeRoot != mainRepo {
-			t.Errorf("subdir: expected git_worktree_root=%q, got %q", mainRepo, resp3.GitWorktreeRoot)
-		}
+		assertSamePath(t, resp3.GitRepoRoot, worktreePath)
+		assertSamePath(t, resp3.GitWorktreeRoot, mainRepo)
 	})
 
 	t.Run("git_worktree_head_subject", func(t *testing.T) {
@@ -791,9 +783,7 @@ func TestGitCreateWorktree(t *testing.T) {
 	}
 
 	// Verify it's a sibling of the repo
-	if filepath.Dir(resp.Path) != tmpDir {
-		t.Errorf("worktree should be sibling of repo, got parent %q, expected %q", filepath.Dir(resp.Path), tmpDir)
-	}
+	assertSamePath(t, filepath.Dir(resp.Path), tmpDir)
 
 	// Verify name format: myrepo-YYYY-MM-DD
 	baseName := filepath.Base(resp.Path)

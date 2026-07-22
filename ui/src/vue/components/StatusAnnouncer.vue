@@ -20,7 +20,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, watch } from "vue";
+import { nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { A11Y_ANNOUNCE_EVENT, type A11yAnnouncementDetail } from "../../services/a11yAnnouncer";
 import {
   agentAnnouncement,
@@ -29,6 +29,7 @@ import {
   type Announcement,
   type Politeness,
   type StreamStatus,
+  type ToolTurnStats,
 } from "./statusAnnouncer";
 
 const props = withDefaults(
@@ -40,12 +41,21 @@ const props = withDefaults(
     toolsCompleted?: number;
     /** Plain-text preview of the assistant response that just completed. */
     assistantPreview?: string;
+    /** When true, turn ended via user cancel — do not say "finished". */
+    turnCancelled?: boolean;
+    /** Succeeded/failed tool breakdown for the turn that just ended. */
+    toolStats?: ToolTurnStats | null;
+    /** Working subagents cancelled with the parent turn. */
+    cancelledSubagents?: number;
   }>(),
   {
     streamStatus: "connected",
     error: null,
     toolsCompleted: 0,
     assistantPreview: "",
+    turnCancelled: false,
+    toolStats: null,
+    cancelledSubagents: 0,
   },
 );
 
@@ -104,7 +114,34 @@ function apply(next: Announcement | null) {
 watch(
   () => props.agentWorking,
   (working, wasWorking) => {
-    apply(agentAnnouncement(working, wasWorking, props.toolsCompleted, props.assistantPreview));
+    // On finish, wait a tick so the parent can set tool stats before we speak.
+    if (!working && wasWorking) {
+      void nextTick(() => {
+        apply(
+          agentAnnouncement(
+            working,
+            wasWorking,
+            props.toolsCompleted,
+            props.assistantPreview,
+            props.turnCancelled,
+            props.toolStats,
+            props.cancelledSubagents,
+          ),
+        );
+      });
+      return;
+    }
+    apply(
+      agentAnnouncement(
+        working,
+        wasWorking,
+        props.toolsCompleted,
+        props.assistantPreview,
+        props.turnCancelled,
+        props.toolStats,
+        props.cancelledSubagents,
+      ),
+    );
   },
 );
 

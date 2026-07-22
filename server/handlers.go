@@ -1553,17 +1553,19 @@ func (s *Server) handleCancelConversation(w http.ResponseWriter, r *http.Request
 			return
 		}
 	}
-	s.cancelSubagentTree(ctx, conversationID)
+	cancelledSubagents := s.cancelSubagentTree(ctx, conversationID)
 
+	status := "cancelled"
 	if !exists {
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{"status": "no_active_conversation"})
-		return
+		status = "no_active_conversation"
+	} else {
+		s.logger.Info("Conversation cancelled", "conversationID", conversationID, "cancelledSubagents", cancelledSubagents)
 	}
-
-	s.logger.Info("Conversation cancelled", "conversationID", conversationID)
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{"status": "cancelled"})
+	json.NewEncoder(w).Encode(map[string]any{
+		"status":               status,
+		"cancelled_subagents": cancelledSubagents,
+	})
 }
 
 // handleRetryConversation handles POST /api/conversation/<id>/retry.
