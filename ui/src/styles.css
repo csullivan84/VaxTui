@@ -36,7 +36,14 @@ body {
     -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, Roboto, "Helvetica Neue", Arial,
     sans-serif;
   --font-mono:
-    "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", Consolas, "Courier New", monospace;
+    /* Lead with the ui-monospace generic and the PostScript name
+       SFMono-Regular. The bare "SF Mono" family name can resolve to a
+       bold/heavy face in browsers (SF Mono isn't a normally-installed font; it
+       lives inside Terminal.app), so inline code rendered as "SF Mono" looks
+       heavy on macOS. ui-monospace / SFMono-Regular pick the proper regular
+       weight. */
+    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, "Cascadia Code", "Roboto Mono",
+    Consolas, "Courier New", monospace;
   --primary: #2563eb;
   --primary-dark: #1d4ed8;
   --bg-base: #ffffff;
@@ -1397,6 +1404,12 @@ body {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
+}
+
+/* llm_one_shot image previews sit outside the collapsible .tool-details so
+ * they are visible even when the card is collapsed. */
+.llm-one-shot-images {
+  padding: 0 1rem 0.75rem 1rem;
 }
 
 .tool-label {
@@ -8973,7 +8986,7 @@ kbd {
 /* MessageActionBar styles */
 .message-action-bar-wrapper {
   position: absolute;
-  top: 8px;
+  top: -16px;
   right: 8px;
   display: flex;
   gap: 2px;
@@ -11075,6 +11088,7 @@ kbd {
 
 /* Align the body to the modal padding (the modal-body already pads). */
 .tool-detail-modal .bash-tool-details,
+.tool-detail-modal .llm-one-shot-images,
 .tool-detail-modal .tool-details {
   padding: 0;
   gap: 1rem;
@@ -11590,6 +11604,28 @@ kbd {
 }
 .p-select-overlay.model-picker-panel .model-picker-more-icon.expanded {
   transform: rotate(180deg);
+}
+
+/* Filter/search box at the top of the model overlay. Match the compact
+   status-bar scale and theme tokens; ensure it stays comfortably tappable on
+   mobile. */
+.p-select-overlay.model-picker-panel .p-select-header {
+  padding: 0.5rem;
+  border-bottom: 1px solid var(--border);
+}
+.p-select-overlay.model-picker-panel .p-select-filter {
+  width: 100%;
+  font-size: 0.875rem;
+  /* Extra right padding leaves room for PrimeVue's trailing search icon. */
+  padding: 0.5rem 2rem 0.5rem 0.625rem;
+  color: var(--text-primary);
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+}
+.p-select-overlay.model-picker-panel .p-select-filter:focus {
+  outline: none;
+  border-color: var(--blue-text);
 }
 
 /* =========================================================================
