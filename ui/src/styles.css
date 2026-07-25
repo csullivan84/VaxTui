@@ -434,6 +434,15 @@ body {
 }
 
 /* Header */
+.app-bar-title {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 2rem;
+  letter-spacing: -0.02em;
+}
+
 .header {
   flex: 0 0 auto;
   background: var(--bg-base);
@@ -458,13 +467,9 @@ body {
 }
 
 .header-title {
-  font-family: var(--font-mono);
-  font-size: 1rem;
-  font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  letter-spacing: -0.02em;
   min-width: 0;
 }
 
@@ -523,18 +528,24 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 1rem;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  border-bottom: 1px solid var(--border);
 }
 
 .drawer-header-actions {
   display: flex;
   align-items: center;
   gap: 0.25rem;
+  flex-shrink: 0;
 }
 
 .drawer-title {
-  font-size: 1.25rem;
-  font-weight: 600;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .drawer-body {
@@ -641,6 +652,10 @@ body {
 }
 
 .btn-icon.group-by-active {
+  color: var(--primary);
+}
+
+.btn-icon.search-toggle-active {
   color: var(--primary);
 }
 
@@ -2424,6 +2439,7 @@ body {
 }
 
 .message-textarea {
+  display: block;
   width: 100%;
   box-sizing: border-box;
   min-height: 46px;
@@ -2606,7 +2622,7 @@ body {
   position: absolute;
   bottom: calc(100% + 4px);
   right: 0;
-  background: var(--bg-primary);
+  background: var(--bg-base);
   border: 1px solid var(--border-color);
   border-radius: 8px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
@@ -3495,17 +3511,6 @@ svg {
   border-bottom-right-radius: 0.5rem;
 }
 
-.report-bug-link {
-  font-size: 0.75rem;
-  color: var(--text-secondary);
-  text-decoration: none;
-}
-
-.report-bug-link:hover {
-  color: var(--text-primary);
-  text-decoration: underline;
-}
-
 .overflow-menu-divider {
   height: 1px;
   background: var(--border);
@@ -4008,24 +4013,6 @@ svg {
   gap: 0.5rem;
 }
 
-/* On smaller screens, allow the fields to stack vertically */
-@media (max-width: 600px) {
-  .status-bar-new-conversation {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .status-field {
-    width: 100%;
-    max-width: none;
-  }
-
-  .status-field-label {
-    width: 4rem;
-    text-align: right;
-  }
-}
-
 .status-bar-controls {
   display: flex;
   align-items: center;
@@ -4048,13 +4035,8 @@ svg {
 
 .status-field-model {
   flex: 1 1 auto;
-  min-width: 150px;
-  max-width: 300px;
-}
-
-.status-field-thinking {
-  flex: 0 0 auto;
-  min-width: 140px;
+  min-width: 170px;
+  max-width: 320px;
 }
 
 .status-field-cwd {
@@ -4353,12 +4335,8 @@ svg {
   }
 
   .status-field-model {
-    min-width: 120px;
+    min-width: 140px;
     max-width: none;
-  }
-
-  .status-field-thinking {
-    min-width: 120px;
   }
 
   .status-field-cwd {
@@ -4904,10 +4882,9 @@ svg {
     flex-shrink: 0;
   }
 
-  /* Override column stacking for new-conversation fields when inline */
+  /* Let new-conversation fields share a row when they fit and wrap naturally
+     when the available width is too narrow. */
   .message-controls-status-slot .status-bar-new-conversation {
-    flex-direction: column;
-    align-items: stretch;
     width: 100%;
     gap: 0.375rem;
   }
@@ -6938,6 +6915,39 @@ svg {
   white-space: nowrap;
 }
 
+/* Tag chips shown inline after a custom model's name. */
+.models-cell-tag {
+  display: inline-block;
+  margin-left: 0.375rem;
+  padding: 0.0625rem 0.375rem;
+  border-radius: 9999px;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-size: 0.6875rem;
+  font-weight: 400;
+  vertical-align: middle;
+}
+
+/* Source group subheader: source name, model count, common endpoint. */
+.models-datatable .p-datatable-row-group-header {
+  background: var(--bg-secondary);
+}
+.models-group-name {
+  font-weight: 600;
+  font-size: 0.75rem;
+}
+.models-group-count {
+  margin-left: 0.375rem;
+  color: var(--text-tertiary);
+  font-size: 0.75rem;
+}
+.models-group-endpoint {
+  margin-left: 0.75rem;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  color: var(--text-tertiary);
+}
+
 .models-cell-mono {
   font-family: var(--font-mono);
   font-size: 0.75rem;
@@ -6949,25 +6959,17 @@ svg {
   color: var(--text-tertiary);
 }
 
+/* Per-row endpoint (only when it differs from the group's common endpoint,
+   plus custom models' user-configured endpoints), shown under the model id. */
 .models-cell-endpoint {
-  display: inline-block;
+  display: block;
   font-family: var(--font-mono);
-  font-size: 0.75rem;
-  color: var(--text-secondary);
-  max-width: 16rem;
+  font-size: 0.6875rem;
+  color: var(--text-tertiary);
+  max-width: 20rem;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  vertical-align: bottom;
-}
-
-.models-cell-tags {
-  display: inline-block;
-  max-width: 10rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  vertical-align: bottom;
 }
 
 /* Right-align the images + actions columns and keep them from growing. */
@@ -7065,9 +7067,11 @@ svg {
 }
 
 /* Version modal: chrome comes from the shared Modal (PrimeVue Dialog);
-   these classes only size it and lay out the body/footer content. */
+   these classes only size it and lay out the body/footer content. Sized like
+   .modal-xwide (that class also carries Manage-Models-specific layout, so only
+   the width is borrowed) so most changelog commit subjects fit on one line. */
 .modal.version-modal {
-  max-width: 500px;
+  max-width: 64rem;
 }
 
 .version-modal .modal-body {
@@ -9078,6 +9082,91 @@ kbd {
   text-decoration: underline;
 }
 
+/* Strip under the SubagentTool card header while the subagent is working.
+ * Full-width click target that opens the subagent conversation. */
+.subagent-live {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.25rem 0.75rem;
+  border: none;
+  border-top: 1px solid var(--border-color);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 0.75rem;
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.subagent-live:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.subagent-live-slug {
+  color: var(--link-color);
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.subagent-live:hover .subagent-live-slug {
+  text-decoration: underline;
+}
+
+.subagent-live-activity {
+  font-family: var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1;
+}
+
+/* Live segment attached to a subagent tool pill: its own small chip to
+ * the right of the pill (a button can't nest interactive content). */
+.subagent-pill-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  min-height: 26px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  border: 1px dashed var(--tp-border, var(--border));
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.subagent-pill-live:hover {
+  color: var(--link-color);
+  border-color: var(--link-color);
+}
+
+.subagent-pill-live:focus-visible {
+  outline: 2px solid var(--link-color);
+  outline-offset: 1px;
+}
+
+.subagent-pill-activity {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 600px) {
+  .subagent-pill-activity {
+    max-width: 110px;
+  }
+}
+
 /* ConfigFieldInput styles */
 .config-field-description {
   font-size: 0.75rem;
@@ -9109,19 +9198,25 @@ kbd {
   color: inherit;
 }
 
-.drawer-working-indicator {
-  width: 8px;
-  height: 8px;
+/* "Working" mark shared by the drawer rows, subagent badges, and the live
+   subagent strips/chips: a subtle, non-animated hollow ring in the current
+   text color. Tracks the foreground so it stays legible on both the default
+   and selected (var(--primary)) backgrounds without re-using the same hue as
+   the row fill. */
+.working-indicator {
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
-  /* Subtle, non-animated "agent is working" mark: a hollow ring in the
-     row's current text color. Tracks the foreground so it stays
-     legible on both the default and selected (var(--primary)) row
-     backgrounds without re-using the same hue as the row fill. */
   border: 1.5px solid currentColor;
   background-color: transparent;
   box-sizing: border-box;
   opacity: 0.75;
   flex-shrink: 0;
+}
+
+.drawer-working-indicator {
+  width: 8px;
+  height: 8px;
 }
 
 .drawer-subagent-count-badge-text {
@@ -9236,17 +9331,6 @@ kbd {
   font-size: 0.875rem;
   padding-left: 0.5rem;
   border-left: 2px solid var(--border-color);
-}
-
-.drawer-subagent-working-indicator {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  border: 1.5px solid currentColor;
-  background-color: transparent;
-  box-sizing: border-box;
-  opacity: 0.75;
-  flex-shrink: 0;
 }
 
 .drawer-subagent-date {
@@ -10027,7 +10111,7 @@ kbd {
 .distillation-edit-button {
   border: 1px solid var(--border-color);
   border-radius: 999px;
-  background: var(--bg-primary);
+  background: var(--bg-base);
   color: var(--blue-text);
   cursor: pointer;
   font-size: 0.75rem;
@@ -10469,6 +10553,67 @@ kbd {
   flex-shrink: 0;
 }
 
+/* Fuzzy file finder: the directory chip lives in the modal title-right slot
+   and re-roots the search when clicked. Reuses .grp-* for the list body. */
+.ff-dir-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  max-width: 22rem;
+  padding: 0.25rem 0.6rem;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  cursor: pointer;
+  font-size: 0.8rem;
+  transition:
+    border-color 0.12s ease,
+    background 0.12s ease,
+    color 0.12s ease;
+}
+.ff-dir-btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+  border-color: var(--primary);
+}
+.ff-dir-btn:active {
+  transform: translateY(0.5px);
+}
+.ff-dir-btn:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
+.ff-dir-btn .grp-icon {
+  width: 0.9rem;
+  height: 0.9rem;
+  color: var(--primary);
+  flex-shrink: 0;
+}
+.ff-dir-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+/* Mobile: keep the finder title compact so the directory chip fits on the
+   same row instead of wrapping the title across three lines. */
+@media (max-width: 768px) {
+  .ff-modal .modal-title {
+    font-size: 0.95rem;
+    white-space: nowrap;
+  }
+  .ff-modal .modal-title-right {
+    margin-right: 0.5rem;
+    min-width: 0;
+  }
+  .ff-dir-btn {
+    max-width: 48vw;
+  }
+}
+
 /* Mobile: use the full screen, slim header, and stack branch/worktree
    onto a second line so the repo path always gets full width. */
 @media (max-width: 768px) {
@@ -10697,7 +10842,7 @@ kbd {
 
 .citation-ref:hover {
   background: var(--link-color);
-  color: var(--bg-primary, #fff);
+  color: var(--bg-base, #fff);
 }
 
 .citation-sources {
@@ -10930,6 +11075,8 @@ kbd {
 
 .tool-pill-item {
   display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .tool-pill {
@@ -11513,33 +11660,49 @@ kbd {
 }
 
 /* =========================================================================
-   Status-bar PrimeVue Selects — the Model and reasoning-Effort pickers
-   (ModelPicker.vue / ThinkingLevelPicker.vue), both rebuilt on PrimeVue
-   <Select>. PrimeVue owns open/close, outside-click, Escape, viewport-aware
-   flip placement AND all of the trigger/label/overlay/option theming: the
-   components pass size="small" plus a :dt token map (statusPickerDt.ts) that
-   feeds our CSS vars into PrimeVue's own token system. The only thing left to
-   hand-write is the overlay's content-width behaviour and ModelPicker's
-   bespoke option markup below. Scoped to the picker classes so nothing leaks
-   to other PrimeVue Selects (e.g. the overflow-menu language picker).
+   Status-bar model picker (ModelPicker.vue) — one PrimeVue <Select> that
+   carries both the model choice and the reasoning-effort pill row. PrimeVue
+   owns open/close, outside-click, Escape, viewport-aware flip placement AND
+   all of the trigger/label/overlay/option theming: the component passes
+   size="small" plus a :dt token map (statusPickerDt.ts) that feeds our CSS
+   vars into PrimeVue's own token system. The only things hand-written here
+   are the overlay's content-width behaviour and the bespoke option/footer
+   markup. Scoped to the picker classes so nothing leaks to other PrimeVue
+   Selects (e.g. the overflow-menu language picker).
    ========================================================================= */
 
+/* Trigger label: model name + quiet "· effort" suffix. */
+.model-picker .model-picker-value {
+  display: flex;
+  align-items: baseline;
+  gap: 0.375rem;
+  min-width: 0;
+}
+.model-picker .model-picker-value-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.model-picker .model-picker-value-effort {
+  flex-shrink: 0;
+  color: var(--text-secondary);
+}
+
 /* Let the overlay grow to its widest option (PrimeVue only guarantees
-   min-width:100% of the trigger) so labels like "minimal"/"medium" and long
-   model ids aren't clipped, while staying within the viewport. Applied to both
-   pickers' panels. */
-.p-select-overlay.thinking-level-picker-panel,
+   min-width:100% of the trigger) so long model names aren't clipped, while
+   staying within the viewport. */
 .p-select-overlay.model-picker-panel {
   width: max-content;
-  max-width: min(20rem, 90vw);
+  min-width: 16rem;
+  max-width: min(22rem, 90vw);
   /* size="small" only shrinks the trigger label; PrimeVue has no overlay
      font-size token, so match the compact status-bar scale here (options
      inherit). */
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
 }
 
-/* ModelPicker option markup: name + source sub-label + "not ready" badge, and
-   the #footer "Add / Remove Models..." action. */
+/* Option markup: name (+ source sub-label only in multi-source installs),
+   a check mark on the current selection, and a "not ready" badge. */
 .p-select-overlay.model-picker-panel .model-picker-option-content {
   flex: 1;
   display: flex;
@@ -11553,7 +11716,7 @@ kbd {
   white-space: nowrap;
 }
 .p-select-overlay.model-picker-panel .model-picker-option-source {
-  font-size: 0.75rem;
+  font-size: 0.6875rem;
   color: var(--text-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -11561,42 +11724,40 @@ kbd {
 }
 .p-select-overlay.model-picker-panel .model-picker-option-badge {
   flex: 0 0 auto;
-  font-size: 0.75rem;
+  font-size: 0.6875rem;
   color: var(--text-secondary);
   background: var(--bg-base);
   padding: 0.125rem 0.375rem;
   border-radius: 0.25rem;
 }
+.p-select-overlay.model-picker-panel .model-picker-option-check {
+  flex: 0 0 auto;
+  color: var(--blue-text);
+  margin-left: 0.5rem;
+}
+
 .p-select-overlay.model-picker-panel .model-picker-divider {
   height: 1px;
   background: var(--border);
-  margin: 0.25rem 0;
 }
-.p-select-overlay.model-picker-panel .model-picker-manage {
+
+/* "All models (N)" toggle: a quiet list-end row, not a call to action. */
+.p-select-overlay.model-picker-panel .model-picker-more {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.375rem;
   width: 100%;
-  padding: 0.5rem 0.75rem;
+  padding: 0.375rem 0.75rem;
   border: none;
   background: var(--bg-secondary);
-  color: var(--blue-text);
-  font-size: 0.875rem;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
   text-align: left;
   cursor: pointer;
 }
-.p-select-overlay.model-picker-panel .model-picker-manage:hover:not(:disabled) {
+.p-select-overlay.model-picker-panel .model-picker-more:hover {
   background: var(--bg-tertiary);
-}
-.p-select-overlay.model-picker-panel .model-picker-manage svg {
-  flex-shrink: 0;
-}
-.p-select-overlay.model-picker-panel .model-picker-manage:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
-.p-select-overlay.model-picker-panel .model-picker-refresh-icon.spinning {
-  animation: spin 1s linear infinite;
+  color: var(--text-primary);
 }
 .p-select-overlay.model-picker-panel .model-picker-more-icon {
   flex-shrink: 0;
@@ -11604,6 +11765,87 @@ kbd {
 }
 .p-select-overlay.model-picker-panel .model-picker-more-icon.expanded {
   transform: rotate(180deg);
+}
+
+/* Inline reasoning-effort row: label + pill radiogroup. Selecting a pill
+   keeps the popover open (it's a secondary adjustment, not a commit). */
+.p-select-overlay.model-picker-panel .model-picker-effort {
+  padding: 0.5rem 0.75rem;
+  background: var(--bg-secondary);
+}
+.p-select-overlay.model-picker-panel .model-picker-effort-label {
+  display: block;
+  font-size: 0.6875rem;
+  color: var(--text-secondary);
+  margin-bottom: 0.375rem;
+}
+.p-select-overlay.model-picker-panel .model-picker-effort-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+.p-select-overlay.model-picker-panel .model-picker-effort-pill {
+  padding: 0.1875rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 9999px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 0.6875rem;
+  line-height: 1.2;
+  cursor: pointer;
+  transition:
+    color 0.12s ease,
+    border-color 0.12s ease,
+    background 0.12s ease;
+}
+.p-select-overlay.model-picker-panel .model-picker-effort-pill:hover {
+  color: var(--text-primary);
+  border-color: var(--text-secondary);
+}
+.p-select-overlay.model-picker-panel .model-picker-effort-pill.active {
+  color: var(--blue-text);
+  border-color: var(--blue-text);
+  background: color-mix(in srgb, var(--blue-text) 10%, transparent);
+}
+
+/* Footer: "Manage models…" text action + icon-only refresh. */
+.p-select-overlay.model-picker-panel .model-picker-footer-row {
+  display: flex;
+  align-items: stretch;
+  background: var(--bg-secondary);
+}
+.p-select-overlay.model-picker-panel .model-picker-manage {
+  flex: 1;
+  padding: 0.5rem 0.75rem;
+  border: none;
+  background: transparent;
+  color: var(--blue-text);
+  font-size: 0.75rem;
+  text-align: left;
+  cursor: pointer;
+}
+.p-select-overlay.model-picker-panel .model-picker-manage:hover {
+  background: var(--bg-tertiary);
+}
+.p-select-overlay.model-picker-panel .model-picker-refresh {
+  display: flex;
+  align-items: center;
+  padding: 0 0.75rem;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.p-select-overlay.model-picker-panel .model-picker-refresh:hover:not(:disabled) {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+.p-select-overlay.model-picker-panel .model-picker-refresh:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.p-select-overlay.model-picker-panel .model-picker-refresh-icon.spinning {
+  animation: spin 1s linear infinite;
 }
 
 /* Filter/search box at the top of the model overlay. Match the compact
@@ -11717,5 +11959,158 @@ kbd {
 @media (max-width: 520px) {
   .reasoning-map-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+/* Performance HUD (performance-hud feature flag) */
+.perf-hud {
+  position: fixed;
+  bottom: 8px;
+  left: 8px;
+  z-index: 10000;
+  min-width: 240px;
+  max-width: 340px;
+  max-height: 60vh;
+  overflow-y: auto;
+  background: rgba(15, 17, 21, 0.92);
+  color: #d0d6e0;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 6px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10.5px;
+  line-height: 1.35;
+  pointer-events: auto;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.4);
+}
+
+.perf-hud.collapsed {
+  min-width: 0;
+}
+
+.perf-hud-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 8px;
+  cursor: pointer;
+  user-select: none;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  position: sticky;
+  top: 0;
+  background: rgba(15, 17, 21, 0.97);
+}
+
+.perf-hud.collapsed .perf-hud-header {
+  border-bottom: none;
+}
+
+.perf-hud-title {
+  font-weight: 700;
+  color: #7dd3fc;
+}
+
+.perf-hud-mini {
+  color: #9aa3b2;
+}
+
+.perf-hud-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 4px;
+}
+
+.perf-hud-btn {
+  background: rgba(255, 255, 255, 0.08);
+  color: inherit;
+  border: none;
+  border-radius: 3px;
+  font: inherit;
+  padding: 0 5px;
+  cursor: pointer;
+}
+
+.perf-hud-btn:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.perf-hud-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.perf-hud-table th,
+.perf-hud-table td {
+  padding: 1px 8px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.perf-hud-table th {
+  color: #9aa3b2;
+  font-weight: 400;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.perf-hud-name {
+  text-align: left !important;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.perf-hud-hot td {
+  color: #fbbf24;
+}
+
+.perf-hud-empty {
+  text-align: center !important;
+  color: #9aa3b2;
+  padding: 8px !important;
+}
+
+.perf-hud-section {
+  padding: 4px 8px 1px;
+  color: #fbbf24;
+  font-weight: 700;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.perf-hud-section-hint {
+  color: #6b7280;
+  font-weight: 400;
+  margin-left: 4px;
+}
+
+.perf-hud-longtask td {
+  text-align: left;
+}
+
+.perf-hud-longtask-when {
+  color: #6b7280;
+}
+
+.perf-hud-longtask-dur {
+  color: #fbbf24;
+}
+
+.perf-hud-longtask-suspects {
+  max-width: 200px;
+  white-space: normal !important;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  color: #d0d6e0;
+}
+
+.perf-hud-footer {
+  padding: 2px 8px 4px;
+  color: #6b7280;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+@media (max-width: 768px) {
+  .perf-hud {
+    max-width: 60vw;
+    max-height: 40vh;
+    font-size: 10px;
   }
 }

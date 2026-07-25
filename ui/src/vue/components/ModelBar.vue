@@ -16,6 +16,7 @@
 
 <script setup lang="ts">
 import { computed } from "vue";
+import { prettyModelLabels } from "../../utils/modelNames";
 import type { Model } from "../../types";
 import { modelHealthText } from "../../services/modelHealth";
 
@@ -39,12 +40,14 @@ const props = withDefaults(
 // first, then tolerate the dot/dash spelling difference so both the display
 // name and the reasoning default resolve.
 const norm = (s: string) => s.replace(/\./g, "-");
+const labels = computed(() => prettyModelLabels(props.models));
 function resolveDisplayName(want: string | null | undefined): string | null | undefined {
   if (!want) return want;
   const obj =
     props.models.find((m) => m.id === want) ||
     props.models.find((m) => norm(m.id) === norm(want));
-  return obj?.display_name || want;
+  if (!obj) return want;
+  return labels.value.get(obj.id) || want;
 }
 
 const modelObj = computed(() => {
@@ -61,7 +64,7 @@ const modelObj = computed(() => {
 // model's display name.
 const isMixed = computed(() => props.modelsUsed.length > 1);
 const displayName = computed(() =>
-  isMixed.value ? "Mixed" : modelObj.value?.display_name || props.model,
+  isMixed.value ? "Mixed" : resolveDisplayName(props.model),
 );
 const modelTitle = computed(() =>
   isMixed.value ? props.modelsUsed.map((m) => resolveDisplayName(m)).join(" \u2192 ") : undefined,

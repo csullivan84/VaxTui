@@ -8,7 +8,7 @@
 
     - <Popover>     the dropdown surface (dismiss-on-outside-click + Esc + focus
                     trap come for free, so we delete the manual handlers)
-    - <SelectButton> the theme / notifications / markdown segmented toggles
+    - <SelectButton> the theme / notifications / screen-reader segmented toggles
     - <Select>      the language picker
 
   The e2e DOM/ARIA contract is preserved so the shared Playwright specs keep
@@ -19,10 +19,10 @@
   See e2e/agents-md-vim.spec.ts and e2e/diff-viewer-find.spec.ts.
 
   State the menu reads/writes lives in shared composables/services
-  (markdownMode, theme, notifications), so this component owns it directly
-  instead of taking a dozen props. Conversation-scoped actions (diffs, git
-  graph, archive, export, …) are surfaced as events for ChatInterface to wire
-  to its existing handlers.
+  (theme, notifications, screenReaderMode), so this component owns it directly
+  instead of taking a dozen props. Markdown mode lives in the command palette.
+  Conversation-scoped actions (diffs, git graph, archive, export, …) are
+  surfaced as events for ChatInterface to wire to its existing handlers.
 -->
 <template>
   <div class="chat-overflow-menu-wrapper">
@@ -139,6 +139,10 @@
         <i class="pi pi-pencil chat-menu-icon" aria-hidden="true" />
         {{ t("editUserAgentsMd") }}
       </button>
+      <button class="overflow-menu-item" @click="onEditFile">
+        <i class="pi pi-file-edit chat-menu-icon" aria-hidden="true" />
+        {{ t("editFile") }}
+      </button>
 
       <div class="overflow-menu-divider" />
       <button class="overflow-menu-item" @click="onCheckVersion">
@@ -188,23 +192,8 @@
         </div>
       </template>
 
-      <!-- Markdown rendering: Off / Agent / All -->
-      <div class="overflow-menu-divider" />
-      <div class="overflow-menu-control">
-        <div class="md-toggle-label">{{ t("markdown") }}</div>
-        <SelectButton
-          v-model="markdown"
-          :options="markdownOptions"
-          option-label="label"
-          option-value="value"
-          data-key="value"
-          :allow-empty="false"
-          :aria-label="t('markdown')"
-          @update:model-value="onMarkdownChange"
-        />
-      </div>
-
       <!-- Screen reader mode: keep tool/terminal output expanded & in the a11y tree -->
+      <div class="overflow-menu-divider" />
       <div class="overflow-menu-control">
         <div class="md-toggle-label">Screen reader</div>
         <SelectButton
@@ -220,21 +209,10 @@
         />
       </div>
 
-      <!-- Language + report-a-bug link -->
+      <!-- Language -->
       <div class="overflow-menu-divider" />
       <div class="overflow-menu-control">
-        <div class="md-toggle-label">
-          {{ t("language") }}
-          <a
-            :href="reportBugHref"
-            target="_blank"
-            rel="noopener noreferrer"
-            class="report-bug-link"
-            @click.stop
-          >
-            [{{ t("reportBug") }}]
-          </a>
-        </div>
+        <div class="md-toggle-label">{{ t("language") }}</div>
         <Select
           v-model="lang"
           :options="languageOptions"
@@ -268,7 +246,6 @@ import Select from "primevue/select";
 import type { Link } from "../../types";
 import type { Locale } from "../../i18n/types";
 import { useI18n } from "../composables/i18n";
-import { useMarkdownMode, type MarkdownMode } from "../composables/markdownMode";
 import { useScreenReaderMode } from "../composables/screenReaderMode";
 import { type ThemeMode, getStoredTheme, setStoredTheme, applyTheme } from "../../services/theme";
 import {
@@ -295,11 +272,11 @@ const emit = defineEmits<{
   (e: "archive"): void;
   (e: "export"): void;
   (e: "edit-agents-md"): void;
+  (e: "edit-file"): void;
   (e: "check-version"): void;
 }>();
 
 const { t, locale, setLocale } = useI18n();
-const { markdownMode, setMarkdownMode } = useMarkdownMode();
 const { screenReaderMode, setScreenReaderMode } = useScreenReaderMode();
 
 const popoverRef = ref<InstanceType<typeof Popover> | null>(null);
@@ -321,6 +298,7 @@ const onTerminal = () => (emit("open-terminal"), hide());
 const onArchive = () => (emit("archive"), hide());
 const onExport = () => (emit("export"), hide());
 const onEditAgentsMd = () => (emit("edit-agents-md"), hide());
+const onEditFile = () => (emit("edit-file"), hide());
 const onCheckVersion = () => (emit("check-version"), hide());
 function onExternalLink(url: string) {
   emit("open-external-link", url);
@@ -368,18 +346,6 @@ async function onNotifChange(next: boolean) {
   }
 }
 
-// ---- Markdown rendering (Off / Agent / All) ----
-const markdown = ref<MarkdownMode>(markdownMode.value);
-const markdownOptions = computed(() => [
-  { value: "off" as MarkdownMode, label: t("off") },
-  { value: "agent" as MarkdownMode, label: t("agent") },
-  { value: "all" as MarkdownMode, label: t("all") },
-]);
-function onMarkdownChange(mode: MarkdownMode) {
-  markdown.value = mode;
-  setMarkdownMode(mode);
-}
-
 // ---- Screen reader mode (Off / On) — expands tool output automatically ----
 // Labels spell out the concrete value (AGENTS: never surface bare "default").
 const srMode = ref<boolean>(screenReaderMode.value);
@@ -421,10 +387,4 @@ function onLangChange(l: Locale) {
   lang.value = l;
   setLocale(l);
 }
-
-const reportBugHref = `https://github.com/boldsoftware/shelley/issues/new?labels=translation&title=${encodeURIComponent(
-  "Translation issue: ",
-)}&body=${encodeURIComponent(
-  "**Language:** \n**Where in the UI:** \n**Current text:** \n**Suggested text:** \n",
-)}`;
 </script>

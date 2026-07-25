@@ -18,10 +18,6 @@ export const zhCN: TranslationKeys = {
   archiveConversation: "归档对话",
   exportConversation: "导出对话",
   checkForNewVersion: "检查新版本",
-  markdown: "Markdown",
-  off: "关闭",
-  agent: "代理",
-  all: "全部",
 
   // Theme
   system: "跟随系统",
@@ -100,6 +96,7 @@ export const zhCN: TranslationKeys = {
   duplicateName: "已存在同名对话",
   agentIsWorking: "代理正在工作...",
   subagentIsWorking: "子代理正在工作...",
+  running: "运行中",
   hideSubagents: "隐藏子代理",
   showSubagents: "显示子代理",
   groupConversations: "对话分组",
@@ -131,6 +128,15 @@ export const zhCN: TranslationKeys = {
   addModel: "添加模型",
   refreshModels: "刷新",
   refreshingModels: "刷新中...",
+  searchModels: "搜索模型",
+  noModelsFound: "未找到模型",
+  notReadyBadge: "未就绪",
+  showAllModels: "全部模型",
+  showFewerModels: "收起模型",
+  manageModelsAction: "管理模型…",
+  effortLabel: "思考强度",
+  effortAuto: "自动",
+  customModelsGroup: "自定义模型",
   editModel: "编辑模型",
   loadingModels: "加载模型中...",
   providerApiFormat: "提供商 / API 格式",
@@ -152,7 +158,6 @@ export const zhCN: TranslationKeys = {
   columnName: "名称",
   columnModelId: "模型 ID",
   columnProvider: "API 形式",
-  columnSource: "来源",
   columnActions: "操作",
   columnImages: "图片",
   imageSupportAutoShort: "自动",
@@ -238,20 +243,19 @@ export const zhCN: TranslationKeys = {
   noModelsConfiguredHint: "未配置 AI 模型。按 Ctrl+K 或 ⌘+K 添加模型。",
 
   // Status Bar
-  modelLabel: "模型：",
-  thinkingLabel: "思考：",
   dirLabel: "目录：",
 
   // Sidebar buttons
   editUserAgentsMd: "编辑用户 AGENTS.md",
+  editFile: "编辑文件…",
 
   openConversations: "打开对话",
   expandSidebar: "展开侧边栏",
 
   // Language
   language: "语言",
+  off: "关闭",
   switchLanguage: "切换语言",
-  reportBug: "报告错误",
   english: "English",
   japanese: "日本語",
   french: "Français",

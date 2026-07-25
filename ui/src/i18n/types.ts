@@ -18,10 +18,6 @@ export interface TranslationKeys {
   archiveConversation: string;
   exportConversation: string;
   checkForNewVersion: string;
-  markdown: string;
-  off: string;
-  agent: string;
-  all: string;
 
   // Theme
   system: string;
@@ -100,6 +96,7 @@ export interface TranslationKeys {
   duplicateName: string;
   agentIsWorking: string;
   subagentIsWorking: string;
+  running: string;
   hideSubagents: string;
   showSubagents: string;
   groupConversations: string;
@@ -131,6 +128,15 @@ export interface TranslationKeys {
   addModel: string;
   refreshModels: string;
   refreshingModels: string;
+  searchModels: string;
+  noModelsFound: string;
+  notReadyBadge: string;
+  showAllModels: string;
+  showFewerModels: string;
+  manageModelsAction: string;
+  effortLabel: string;
+  effortAuto: string;
+  customModelsGroup: string;
   editModel: string;
   loadingModels: string;
   providerApiFormat: string;
@@ -154,7 +160,6 @@ export interface TranslationKeys {
   columnName: string;
   columnModelId: string;
   columnProvider: string;
-  columnSource: string;
   columnActions: string;
   columnImages: string;
   imageSupportAutoShort: string;
@@ -233,12 +238,11 @@ export interface TranslationKeys {
   noModelsConfiguredHint: string;
 
   // Status Bar
-  modelLabel: string;
-  thinkingLabel: string;
   dirLabel: string;
 
   // AGENTS.md editor
   editUserAgentsMd: string;
+  editFile: string;
 
   // Sidebar buttons
   openConversations: string;
@@ -246,8 +250,8 @@ export interface TranslationKeys {
 
   // Language
   language: string;
+  off: string;
   switchLanguage: string;
-  reportBug: string;
   english: string;
   japanese: string;
   french: string;

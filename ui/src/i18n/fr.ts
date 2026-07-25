@@ -19,10 +19,6 @@ export const fr: TranslationKeys = {
   archiveConversation: "Archiver la conversation",
   exportConversation: "Exporter la conversation",
   checkForNewVersion: "Vérifier les mises à jour",
-  markdown: "Markdown",
-  off: "Désactivé",
-  agent: "Agent",
-  all: "Tout",
 
   // Theme
   system: "Système",
@@ -102,6 +98,7 @@ export const fr: TranslationKeys = {
   duplicateName: "Une conversation portant ce nom existe déjà",
   agentIsWorking: "L'agent travaille...",
   subagentIsWorking: "Le sous-agent travaille...",
+  running: "en cours",
   hideSubagents: "Masquer les sous-agents",
   showSubagents: "Afficher les sous-agents",
   groupConversations: "Grouper les conversations",
@@ -133,6 +130,15 @@ export const fr: TranslationKeys = {
   addModel: "Ajouter un modèle",
   refreshModels: "Actualiser",
   refreshingModels: "Actualisation...",
+  searchModels: "Rechercher des modèles",
+  noModelsFound: "Aucun modèle trouvé",
+  notReadyBadge: "pas prêt",
+  showAllModels: "Tous les modèles",
+  showFewerModels: "Moins de modèles",
+  manageModelsAction: "Gérer les modèles…",
+  effortLabel: "Effort de raisonnement",
+  effortAuto: "auto",
+  customModelsGroup: "Modèles personnalisés",
   editModel: "Modifier le modèle",
   loadingModels: "Chargement des modèles...",
   providerApiFormat: "Fournisseur / Format API",
@@ -155,7 +161,6 @@ export const fr: TranslationKeys = {
   columnName: "Nom",
   columnModelId: "ID du modèle",
   columnProvider: "Forme d'API",
-  columnSource: "Source",
   columnActions: "Actions",
   columnImages: "Images",
   imageSupportAutoShort: "auto",
@@ -243,20 +248,19 @@ export const fr: TranslationKeys = {
     "Aucun modèle IA configuré. Appuyez sur Ctrl+K ou ⌘+K pour ajouter un modèle.",
 
   // Status Bar
-  modelLabel: "Modèle :",
-  thinkingLabel: "Effort :",
   dirLabel: "Rép. :",
 
   // Sidebar buttons
   editUserAgentsMd: "Modifier AGENTS.md utilisateur",
+  editFile: "Modifier un fichier…",
 
   openConversations: "Ouvrir les conversations",
   expandSidebar: "Développer la barre latérale",
 
   // Language
   language: "Langue",
+  off: "Désactivé",
   switchLanguage: "Changer de langue",
-  reportBug: "Signaler un bug",
   english: "English",
   japanese: "日本語",
   french: "Français",

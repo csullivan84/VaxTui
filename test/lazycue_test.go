@@ -45,9 +45,35 @@ import (
 var app *lazycue.Harness
 
 func TestMain(m *testing.M) {
+	// Resolve the LazyCue cache dir relative to this package before leaving
+	// it for a temp working directory below.
+	pkgDir, err := os.Getwd()
+	if err != nil {
+		panic(err)
+	}
+	cacheDir := filepath.Join(pkgDir, "..", "ui", "lazycue", ".lazycue")
+
+	// Run from an empty temp dir, not the package dir. Conversations created
+	// with an empty cwd fall back to os.Getwd(), and system-prompt generation
+	// then walks the surrounding git repo (guidance-file + skills walks).
+	// Inside a large monorepo checkout that walk is capped at 2s but still
+	// costs hundreds of ms per conversation and floods go test's testlog,
+	// slowing every LazyCue test for no coverage benefit.
+	tmp, err := os.MkdirTemp("", "shelley-test-cwd-")
+	if err != nil {
+		panic(err)
+	}
+	if err := os.Chdir(tmp); err != nil {
+		panic(err)
+	}
+	// Note: os.Exit below skips deferred calls; remove the (empty) dir
+	// explicitly on each exit path.
+
 	if os.Getenv("LAZYCUE_INTEGRATION") == "" {
 		// Tests below all skip; run them so `go test` reports them as skipped.
-		os.Exit(m.Run())
+		code := m.Run()
+		os.RemoveAll(tmp)
+		os.Exit(code)
 	}
 
 	ts, cleanup := startPredictableServer()
@@ -63,7 +89,7 @@ func TestMain(m *testing.M) {
 
 	app = lazycue.New(lazycue.Options{
 		BaseURL:     ts.URL,
-		CacheDir:    filepath.Join("..", "ui", "lazycue", ".lazycue"),
+		CacheDir:    cacheDir,
 		Verbose:     true,
 		ArtifactDir: os.Getenv("LAZYCUE_ARTIFACT_DIR"),
 	})
@@ -83,10 +109,29 @@ func TestMain(m *testing.M) {
 		}
 	}
 
+	os.RemoveAll(tmp)
 	os.Exit(code)
 }
 
 func lazyTest(t *testing.T, description string) {
+	t.Helper()
+	if os.Getenv("LAZYCUE_INTEGRATION") == "" {
+		t.Skip("set LAZYCUE_INTEGRATION=1 to run the LazyCue browser integration tests")
+	}
+	// Each lazycue run gets its own browser and its own conversation(s), so
+	// the tests are independent; run them in parallel to cut suite wall time.
+	// CI bounds concurrency with -parallel (browser instances are ~1 CPU
+	// each). Tests that assert against the SHARED conversation list (ordering
+	// or adjacency of other tests' conversations) must use lazyTestSerial.
+	t.Parallel()
+	app.Test(t, description)
+}
+
+// lazyTestSerial is lazyTest without t.Parallel, for descriptions that make
+// assumptions about the global conversation list (e.g. "the conversation
+// immediately below"). Go runs all serial tests before releasing the paused
+// parallel ones, so a serial test never overlaps another lazycue test.
+func lazyTestSerial(t *testing.T, description string) {
 	t.Helper()
 	if os.Getenv("LAZYCUE_INTEGRATION") == "" {
 		t.Skip("set LAZYCUE_INTEGRATION=1 to run the LazyCue browser integration tests")
@@ -207,6 +252,21 @@ func TestNewPageThinkingIndicator(t *testing.T) {
 
 func TestNewPageBashTool(t *testing.T) {
 	lazyTest(t, `Navigate to /new. Type the text bash: echo "hello world" into the message input (data-testid "message-input") and click the send button (data-testid "send-button"). Wait for the agent text that begins with "I'll run the command:" and includes echo "hello world". A completed tool call (an element with data-testid "tool-call-completed") should become visible, and the text "bash" should be visible somewhere on the page.`)
+}
+
+// Regression test for tool-progress render churn. A running tool reports
+// partial output every ~500ms (claudetool/bash.go progressInterval); each
+// report used to replace ChatInterface's toolProgress object, which was
+// passed as a PROP to every rendered message component, re-rendering all of
+// them per event (~800 updates/event in a 250-turn conversation, one ~80ms
+// main-thread block per event for the life of the tool). Streaming output is
+// now injected per tool call (ui/src/vue/composables/toolProgress.ts), so a
+// progress event re-renders only the running tool's card. The UI counts
+// component updates at window.__shelleyPerf (ui/src/utils/perf.ts); we watch
+// a slow bash command stream its output and assert Message components stay
+// quiet while progress events arrive.
+func TestToolProgressDoesNotRerenderMessages(t *testing.T) {
+	lazyTest(t, `Navigate to /new. Type "echo: warmup one" into the message input (data-testid "message-input") and click the send button (data-testid "send-button"), then wait for the reply text "warmup one" to appear. Then type the text bash: for i in 1 2 3 4 5 6 7 8; do echo tick $i; sleep 1; done into the message input and click the send button. The bash tool card streams the command's output while it runs, so wait for the text "tick 2" to appear on the page (allow up to 30 seconds). Then reset the UI's recomputation counters: eval "(function(){window.__shelleyPerf.reset();return true;})()" and expect "true". Wait for at least 4 tool-progress events to arrive: eval "(function(){var s=window.__shelleyPerf.snapshot();return (((s['store.notifyTransient']||{}).count)||0)>=4;})()" with expect "true" (allow up to 15 seconds). Then assert the progress events did not re-render the conversation's message components: eval "(function(){var s=window.__shelleyPerf.snapshot();var prog=((s['store.notifyTransient']||{}).count)||0;var upd=((s['message.update']||{}).count)||0;return upd<=5?'pass':'fail: '+upd+' message updates during '+prog+' progress events';})()" and expect "pass". Finally wait for the completed tool call (data-testid "tool-call-completed") to become visible (allow up to 30 seconds).`)
 }
 
 func TestNewPageThinkTool(t *testing.T) {
@@ -448,7 +508,7 @@ func TestNewPageQueueDrains(t *testing.T) {
 // deterministic. ---
 
 func TestArchiveSelectsConversationBelow(t *testing.T) {
-	lazyTest(t, `This test verifies that archiving the current conversation selects the one immediately below it in the list. Conversations are listed newest-first.
+	lazyTestSerial(t, `This test verifies that archiving the current conversation selects the one immediately below it in the list. Conversations are listed newest-first.
 Step A — create conversation "alpha": navigate to /new, wait for the message input (data-testid "message-input") to be visible, fill it with "echo: alpha", and click the send button (data-testid "send-button"). Wait for the echoed text "alpha" to appear and for the URL to contain "/c/". Then run an eval step with expression "sessionStorage.setItem('alphaUrl', location.pathname)".
 Step B — create conversation "bravo": navigate to /new again, wait for the message input (data-testid "message-input") to be visible, fill it with "echo: bravo", and click the send button (data-testid "send-button"). Wait for the echoed text "bravo" to appear and for the URL to contain "/c/". Then run an eval step with expression "sessionStorage.setItem('bravoUrl', location.pathname)".
 Now "bravo" is the current conversation and is at the TOP of the list, with "alpha" immediately below it.

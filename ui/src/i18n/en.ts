@@ -18,10 +18,6 @@ export const en: TranslationKeys = {
   archiveConversation: "Archive Conversation",
   exportConversation: "Export Conversation",
   checkForNewVersion: "Check for New Version",
-  markdown: "Markdown",
-  off: "Off",
-  agent: "Agent",
-  all: "All",
 
   // Theme
   system: "System",
@@ -100,6 +96,7 @@ export const en: TranslationKeys = {
   duplicateName: "A conversation with this name already exists",
   agentIsWorking: "Agent is working...",
   subagentIsWorking: "Subagent is working...",
+  running: "running",
   hideSubagents: "Hide subagents",
   showSubagents: "Show subagents",
   groupConversations: "Group conversations",
@@ -131,6 +128,15 @@ export const en: TranslationKeys = {
   addModel: "Add Model",
   refreshModels: "Refresh",
   refreshingModels: "Refreshing...",
+  searchModels: "Search models",
+  noModelsFound: "No models found",
+  notReadyBadge: "not ready",
+  showAllModels: "All models",
+  showFewerModels: "Fewer models",
+  manageModelsAction: "Manage models…",
+  effortLabel: "Reasoning effort",
+  effortAuto: "auto",
+  customModelsGroup: "Custom models",
   editModel: "Edit Model",
   loadingModels: "Loading models...",
   providerApiFormat: "Provider / API Format",
@@ -153,7 +159,6 @@ export const en: TranslationKeys = {
   columnName: "Name",
   columnModelId: "Model ID",
   columnProvider: "API Shape",
-  columnSource: "Source",
   columnActions: "Actions",
   columnImages: "Images",
   imageSupportAutoShort: "auto",
@@ -240,20 +245,19 @@ export const en: TranslationKeys = {
   noModelsConfiguredHint: "No AI models configured. Press Ctrl+K or ⌘+K to add a model.",
 
   // Status Bar
-  modelLabel: "Model:",
-  thinkingLabel: "Effort:",
   dirLabel: "Dir:",
 
   // Sidebar buttons
   editUserAgentsMd: "Edit User AGENTS.md",
+  editFile: "Edit File…",
 
   openConversations: "Open conversations",
   expandSidebar: "Expand sidebar",
 
   // Language
   language: "Language",
+  off: "Off",
   switchLanguage: "Switch language",
-  reportBug: "Report a Bug",
   english: "English",
   japanese: "日本語",
   french: "Français",

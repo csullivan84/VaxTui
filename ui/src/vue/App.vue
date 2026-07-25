@@ -71,6 +71,7 @@
           :models-refresh-trigger="modelsRefreshTrigger"
           :cwd-sync-trigger="cwdSyncTrigger"
           :on-open-models-modal="() => (modelsModalOpen = true)"
+          :on-open-file-finder="openFileFinder"
           :ephemeral-terminals="ephemeralTerminals"
           :set-ephemeral-terminals="setEphemeralTerminals"
           :on-terminal-attached="handleTerminalAttached"
@@ -129,6 +130,7 @@
             commandPaletteOpen = false;
           }
         "
+        @open-file-finder="openFileFinder"
         @open-models-modal="
           () => {
             modelsModalOpen = true;
@@ -184,22 +186,44 @@
         "
       />
 
+      <FileFinderModal
+        :is-open="fileFinderOpen"
+        :initial-dir="finderDir"
+        @close="fileFinderOpen = false"
+        @select="openFileInEditor"
+      />
+
+      <EditableFileModal
+        v-if="editorFilePath"
+        :is-open="!!editorFilePath"
+        :path="editorFilePath"
+        :title="`Edit ${tildifyPath(editorFilePath)}`"
+        :load-url="`/api/read-file?path=${encodeURIComponent(editorFilePath)}`"
+        @close="editorFilePath = null"
+      />
+
       <div v-if="drawerOpen" class="backdrop hide-on-desktop" @click="drawerOpen = false" />
     </div>
+
+    <!-- Recomputation-counter overlay (performance-hud flag). -->
+    <PerfHud v-if="perfHudEnabled" />
   </template>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, provide, ref, watch } from "vue";
 import ChatInterface from "./components/ChatInterface.vue";
 import ConversationDrawer from "./components/ConversationDrawer.vue";
 import CommandPalette from "./components/CommandPalette.vue";
 import ModelsModal from "./components/ModelsModal.vue";
 import NotificationsModal from "./components/NotificationsModal.vue";
 import FeatureFlagsModal from "./components/FeatureFlagsModal.vue";
+import FileFinderModal from "./components/FileFinderModal.vue";
+import EditableFileModal from "./components/EditableFileModal.vue";
 import Button from "primevue/button";
 import type { EphemeralTerminal } from "./components/terminalTypes";
 import { focusMessageInputIfUnfocused } from "../utils/focusMessageInput";
+import { tildifyPath } from "../utils/tildify";
 import {
   type Conversation,
   type ConversationWithState,
@@ -215,7 +239,14 @@ import { connectGlobalStream, type StreamStatus } from "../services/globalStream
 import { handleNotificationEvent } from "../services/notifications";
 import { loadCachedDraft } from "../services/draftCache";
 import { initializeA11yTrace } from "../services/a11yTrace";
+import { initialDrawerCollapsed, saveDrawerCollapsedPreference } from "../utils/drawerStartup";
+import { perfCount } from "../utils/perf";
 import { useI18n } from "./composables/i18n";
+import { ConversationsListKey, CurrentConversationIdKey } from "./composables/subagentLive";
+import { useFeatureFlag } from "./composables/featureFlags";
+import PerfHud from "./components/PerfHud.vue";
+
+const perfHudEnabled = useFeatureFlag("performance-hud");
 
 const { t } = useI18n();
 
@@ -277,6 +308,10 @@ const banner = window.__SHELLEY_INIT__?.banner;
 // ---- state ----
 const conversations = ref<ConversationWithState[]>([]);
 const currentConversationId = ref<string | null>(null);
+// Subagent tool widgets (SubagentTool.vue) join their slug against the live
+// conversation list to show what the subagent is doing right now.
+provide(ConversationsListKey, conversations);
+provide(CurrentConversationIdKey, currentConversationId);
 const viewedConversation = ref<Conversation | null>(null);
 const drawerOpen = ref(false);
 const drawerCollapsed = ref(false);
@@ -287,6 +322,9 @@ const terminalTrigger = ref(0);
 const modelsModalOpen = ref(false);
 const notificationsModalOpen = ref(false);
 const featureFlagsModalOpen = ref(false);
+// Fuzzy file finder (Cmd/Ctrl+Shift+P) + the generic editor it opens.
+const fileFinderOpen = ref(false);
+const editorFilePath = ref<string | null>(null);
 const modelsRefreshTrigger = ref(0);
 const cwdSyncTrigger = ref(0);
 const navigateUserMessageTrigger = ref(0);
@@ -299,6 +337,7 @@ const showActiveTrigger = ref(0);
 
 // ---- non-reactive refs ----
 let initialSlugResolved = false;
+let startupDrawerStateApplied = false;
 let conversationListHash: string | null = null;
 let globalStreamHandle: { forceReconnect: () => void; close: () => void } | null = null;
 
@@ -363,6 +402,17 @@ const commandPaletteHasCwd = computed(
     ),
 );
 
+// Directory the fuzzy file finder searches: the current conversation's cwd,
+// else the last-used/most-recent cwd, else the server default, else $HOME.
+const finderDir = computed(
+  () =>
+    currentConversation.value?.cwd ||
+    mostRecentCwd.value ||
+    localStorage.getItem("shelley_selected_cwd") ||
+    window.__SHELLEY_INIT__?.default_cwd ||
+    "",
+);
+
 // ---- navigation ----
 function navigateToNextConversation() {
   const list = topLevelConversations.value;
@@ -412,6 +462,7 @@ function recoverConversationListStream() {
 }
 
 function handleConversationListPatch(event: ConversationListPatchEvent) {
+  perfCount("app.listPatch");
   const prev = conversations.value;
   const result = reduceConversationListPatch(listStateNow(), event);
   if (!result.ok) {
@@ -476,6 +527,10 @@ async function loadConversations() {
       commitListState({ list: snapshot.conversations, hash: snapshot.hash });
     }
     const currentList = streamHash ? conversations.value : snapshot.conversations;
+    if (!startupDrawerStateApplied) {
+      drawerCollapsed.value = initialDrawerCollapsed(currentList, localStorage);
+      startupDrawerStateApplied = true;
+    }
     const topLevel = currentList.filter((c) => !c.parent_conversation_id);
 
     const slugConv = await resolveInitialSlug(currentList);
@@ -537,6 +592,7 @@ function selectConversation(conversation: Conversation) {
 
 function toggleDrawerCollapsed() {
   drawerCollapsed.value = !drawerCollapsed.value;
+  saveDrawerCollapsedPreference(drawerCollapsed.value, localStorage);
 }
 
 function updateConversation(updatedConversation: Conversation) {
@@ -598,6 +654,18 @@ function onDraftCreated(id: string) {
 function onCommandPaletteClose() {
   commandPaletteOpen.value = false;
   focusMessageInputIfUnfocused();
+}
+
+// Open the fuzzy file finder (also reachable via the command palette).
+function openFileFinder() {
+  commandPaletteOpen.value = false;
+  fileFinderOpen.value = true;
+}
+
+// Finder selected a file: close it and open the generic editor on that path.
+function openFileInEditor(absPath: string) {
+  fileFinderOpen.value = false;
+  editorFilePath.value = absPath;
 }
 
 async function handleFirstMessage(
@@ -691,6 +759,14 @@ function handleKeyDown(e: KeyboardEvent) {
   if (modifierPressed && e.key === "k") {
     e.preventDefault();
     commandPaletteOpen.value = !commandPaletteOpen.value;
+    return;
+  }
+
+  // Cmd/Ctrl+Shift+P opens the fuzzy file finder. `e.key` is "P" (uppercase)
+  // when Shift is held; also accept "p" defensively across layouts.
+  if (modifierPressed && e.shiftKey && (e.key === "p" || e.key === "P")) {
+    e.preventDefault();
+    fileFinderOpen.value = true;
     return;
   }
 

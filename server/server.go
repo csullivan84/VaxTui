@@ -338,6 +338,9 @@ type Server struct {
 	notifDispatcher          *notifications.Dispatcher
 	conversationListStream   *conversationListStream
 	conversationListGitCache *conversationListGitCache
+	// fileListCache memoizes working-directory file listings for the fuzzy
+	// file finder (/api/find-files) so a burst of queries lists the tree once.
+	fileListCache *fileListCache
 	// exeNotifyOnce guards lazy detection of the exe.dev "notify" integration
 	// (push notifications). exeNotifyDetected caches the result.
 	exeNotifyOnce     sync.Once
@@ -394,6 +397,7 @@ func NewServer(database *db.DB, llmManager LLMProvider, toolSetConfig claudetool
 	s.conversationListStream = newConversationListStream(s)
 	s.streamPub = subpub.New[StreamResponse]()
 	s.conversationListGitCache = newConversationListGitCache()
+	s.fileListCache = newFileListCache()
 
 	// Persistent terminal sessions live alongside the database so that they
 	// survive shelley restarts. In tests DBPath is empty; use a unique
@@ -441,28 +445,29 @@ func (s *Server) RegisterNotificationChannel(ch notifications.Channel) {
 
 // RegisterRoutes registers HTTP routes on the given mux
 func (s *Server) RegisterRoutes(mux *http.ServeMux) {
-	// API routes - wrap with gzip where beneficial
-	mux.Handle("/api/conversations", gzipHandler(http.HandlerFunc(s.handleConversations)))
-	mux.Handle("GET /api/conversations/snapshot", gzipHandler(http.HandlerFunc(s.handleConversationsSnapshot)))
-	mux.Handle("GET /api/conversations/search", gzipHandler(http.HandlerFunc(s.handleSearchConversations)))
+	// API routes - wrap with compression where beneficial
+	mux.Handle("/api/conversations", compressionHandler(http.HandlerFunc(s.handleConversations)))
+	mux.Handle("GET /api/conversations/snapshot", compressionHandler(http.HandlerFunc(s.handleConversationsSnapshot)))
+	mux.Handle("GET /api/conversations/search", compressionHandler(http.HandlerFunc(s.handleSearchConversations)))
 	mux.Handle("GET /api/stream2", http.HandlerFunc(s.handleStream))
-	mux.Handle("/api/conversations/archived", gzipHandler(http.HandlerFunc(s.handleArchivedConversations)))
+	mux.Handle("/api/conversations/archived", compressionHandler(http.HandlerFunc(s.handleArchivedConversations)))
 	mux.Handle("/api/conversations/new", http.HandlerFunc(s.handleNewConversation))                         // Small response
 	mux.Handle("POST /api/conversations/draft", http.HandlerFunc(s.handleCreateDraft))                      // Small response
 	mux.Handle("/api/conversations/distill-new-generation", http.HandlerFunc(s.handleDistillNewGeneration)) // Small response
 	mux.Handle("/api/conversation/", http.StripPrefix("/api/conversation", s.conversationMux()))
-	mux.Handle("/api/conversation-by-slug/", gzipHandler(http.HandlerFunc(s.handleConversationBySlug)))
+	mux.Handle("/api/conversation-by-slug/", compressionHandler(http.HandlerFunc(s.handleConversationBySlug)))
 	mux.Handle("/api/validate-cwd", http.HandlerFunc(s.handleValidateCwd)) // Small response
 	mux.Handle("POST /api/model-costs", http.HandlerFunc(s.handleModelCosts))
-	mux.Handle("/api/list-directory", gzipHandler(http.HandlerFunc(s.handleListDirectory)))
+	mux.Handle("/api/list-directory", compressionHandler(http.HandlerFunc(s.handleListDirectory)))
+	mux.Handle("/api/find-files", compressionHandler(http.HandlerFunc(s.handleFindFiles)))
 	mux.Handle("/api/create-directory", http.HandlerFunc(s.handleCreateDirectory))
-	mux.Handle("/api/git/repos", gzipHandler(http.HandlerFunc(s.handleGitRepos)))
-	mux.Handle("/api/git/diffs", gzipHandler(http.HandlerFunc(s.handleGitDiffs)))
-	mux.Handle("/api/git/graph", gzipHandler(http.HandlerFunc(s.handleGitGraph)))
-	mux.Handle("/api/git/commit-detail", gzipHandler(http.HandlerFunc(s.handleGitCommitDetail)))
-	mux.Handle("/api/git/diffs/", gzipHandler(http.HandlerFunc(s.handleGitDiffFiles)))
-	mux.Handle("/api/git/file-diff/", gzipHandler(http.HandlerFunc(s.handleGitFileDiff)))
-	mux.Handle("/api/git/commit-messages", gzipHandler(http.HandlerFunc(s.handleGitCommitMessages)))
+	mux.Handle("/api/git/repos", compressionHandler(http.HandlerFunc(s.handleGitRepos)))
+	mux.Handle("/api/git/diffs", compressionHandler(http.HandlerFunc(s.handleGitDiffs)))
+	mux.Handle("/api/git/graph", compressionHandler(http.HandlerFunc(s.handleGitGraph)))
+	mux.Handle("/api/git/commit-detail", compressionHandler(http.HandlerFunc(s.handleGitCommitDetail)))
+	mux.Handle("/api/git/diffs/", compressionHandler(http.HandlerFunc(s.handleGitDiffFiles)))
+	mux.Handle("/api/git/file-diff/", compressionHandler(http.HandlerFunc(s.handleGitFileDiff)))
+	mux.Handle("/api/git/commit-messages", compressionHandler(http.HandlerFunc(s.handleGitCommitMessages)))
 	mux.Handle("/api/git/amend-message", http.HandlerFunc(s.handleGitAmendMessage))
 	mux.Handle("/api/git/create-worktree", http.HandlerFunc(s.handleGitCreateWorktree))                            // Small response
 	mux.HandleFunc("POST /api/upload/raw", s.handleUploadRaw)                                                      // Raw binary uploads
@@ -472,6 +477,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/message/{message_id}/image/{content_index}/{toolresult_index}", s.handleMessageImage) // Serves images from DB
 	mux.HandleFunc("GET /api/message/{message_id}/file", s.handleMessageFile)                                      // Serves local images referenced in message markdown
 	mux.Handle("/api/write-file", http.HandlerFunc(s.handleWriteFile))                                             // Small response
+	mux.Handle("/api/read-file", compressionHandler(http.HandlerFunc(s.handleReadFile)))                           // Reads arbitrary text files as JSON
 	mux.Handle("/api/user-agents-md", http.HandlerFunc(s.handleUserAgentsMd))                                      // Small response
 	mux.HandleFunc("/api/exec-ws", s.handleExecWS)                                                                 // Websocket for shell commands
 	mux.HandleFunc("GET /api/terminals", s.handleTerminalsList)                                                    // List persistent dtach sessions
@@ -489,8 +495,8 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("/api/notification-channel-types", http.HandlerFunc(s.handleNotificationChannelTypes))
 
 	// Models API (dynamic list refresh)
-	mux.Handle("POST /api/models/refresh", http.HandlerFunc(s.handleModelRefresh))
-	mux.Handle("/api/models", http.HandlerFunc(s.handleModels))
+	mux.Handle("POST /api/models/refresh", compressionHandler(http.HandlerFunc(s.handleModelRefresh)))
+	mux.Handle("/api/models", compressionHandler(http.HandlerFunc(s.handleModels)))
 	mux.Handle("/api/tools", http.HandlerFunc(s.handleTools))
 
 	// Version endpoints
@@ -516,6 +522,9 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /debug/conversation-stream", http.HandlerFunc(s.handleDebugConversationStreamPage))
 	mux.Handle("GET /debug/conversation-stream/history", http.HandlerFunc(s.handleDebugConversationStreamHistory))
 	mux.Handle("GET /debug/stylebook", http.HandlerFunc(s.handleDebugStylebook))
+	mux.Handle("GET /debug/loremipsum", http.HandlerFunc(s.handleDebugLoremIpsum))
+	mux.Handle("POST /debug/loremipsum", http.HandlerFunc(s.handleDebugLoremIpsum))
+	mux.Handle("GET /debug/histograms", http.HandlerFunc(s.handleDebugHistograms))
 
 	// pprof endpoints
 	mux.Handle("GET /debug/pprof/", http.HandlerFunc(pprof.Index))
@@ -668,22 +677,34 @@ func (s *Server) handleListDirectory(w http.ResponseWriter, r *http.Request) {
 	for _, entry := range dirEntries {
 		// Only include directories
 		if entry.IsDir() {
-			dirEntry := DirectoryEntry{
+			entries = append(entries, DirectoryEntry{
 				Name:  entry.Name(),
 				IsDir: true,
-			}
-
-			// Check if this is a git repo root and get HEAD commit subject
-			entryPath := filepath.Join(path, entry.Name())
-			if isGitRepo(entryPath) {
-				if subject := getGitHeadSubject(entryPath); subject != "" {
-					dirEntry.GitHeadSubject = subject
-				}
-			}
-
-			entries = append(entries, dirEntry)
+			})
 		}
 	}
+
+	// Check which entries are git repo roots and fetch their HEAD subjects.
+	// Each check execs git, so run them concurrently (bounded): serially, a
+	// directory full of repos (e.g. a worktree farm in $HOME) took multiple
+	// seconds to list.
+	sem := make(chan struct{}, 16)
+	var wg sync.WaitGroup
+	for i := range entries {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			entryPath := filepath.Join(path, entries[i].Name)
+			if isGitRepo(entryPath) {
+				if subject := getGitHeadSubject(entryPath); subject != "" {
+					entries[i].GitHeadSubject = subject
+				}
+			}
+		}()
+	}
+	wg.Wait()
 
 	// Sort entries: non-hidden first, then hidden (.*), alphabetically within each group
 	sort.Slice(entries, func(i, j int) bool {

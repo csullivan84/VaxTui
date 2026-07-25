@@ -18,10 +18,6 @@ export const vi: TranslationKeys = {
   archiveConversation: "Hội thoại đã lưu trữ",
   exportConversation: "Xuất hội thoại",
   checkForNewVersion: "Kiểm tra cập nhật",
-  markdown: "Markdown",
-  off: "Tắt",
-  agent: "Agent",
-  all: "Tất cả",
 
   // Theme
   system: "Hệ thống",
@@ -100,6 +96,7 @@ export const vi: TranslationKeys = {
   duplicateName: "Bị trùng tên với hội thoại đã có",
   agentIsWorking: "Agent đang làm việc...",
   subagentIsWorking: "Subagent đang làm việc...",
+  running: "đang chạy",
   hideSubagents: "Ẩn subagent",
   showSubagents: "Hiện subagent",
   groupConversations: "Gộp nhóm các hội thoại",
@@ -131,6 +128,15 @@ export const vi: TranslationKeys = {
   addModel: "Thêm model",
   refreshModels: "Làm mới",
   refreshingModels: "Đang làm mới...",
+  searchModels: "Tìm kiếm models",
+  noModelsFound: "Không tìm thấy model",
+  notReadyBadge: "chưa sẵn sàng",
+  showAllModels: "Tất cả models",
+  showFewerModels: "Ít models hơn",
+  manageModelsAction: "Quản lý models…",
+  effortLabel: "Mức độ suy nghĩ",
+  effortAuto: "tự động",
+  customModelsGroup: "Models tùy chỉnh",
   editModel: "Chỉnh sửa model",
   loadingModels: "Đang tải danh sách models...",
   providerApiFormat: "Provider / API Format",
@@ -152,7 +158,6 @@ export const vi: TranslationKeys = {
   columnName: "Tên",
   columnModelId: "ID model",
   columnProvider: "Kiểu API",
-  columnSource: "Nguồn",
   columnActions: "Hành động",
   columnImages: "Hình ảnh",
   imageSupportAutoShort: "tự động",
@@ -239,20 +244,19 @@ export const vi: TranslationKeys = {
   noModelsConfiguredHint: "Không có model AI sẵn sàng. Nhấn Ctrl+K hoặc ⌘+K để thêm model.",
 
   // Status Bar
-  modelLabel: "Model:",
-  thinkingLabel: "Suy nghĩ:",
   dirLabel: "Thư mục:",
 
   // Sidebar buttons
   editUserAgentsMd: "Chỉnh sửa AGENTS.md",
+  editFile: "Chỉnh sửa tệp…",
 
   openConversations: "Mở lịch sử trò chuyện",
   expandSidebar: "Mở rộng sidebar",
 
   // Language
   language: "Ngôn ngữ",
+  off: "Tắt",
   switchLanguage: "Chỉnh ngôn ngữ",
-  reportBug: "Báo lỗi",
   english: "English",
   japanese: "日本語",
   french: "Français",

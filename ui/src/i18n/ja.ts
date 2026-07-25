@@ -18,10 +18,6 @@ export const ja: TranslationKeys = {
   archiveConversation: "会話をアーカイブ",
   exportConversation: "会話をエクスポート",
   checkForNewVersion: "新しいバージョンを確認",
-  markdown: "Markdown",
-  off: "オフ",
-  agent: "エージェント",
-  all: "すべて",
 
   // Theme
   system: "システム",
@@ -100,6 +96,7 @@ export const ja: TranslationKeys = {
   duplicateName: "同じ名前の会話がすでに存在します",
   agentIsWorking: "エージェントが作業中...",
   subagentIsWorking: "サブエージェントが作業中...",
+  running: "実行中",
   hideSubagents: "サブエージェントを非表示",
   showSubagents: "サブエージェントを表示",
   groupConversations: "会話をグループ化",
@@ -131,6 +128,15 @@ export const ja: TranslationKeys = {
   addModel: "モデルの追加",
   refreshModels: "更新",
   refreshingModels: "更新中...",
+  searchModels: "モデルを検索",
+  noModelsFound: "モデルが見つかりません",
+  notReadyBadge: "未準備",
+  showAllModels: "すべてのモデル",
+  showFewerModels: "モデルを減らす",
+  manageModelsAction: "モデルの管理…",
+  effortLabel: "思考量",
+  effortAuto: "自動",
+  customModelsGroup: "カスタムモデル",
   editModel: "モデルの編集",
   loadingModels: "モデルを読み込み中...",
   providerApiFormat: "プロバイダー / API形式",
@@ -152,7 +158,6 @@ export const ja: TranslationKeys = {
   columnName: "名前",
   columnModelId: "モデルID",
   columnProvider: "API形式",
-  columnSource: "ソース",
   columnActions: "操作",
   columnImages: "画像",
   imageSupportAutoShort: "自動",
@@ -239,20 +244,19 @@ export const ja: TranslationKeys = {
     "AIモデルが設定されていません。Ctrl+K または ⌘+K でモデルを追加してください。",
 
   // Status Bar
-  modelLabel: "モデル:",
-  thinkingLabel: "思考量:",
   dirLabel: "ディレクトリ:",
 
   // Sidebar buttons
   editUserAgentsMd: "ユーザー AGENTS.md を編集",
+  editFile: "ファイルを編集…",
 
   openConversations: "会話を開く",
   expandSidebar: "サイドバーを展開",
 
   // Language
   language: "言語",
+  off: "オフ",
   switchLanguage: "言語を切り替える",
-  reportBug: "バグを報告",
   english: "English",
   japanese: "日本語",
   french: "Français",

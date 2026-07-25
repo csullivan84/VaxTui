@@ -5,10 +5,17 @@
      .tool-label, .tool-code, .tool-time, .subagent-link,
      data-testid tool-call-running/completed.
 
+     Live view: while the subagent is working (per the conversation list's
+     authoritative working flag, injected from App via subagentLive), a strip
+     under the header shows what it's doing right now — streaming text tail,
+     running tool headline, or last-message preview — sourced from the same
+     /api/stream2 events the rest of the UI already receives. Clicking the
+     strip opens the subagent conversation.
+
      Subagent navigation: the React original navigates client-side by pushing
      `/c/{slug}` onto window.history and dispatching a popstate event (no parent
-     callback prop). This port replicates that behavior verbatim in onLinkClick;
-     it does not introduce a new prop or emit. -->
+     callback prop). This port replicates that behavior via
+     navigateToConversationSlug; it does not introduce a new prop or emit. -->
 <template>
   <div class="tool" :data-testid="isComplete ? 'tool-call-completed' : 'tool-call-running'">
     <div
@@ -64,6 +71,20 @@
       </button>
     </div>
 
+    <button
+      v-if="showLive"
+      type="button"
+      class="subagent-live"
+      data-testid="subagent-live"
+      :title="`Open subagent '${liveSlug}'`"
+      :aria-label="`Open subagent ${liveSlug}: ${activity || 'working'}`"
+      @click.stop="openSubagent"
+    >
+      <span class="working-indicator" aria-hidden="true" />
+      <span class="subagent-live-slug">{{ liveSlug }}&nbsp;↗</span>
+      <span class="subagent-live-activity">{{ activity || "working\u2026" }}</span>
+    </button>
+
     <ToolAccessibleBody
       :expanded="isExpanded"
       :label="outputLabel"
@@ -94,7 +115,7 @@
       <div v-if="displayData?.conversation_id" class="tool-section">
         <div class="tool-label">Conversation:</div>
         <div class="tool-code">
-          <a :href="`/c/${slug}`" class="subagent-link" @click="onLinkClick">
+          <a :href="`/c/${liveSlug}`" class="subagent-link" @click="onLinkClick">
             View subagent conversation →
           </a>
         </div>
@@ -103,11 +124,11 @@
 
     <a
       v-if="!isExpanded && displayData?.conversation_id"
-      :href="`/c/${slug}`"
+      :href="`/c/${liveSlug}`"
       class="sr-only"
       @click="onLinkClick"
     >
-      View subagent {{ slug }} conversation
+      View subagent {{ liveSlug }} conversation
     </a>
   </div>
 </template>
@@ -118,6 +139,7 @@ import type { LLMContent } from "../../../types";
 import { useToolExpanded } from "../../composables/toolDetail";
 import ToolAccessibleBody from "./ToolAccessibleBody.vue";
 import { announceA11y } from "../../../services/a11yAnnouncer";
+import { useSubagentLive, navigateToConversationSlug } from "../../composables/subagentLive";
 
 interface SubagentInput {
   slug?: string;
@@ -149,11 +171,30 @@ const input = computed<SubagentInput>(() =>
     : {},
 );
 
-const slug = computed(() => input.value.slug || props.displayData?.slug || "subagent");
+// Prefer the display data's slug: the server may have suffixed the requested
+// slug for uniqueness, and displayData carries the actual one.
+const slug = computed(() => props.displayData?.slug || input.value.slug || "subagent");
 const prompt = computed(() => input.value.prompt || "");
 const model = computed(() => input.value.model || "");
 const wait = computed(() => input.value.wait !== false);
 const timeout = computed(() => input.value.timeout_seconds || 60);
+
+// Live subagent state (working flag + current activity), joined from the
+// conversation list + messageStore via the injected app context.
+const { conv, working, activity } = useSubagentLive(
+  slug,
+  computed(() => props.displayData?.conversation_id),
+);
+// The subagent can still be working after this tool call completed
+// (wait=false, or a wait timeout returned a progress summary), so the strip
+// keys off the conversation's working flag, not the tool-call state.
+const showLive = computed(() => working.value || (!!props.isRunning && !!conv.value));
+const liveSlug = computed(() => conv.value?.slug || slug.value);
+
+function openSubagent() {
+  announceA11y(`Opened subagent ${liveSlug.value}.`);
+  navigateToConversationSlug(liveSlug.value);
+}
 
 // Extract result text
 const resultText = computed(
@@ -203,7 +244,9 @@ const accessibleText = computed(() => {
   const parts = [`Prompt to ${slug.value}:\n${prompt.value || "(no prompt)"}`];
   if (badges.length > 0) parts.push(badges.join("\n"));
   if (isComplete.value) {
-    parts.push(`Response${props.hasError ? " (Error)" : ""}:\n${resultText.value || "(no response)"}`);
+    parts.push(
+      `Response${props.hasError ? " (Error)" : ""}:\n${resultText.value || "(no response)"}`,
+    );
   }
   return parts.join("\n\n");
 });
@@ -212,9 +255,7 @@ function onLinkClick(e: MouseEvent) {
   // Let the browser handle cmd/ctrl/shift/middle-click (open in new tab/window).
   if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
   e.preventDefault();
-  announceA11y(`Opened subagent ${slug.value}.`);
-  // Navigate to the subagent conversation
-  window.history.pushState({}, "", `/c/${slug.value}`);
-  window.dispatchEvent(new PopStateEvent("popstate"));
+  announceA11y(`Opened subagent ${liveSlug.value}.`);
+  navigateToConversationSlug(liveSlug.value);
 }
 </script>

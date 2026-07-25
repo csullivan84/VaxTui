@@ -180,7 +180,6 @@
               :content="item.content!"
               :render-md="shouldRenderMarkdown(markdownMode, isUser, isDistilledUser)"
               :message-id="message.message_id"
-              :tool-progress="toolProgress"
               :tool-use-map="toolUseMap"
               :server-tool-result-map="serverToolResultMap"
               :on-comment-text-change="onCommentTextChange"
@@ -214,11 +213,11 @@ import {
   type LLMMessage,
   type LLMContent,
   type Usage,
-  type ToolProgress,
   isDistillStatusMessage,
 } from "../../types";
 import { type MarkdownMode } from "../../services/settings";
 import { useMarkdownMode } from "../composables/markdownMode";
+import { usePerfLifecycle } from "../composables/perfLifecycle";
 import { getContentType } from "../utils/messageContent";
 import MarkdownContent from "./MarkdownContent.vue";
 import MessageActionBar from "./MessageActionBar.vue";
@@ -234,6 +233,7 @@ import RefusalContinueButton from "./RefusalContinueButton.vue";
 import MessageContentBlock from "./MessageContentBlock.vue";
 import CitedText from "./CitedText.vue";
 import { coalesceContent } from "../../utils/coalesceContent";
+import { perfCount } from "../../utils/perf";
 import MessageDisplayData from "./MessageDisplayData.vue";
 
 interface ToolDisplay {
@@ -246,13 +246,18 @@ const props = defineProps<{
   message: MessageType;
   onOpenDiffViewer?: (commit: string, cwd?: string) => void;
   onCommentTextChange?: (text: string) => void;
-  toolProgress?: Record<string, ToolProgress>;
   // onFork forks the conversation, copying messages up to and including this
   // one into a new conversation and navigating to it.
   onFork?: (messageId: string) => void;
 }>();
 
 const { markdownMode } = useMarkdownMode();
+
+// Recomputation counters (see utils/perf.ts): mounts tell us how many Message
+// components exist / get recreated; updates reveal wide prop-invalidation
+// churn (historically, a toolProgress object identity change re-rendering
+// every row — fixed by injecting tool progress; see composables/toolProgress.ts).
+usePerfLifecycle("message");
 
 /** Should we render markdown for this content block? */
 function shouldRenderMarkdown(
@@ -289,9 +294,10 @@ function safeParse<T>(value: unknown, label: string): T | null {
   }
 }
 
-const llmMessage = computed<LLMMessage | null>(() =>
-  safeParse<LLMMessage>(props.message.llm_data, "LLM data"),
-);
+const llmMessage = computed<LLMMessage | null>(() => {
+  perfCount("message.parseLlmData");
+  return safeParse<LLMMessage>(props.message.llm_data, "LLM data");
+});
 
 const usage = computed<Usage | null>(() => {
   if (props.message.type === "agent" && props.message.usage_data) {

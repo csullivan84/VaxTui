@@ -18,10 +18,6 @@ export const ru: TranslationKeys = {
   archiveConversation: "Архивировать диалог",
   exportConversation: "Экспортировать диалог",
   checkForNewVersion: "Проверить обновления",
-  markdown: "Markdown",
-  off: "Откл",
-  agent: "Агент",
-  all: "Все",
 
   // Theme
   system: "Системная",
@@ -100,6 +96,7 @@ export const ru: TranslationKeys = {
   duplicateName: "Диалог с таким именем уже существует",
   agentIsWorking: "Агент работает...",
   subagentIsWorking: "Субагент работает...",
+  running: "работает",
   hideSubagents: "Скрыть субагентов",
   showSubagents: "Показать субагентов",
   groupConversations: "Группировать диалоги",
@@ -131,6 +128,15 @@ export const ru: TranslationKeys = {
   addModel: "Добавить модель",
   refreshModels: "Обновить",
   refreshingModels: "Обновление...",
+  searchModels: "Поиск моделей",
+  noModelsFound: "Модели не найдены",
+  notReadyBadge: "не готова",
+  showAllModels: "Все модели",
+  showFewerModels: "Меньше моделей",
+  manageModelsAction: "Управление моделями…",
+  effortLabel: "Усилие рассуждения",
+  effortAuto: "авто",
+  customModelsGroup: "Пользовательские модели",
   editModel: "Редактировать модель",
   loadingModels: "Загрузка моделей...",
   providerApiFormat: "Провайдер / Формат API",
@@ -153,7 +159,6 @@ export const ru: TranslationKeys = {
   columnName: "Имя",
   columnModelId: "ID модели",
   columnProvider: "Формат API",
-  columnSource: "Источник",
   columnActions: "Действия",
   columnImages: "Изображения",
   imageSupportAutoShort: "авто",
@@ -240,20 +245,19 @@ export const ru: TranslationKeys = {
   noModelsConfiguredHint: "Модели ИИ не настроены. Нажмите Ctrl+K или ⌘+K, чтобы добавить модель.",
 
   // Status Bar
-  modelLabel: "Модель:",
-  thinkingLabel: "Усилие:",
   dirLabel: "Каталог:",
 
   // Sidebar buttons
   editUserAgentsMd: "Редактировать AGENTS.md",
+  editFile: "Редактировать файл…",
 
   openConversations: "Открыть диалоги",
   expandSidebar: "Развернуть боковую панель",
 
   // Language
   language: "Язык",
+  off: "Откл",
   switchLanguage: "Сменить язык",
-  reportBug: "Сообщить об ошибке",
   english: "English",
   japanese: "日本語",
   french: "Français",

@@ -218,10 +218,10 @@ func gemSvc(modelName string) func(baseURL, apiKey string, httpc *http.Client) l
 func All() []Model {
 	return []Model{
 		{
-			ID: "claude-opus-4.8", Provider: ProviderAnthropic,
-			Description: "Claude Opus 4.8 (default)", APIModelName: ant.Claude48Opus,
+			ID: "claude-opus-5", Provider: ProviderAnthropic,
+			Description: "Claude Opus 5", APIModelName: ant.Claude5Opus,
 			APIType: APITypeAnthropicMessages, DefaultBaseURL: DefaultAnthropicBaseURL,
-			Build: antSvc(ant.Claude48Opus),
+			Build: antSvc(ant.Claude5Opus),
 		},
 		{
 			ID: "claude-fable-5", Provider: ProviderAnthropic,
@@ -294,6 +294,12 @@ func All() []Model {
 			Description: "DeepSeek V4 Pro on Fireworks — 1M-token context, reasoning and tool use; text-only, no images", APIModelName: oai.DeepseekV4ProFireworks.ModelName,
 			APIType: APITypeOpenAIChat, DefaultBaseURL: DefaultFireworksBaseURL,
 			Build: oaiChatSvc(oai.DeepseekV4ProFireworks, "fireworks"),
+		},
+		{
+			ID: "claude-opus-4.8", Provider: ProviderAnthropic,
+			Description: "Claude Opus 4.8 (default)", APIModelName: ant.Claude48Opus,
+			APIType: APITypeAnthropicMessages, DefaultBaseURL: DefaultAnthropicBaseURL,
+			Build: antSvc(ant.Claude48Opus),
 		},
 		{
 			ID: "claude-opus-4.7", Provider: ProviderAnthropic,

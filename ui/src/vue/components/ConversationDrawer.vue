@@ -40,8 +40,28 @@
   >
     <!-- Header -->
     <div class="drawer-header">
-      <h2 class="drawer-title">{{ showArchived ? t("archived") : t("conversations") }}</h2>
+      <h2 class="app-bar-title drawer-title">
+        {{ showArchived ? t("archived") : t("conversations") }}
+      </h2>
       <div class="drawer-header-actions">
+        <!-- Search toggle button -->
+        <Button
+          :class="`btn-icon${searchOpen ? ' search-toggle-active' : ''}`"
+          text
+          severity="secondary"
+          :aria-label="t('searchConversations')"
+          v-tooltip.top="t('searchConversations')"
+          @click="toggleSearch"
+        >
+          <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              :stroke-width="2"
+              d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
+            />
+          </svg>
+        </Button>
         <!-- Group by button -->
         <div v-if="!showArchived" ref="groupMenuRef" class="group-by-wrapper">
           <Button
@@ -157,8 +177,8 @@
       </div>
     </div>
 
-    <!-- Search bar -->
-    <div class="drawer-search">
+    <!-- Search bar (hidden until the header search toggle is clicked) -->
+    <div v-if="searchOpen" class="drawer-search">
       <svg
         class="drawer-search-icon"
         fill="none"
@@ -175,6 +195,7 @@
         />
       </svg>
       <input
+        ref="searchInputRef"
         type="text"
         class="drawer-search-input"
         :placeholder="t('searchConversations')"
@@ -320,6 +341,7 @@ import { handleModifiedNavClick } from "../utils/openInNewTab";
 import ConversationRow from "./ConversationDrawerRow.vue";
 import Button from "primevue/button";
 import { DrawerCtxKey, type GroupBy, parseTags } from "./conversationDrawerShared";
+import { perfCount } from "../../utils/perf";
 
 const props = defineProps<{
   isOpen: boolean;
@@ -425,6 +447,8 @@ const showArchived = ref(false);
 const archivedConversations = ref<Conversation[]>([]);
 const loadingArchived = ref(false);
 const searchQuery = ref("");
+const searchOpen = ref(false);
+const searchInputRef = ref<HTMLInputElement | null>(null);
 const searchResults = ref<ConversationWithState[] | null>(null);
 const searching = ref(false);
 let searchTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -560,6 +584,7 @@ watch(
 
 // Bucket subagents under their parent.
 const subagentsByParent = computed<Record<string, ConversationWithState[]>>(() => {
+  perfCount("drawer.subagentsByParent");
   resetOrderRefsForResort();
   void resortKey.value;
   const out: Record<string, ConversationWithState[]> = {};
@@ -825,10 +850,24 @@ function toggleGroup(groupKey: string) {
   collapsedGroups.value = next;
 }
 
-function onSearchKeyDown(e: KeyboardEvent) {
-  if (e.key === "Escape" && searchQuery.value) {
-    e.preventDefault();
+function toggleSearch() {
+  if (searchOpen.value) {
+    searchOpen.value = false;
     searchQuery.value = "";
+  } else {
+    searchOpen.value = true;
+    void nextTick(() => searchInputRef.value?.focus());
+  }
+}
+
+function onSearchKeyDown(e: KeyboardEvent) {
+  if (e.key === "Escape") {
+    e.preventDefault();
+    if (searchQuery.value) {
+      searchQuery.value = "";
+    } else {
+      searchOpen.value = false;
+    }
   }
 }
 
@@ -839,6 +878,7 @@ function onNewConversationClick(e: MouseEvent) {
 
 // --- Derived lists ---
 const topLevelConversations = computed(() => {
+  perfCount("drawer.topLevel");
   resetOrderRefsForResort();
   void resortKey.value;
   const sorted = sortConversationsByBucket(

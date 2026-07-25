@@ -29,6 +29,12 @@
             <span v-if="!item.hasResult" class="tool-pill-spinner" aria-hidden="true" />
             <span v-if="pillErrored(item)" class="tool-pill-err" aria-hidden="true">✗</span>
           </button>
+          <SubagentPillLive
+            v-if="item.toolName === 'subagent'"
+            :tool-input="item.toolInput"
+            :display="item.display"
+            :is-running="!item.hasResult"
+          />
         </li>
       </ul>
       <Modal
@@ -69,9 +75,7 @@
             :has-result="selected.hasResult"
             :display="selected.display"
             :on-comment-text-change="onCommentTextChange"
-            :streaming-output="
-              selected.toolUseId ? toolProgress[selected.toolUseId]?.output : undefined
-            "
+            :tool-use-id="selected.toolUseId"
           />
         </div>
       </Modal>
@@ -81,7 +85,6 @@
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
-import type { ToolProgress } from "../../types";
 import type { CoalescedItem } from "./coalesce";
 import {
   toolEmoji,
@@ -93,11 +96,11 @@ import {
 import { provideToolDetail } from "../composables/toolDetail";
 import Modal from "./Modal.vue";
 import CoalescedToolCall from "./CoalescedToolCall.vue";
+import SubagentPillLive from "./SubagentPillLive.vue";
 
 const props = defineProps<{
   items: CoalescedItem[];
   onCommentTextChange?: (text: string) => void;
-  toolProgress: Record<string, ToolProgress>;
 }>();
 
 // The detail modal's tool card starts expanded.

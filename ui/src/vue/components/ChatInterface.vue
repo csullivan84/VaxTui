@@ -54,7 +54,7 @@
           </svg>
         </Button>
 
-        <h1 class="header-title" :title="currentConversation?.slug || 'Shelley'">
+        <h1 class="app-bar-title header-title" :title="currentConversation?.slug || 'Shelley'">
           {{ displayTitle }}
         </h1>
       </div>
@@ -88,6 +88,7 @@
           @archive="archiveFromMenu"
           @export="openExport"
           @edit-agents-md="showAgentsMdEditor = true"
+          @edit-file="props.onOpenFileFinder?.()"
           @check-version="openVersionModal"
         />
       </div>
@@ -154,7 +155,7 @@
             <div class="spinner" />
           </div>
         </template>
-        <div v-else class="messages-list">
+        <div v-else ref="messagesListRef" class="messages-list">
           <!-- empty state -->
           <div v-if="messages.length === 0" class="empty-state">
             <div class="empty-state-content">
@@ -213,7 +214,6 @@
                   v-for="node in chunk.nodes"
                   :key="node.key"
                   :node="node"
-                  :tool-progress="toolProgress"
                   :conversation-id="conversationId"
                   :on-open-diff-viewer="handleOpenDiffViewer"
                   :on-comment-text-change="setDiffCommentText"
@@ -270,7 +270,7 @@
           v-if="showScrollToBottom"
           class="scroll-to-bottom-button"
           aria-label="Scroll to bottom"
-          v-tooltip.top="'Scroll to bottom'"
+          v-tooltip.top="scrollToBottomTooltip"
           @click="scrollToBottom"
         >
           <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" class="chat-scroll-icon">
@@ -317,7 +317,9 @@
       v-if="!currentConversation?.archived"
       :on-send="sendMessage"
       :on-queue="queueMessage"
-      :on-compact="conversationId && onDistillNewGeneration ? handleDistillCompactNewGeneration : undefined"
+      :on-compact="
+        conversationId && onDistillNewGeneration ? handleDistillCompactNewGeneration : undefined
+      "
       :show-queue-option="!!conversationId"
       :can-queue="canQueue"
       :auto-queue="autoQueue"
@@ -446,14 +448,17 @@ import { useI18n } from "../composables/i18n";
 import { useDraftAutosave } from "../composables/draftAutosave";
 import { useFeatureFlag } from "../composables/featureFlags";
 import { useVersionChecker } from "../composables/versionChecker";
+import { provideToolProgress } from "../composables/toolProgress";
 import { focusMessageInputIfUnfocused } from "../../utils/focusMessageInput";
 import { buildMessageQuote } from "../../utils/messageQuote";
 import { hasMultipleUsers } from "../../utils/messageAuthors";
 import { tildifyPath } from "../../utils/tildify";
+import { prettyModelLabels } from "../../utils/modelNames";
 import { handleModifiedNavClick } from "../utils/openInNewTab";
 import { isAutoExpandTool } from "../../utils/toolMeta";
 import { formatDay } from "../../utils/messageTime";
 import { SLASH_COMMANDS } from "../../utils/slashCommands";
+import { perfCount, perfWrap } from "../../utils/perf";
 import type { UsageEntry } from "../../utils/tokenCostGraph";
 import { coalesceMessages, type CoalescedItem } from "./coalesce";
 import type { RenderNode, RenderChunk, GenerationBlock } from "./renderNode";
@@ -516,6 +521,7 @@ const props = withDefaults(
     modelsRefreshTrigger?: number;
     cwdSyncTrigger?: number;
     onOpenModelsModal?: () => void;
+    onOpenFileFinder?: () => void;
     ephemeralTerminals: EphemeralTerminal[];
     setEphemeralTerminals: (
       next: EphemeralTerminal[] | ((prev: EphemeralTerminal[]) => EphemeralTerminal[]),
@@ -563,7 +569,10 @@ provide("lastMessageId", lastMessageId);
 // email. Empty-string emails are ignored (unauthenticated/direct access), so a
 // mix of empty and a single real email still counts as one participant and
 // elides the label. Provided to Message.vue through MessageRenderNode.
-const showUserEmails = computed(() => hasMultipleUsers(messages.value));
+const showUserEmails = computed(() => {
+  perfCount("chat.showUserEmails");
+  return hasMultipleUsers(messages.value);
+});
 provide("showUserEmails", showUserEmails);
 const loading = ref(true);
 const showLoadingProgressUI = ref(false);
@@ -729,6 +738,10 @@ const showResumeUnread = ref(false);
 const cancelling = ref(false);
 const contextWindowSize = ref(0);
 const toolProgress = ref<Record<string, ToolProgress>>({});
+// Distributed via provide/inject so per-second tool-progress events reach
+// only the running tool's component instead of re-rendering every message
+// via a changed prop identity (see composables/toolProgress.ts).
+provideToolProgress(toolProgress);
 const streamingText = ref("");
 const modelHealthRevision = ref(0);
 const showAdvancedSettings = ref(false);
@@ -736,6 +749,13 @@ const advancedSettingsRef = ref<HTMLDivElement | null>(null);
 const availableTools = ref<Array<{ name: string; summary: string; default_on: boolean }>>([]);
 
 const showScrollToBottom = ref(false);
+// Keyboard shortcut for jumping to the newest message, surfaced in the
+// scroll-to-bottom button's tooltip on desktop (mobile has no keyboard).
+const isMac = navigator.platform.toUpperCase().includes("MAC");
+const scrollToBottomShortcut = isMac ? "\u2318\u2193" : "Ctrl+\u2193";
+const scrollToBottomTooltip = computed(() =>
+  isMobile.value ? "Scroll to bottom" : `Scroll to bottom (${scrollToBottomShortcut})`,
+);
 const lastKnownMessageCount = ref<number | null>(null);
 const terminalInjectedText = ref<string | null>(null);
 const terminalAutoFocusId = ref<string | null>(null);
@@ -749,6 +769,7 @@ const assistantTurnPreview = computed(() =>
 
 // ---- refs to DOM ----
 const messagesContainerRef = ref<HTMLDivElement | null>(null);
+const messagesListRef = ref<HTMLDivElement | null>(null);
 const bottomSentinelRef = ref<HTMLDivElement | null>(null);
 
 // ---- non-reactive refs (mutable closures) ----
@@ -762,6 +783,35 @@ let currentConversationId: string | null = props.conversationId;
 let activeModelHealth: { modelId: string; startSequence: number; handledErrors: Set<string> } | null =
   null;
 let catchingUp = false;
+// Layout-free "is the viewport at/near the bottom" signal, maintained by the
+// bottom sentinel's IntersectionObserver. Persisted (instead of a raw scrollTop)
+// so a reload restores to the true bottom even when content-visibility:auto
+// chunks report inflated contain-intrinsic-size estimates that make scrollHeight
+// unreliable. New conversations start pinned to the bottom.
+let atBottom = true;
+// Scroll bookkeeping shared by handleScroll and the ResizeObserver, declared
+// here (not next to that logic further down) because the immediate
+// conversationId watch resets them during setup; a `let` still in its TDZ at
+// that point throws and leaves the composer stuck disabled. See the
+// ResizeObserver setup for what they mean.
+let lastListHeight = 0;
+let clampBudget = 0;
+let lastContainerHeight = 0;
+// The IntersectionObserver's raw view of the bottom sentinel. Unlike atBottom
+// (which handleScroll also flips on inferred scroll-ups) this only changes
+// when the sentinel actually enters/leaves the viewport, so the container
+// ResizeObserver can use it to recognize clamps that left us at the bottom.
+let sentinelAtBottom = true;
+// When handleScroll last inferred a user scroll-up from a scrollTop drop, and
+// by how much. A container-growth clamp normally reaches the ResizeObserver
+// before its scroll event, but a forced reflow (anything reading layout right
+// after the DOM change) flushes the clamp early so the scroll event lands
+// first; the ResizeObserver uses these to retroactively undo that misread.
+let inferredScrollUpAt = -Infinity;
+let inferredScrollUpDelta = 0;
+// Last upward wheel / touch gesture; a scroll-up near a real gesture must
+// never be undone as a clamp misread.
+let lastScrollGestureAt = -Infinity;
 let hiddenAt: number | null = null;
 let lastGeneration: { id: string | null; gen: number } | null = null;
 
@@ -863,13 +913,22 @@ function scrollKey(): string | null {
 }
 function saveScroll(scrollTop: number) {
   const key = scrollKey();
-  if (key) localStorage.setItem(key, String(scrollTop));
+  if (!key) return;
+  // When we're at the bottom, persist a sentinel rather than the numeric
+  // offset. content-visibility:auto chunks report estimated heights for
+  // off-screen content, so a saved offset can no longer sit at the bottom
+  // after a reload (scrollHeight is inflated) — which silently disarmed
+  // auto-follow. Restoring the sentinel re-pins to the real bottom instead.
+  localStorage.setItem(key, atBottom ? "bottom" : String(scrollTop));
 }
 function loadScroll(): number | null {
   const key = scrollKey();
   if (!key) return null;
   const v = localStorage.getItem(key);
-  return v != null ? Number(v) : null;
+  // null (no value) and the "bottom" sentinel both mean "restore to bottom".
+  if (v == null || v === "bottom") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
 }
 
 // ---- derived ----
@@ -891,8 +950,7 @@ const isDistilling = computed(() => {
 });
 
 const selectedModelDisplayName = computed(() => {
-  const modelObj = models.value.find((m) => m.id === selectedModel.value);
-  return modelObj?.display_name || selectedModel.value;
+  return prettyModelLabels(models.value).get(selectedModel.value) || selectedModel.value;
 });
 
 const selectedModelInfo = computed(() => models.value.find((m) => m.id === selectedModel.value));
@@ -1061,7 +1119,9 @@ const welcomeParts = computed(() =>
   t("welcomeMessage").split(/(\{hostname\}|\{docsLink\}|\{proxyLink\})/),
 );
 
-const coalescedItems = computed(() => coalesceMessages(messages.value));
+const coalescedItems = computed(
+  perfWrap("chat.coalesceMessages", () => coalesceMessages(messages.value)),
+);
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -1070,7 +1130,8 @@ function formatBytes(bytes: number): string {
 }
 
 // ---- Render model (porting renderMessages into structured data) ----
-const renderModel = computed<GenerationBlock[]>(() => {
+const renderModel = computed<GenerationBlock[]>(perfWrap("chat.renderModel", buildRenderModel));
+function buildRenderModel(): GenerationBlock[] {
   const msgs = messages.value;
   if (msgs.length === 0) return [];
 
@@ -1296,7 +1357,7 @@ const renderModel = computed<GenerationBlock[]>(() => {
   });
 
   return blocks;
-});
+}
 
 // Wrap consecutive render nodes into fixed-size chunks. Each chunk gets
 // content-visibility:auto (see .messages-chunk in styles.css) so WebKit can
@@ -1323,6 +1384,10 @@ const showStreamingPreview = computed(() => !!streamingText.value && agentWorkin
 // ---- scroll ----
 const MAX_SCROLL_OFFSET = 0x7fffffff;
 const BOTTOM_PIN_SCROLL_RELEASE_DELTA = 128;
+// How long a clamp bookkeeping entry stays valid. A layout clamp and its
+// scroll event land within a rendering update or two of each other; anything
+// older is stale and must not affect genuine gestures.
+const CLAMP_MISREAD_UNDO_WINDOW_MS = 250;
 let bottomPinFrame: number | null = null;
 let bottomPinActive = false;
 
@@ -1340,10 +1405,14 @@ function releaseBottomPinForUser() {
 }
 
 function handleBottomPinWheel(e: WheelEvent) {
-  if (e.deltaY < 0) releaseBottomPinForUser();
+  if (e.deltaY < 0) {
+    lastScrollGestureAt = performance.now();
+    releaseBottomPinForUser();
+  }
 }
 
 function handleBottomPinTouch() {
+  lastScrollGestureAt = performance.now();
   releaseBottomPinForUser();
 }
 
@@ -1373,6 +1442,7 @@ function syncFromStore(focusedId: string) {
   const rec = messageStore.peek(focusedId);
   if (focusedId !== currentConversationId) return;
   if (!rec) return;
+  perfCount("chat.syncFromStore");
   messages.value = rec.messages;
   lastKnownMessageCount.value = rec.messages.length;
   saveMsgCount(rec.messages.length);
@@ -1385,6 +1455,7 @@ function syncFromStore(focusedId: string) {
 function syncTransientFromStore(focusedId: string) {
   const tr = messageStore.getTransient(focusedId);
   if (focusedId !== currentConversationId) return;
+  perfCount("chat.syncTransient");
   toolProgress.value = tr.toolProgress;
   streamingText.value = tr.streamingText;
   agentWorking.value = tr.agentWorking;
@@ -1553,9 +1624,10 @@ async function cancelQueuedMessage(queuedId: string) {
 
 // Ghost pending messages derived from the open conversation's queued_messages
 // JSON array (not messages rows). Rendered at the bottom of the conversation.
-const queuedGhosts = computed(() =>
-  parseQueuedMessages(props.currentConversation?.queued_messages),
-);
+const queuedGhosts = computed(() => {
+  perfCount("chat.queuedGhosts");
+  return parseQueuedMessages(props.currentConversation?.queued_messages);
+});
 
 // Build the conversation_options bundle from the current composer selection
 // (tool overrides, thinking level). "default" omits the
@@ -1985,6 +2057,7 @@ async function saveDraft(value: string) {
 
 const draftAutosave = useDraftAutosave(saveDraft);
 function handleDraftChange(value: string) {
+  perfCount("chat.draftChange");
   draftText = value;
   // Mirror to localStorage SYNCHRONOUSLY before the debounced server autosave:
   // if the tab reloads (or the network silently dropped) before the PUT lands,
@@ -2084,41 +2157,44 @@ const loadingBarFillStyle = computed<Record<string, string> | undefined>(() => {
 
 // Props bundle for ChatStatusContent (rendered in the status bar OR the
 // mobile message-input slot — mutually exclusive locations).
-const statusContentProps = computed(() => ({
-  currentConversation: props.currentConversation,
-  conversationId: props.conversationId,
-  streamStatus: props.streamStatus,
-  error: error.value,
-  agentWorking: agentWorking.value,
-  cancelling: cancelling.value,
-  selectedCwd: selectedCwd.value,
-  contextWindowSize: contextWindowSize.value,
-  maxContextTokens: maxContextTokens.value,
-  usageEntries: usageEntries.value,
-  selectedModelDisplayName: selectedModelDisplayName.value,
-  hostname,
-  models: models.value,
-  selectedModel: selectedModel.value,
-  sending: sending.value,
-  refreshingModels: refreshingModels.value,
-  thinkingLevel: thinkingLevel.value,
-  toolOverrides: toolOverrides.value,
-  toolOverrideList: toolOverrideList.value,
-  toolOverrideCount: toolOverrideCount.value,
-  cwdError: cwdError.value,
-  onUnarchive: handleUnarchive,
-  onClearError: () => (error.value = null),
-  onCancel: handleCancel,
-  onDistillNewGeneration: contextBarDistill.value,
-  onStartNewGeneration: handleStartNewGeneration,
-  onSelectModel: setSelectedModel,
-  onManageModels: () => props.onOpenModelsModal?.(),
-  onRefreshModels: handleRefreshModels,
-  onThinkingChange: setThinkingLevel,
-  onSetToolOverride: setToolOverride,
-  onResetToolOverrides: resetToolOverrides,
-  onOpenDirectoryPicker: () => (showDirectoryPicker.value = true),
-}));
+const statusContentProps = computed(() => {
+  perfCount("chat.statusContentProps");
+  return {
+    currentConversation: props.currentConversation,
+    conversationId: props.conversationId,
+    streamStatus: props.streamStatus,
+    error: error.value,
+    agentWorking: agentWorking.value,
+    cancelling: cancelling.value,
+    selectedCwd: selectedCwd.value,
+    contextWindowSize: contextWindowSize.value,
+    maxContextTokens: maxContextTokens.value,
+    usageEntries: usageEntries.value,
+    selectedModelDisplayName: selectedModelDisplayName.value,
+    hostname,
+    models: models.value,
+    selectedModel: selectedModel.value,
+    sending: sending.value,
+    refreshingModels: refreshingModels.value,
+    thinkingLevel: thinkingLevel.value,
+    toolOverrides: toolOverrides.value,
+    toolOverrideList: toolOverrideList.value,
+    toolOverrideCount: toolOverrideCount.value,
+    cwdError: cwdError.value,
+    onUnarchive: handleUnarchive,
+    onClearError: () => (error.value = null),
+    onCancel: handleCancel,
+    onDistillNewGeneration: contextBarDistill.value,
+    onStartNewGeneration: handleStartNewGeneration,
+    onSelectModel: setSelectedModel,
+    onManageModels: () => props.onOpenModelsModal?.(),
+    onRefreshModels: handleRefreshModels,
+    onThinkingChange: setThinkingLevel,
+    onSetToolOverride: setToolOverride,
+    onResetToolOverrides: resetToolOverrides,
+    onOpenDirectoryPicker: () => (showDirectoryPicker.value = true),
+  };
+});
 
 // ============ effects / watchers ============
 
@@ -2375,6 +2451,20 @@ watch(
     teardownSubscriptions();
     lastReviewedSeq.value = loadReviewedSeq(id);
     showResumeUnread.value = false;
+    // Reset scroll bookkeeping so state from the previous conversation can't
+    // leak across the switch. lastListHeight/clampBudget are especially
+    // important: the observer re-attach (watch on the recreated .messages-list)
+    // fires an initial ResizeObserver callback, and a stale lastListHeight from
+    // a taller previous conversation would inject a spurious clampBudget that
+    // could swallow the user's first genuine scroll-up. atBottom defaults to
+    // true because a freshly loaded conversation renders pinned to the bottom.
+    lastListHeight = 0;
+    clampBudget = 0;
+    lastContainerHeight = 0;
+    sentinelAtBottom = true;
+    inferredScrollUpAt = -Infinity;
+    inferredScrollUpDelta = 0;
+    atBottom = true;
     if (!id) {
       messages.value = [];
       contextWindowSize.value = 0;
@@ -2483,6 +2573,7 @@ watch(
     lazyDraftId,
   ],
   () => {
+    perfCount("chat.draftReconcileWatch");
     const result = reconcileComposerDraft({
       conversationId: props.conversationId ?? null,
       lazyDraftId: lazyDraftId.value,
@@ -2613,10 +2704,22 @@ watch(
           const container = messagesContainerRef.value;
           if (container) {
             container.scrollTop = pending;
-            userScrolled = true;
-            showScrollToBottom.value = true;
+            // Only treat a restored position as "user scrolled away" when it's
+            // not already near the bottom. Restoring a saved position that sits
+            // at the bottom must keep auto-scroll armed and the button hidden,
+            // otherwise following conversations silently stops (React parity).
+            const nearBottom = container.scrollHeight - pending - container.clientHeight < 100;
+            userScrolled = !nearBottom;
+            atBottom = nearBottom;
+            showScrollToBottom.value = !nearBottom;
           }
         } else {
+          // Restoring to the bottom (saved sentinel or a brand-new conversation).
+          // Set atBottom eagerly rather than waiting for the IntersectionObserver
+          // to fire, so a save triggered during the switch window (e.g.
+          // beforeunload/visibilitychange) can't persist a stale non-bottom
+          // offset for a conversation that is actually pinned to the bottom.
+          atBottom = true;
           scrollToBottom();
         }
         return;
@@ -2631,20 +2734,55 @@ watch(
 let scrollSaveTimer: number | null = null;
 let ro: ResizeObserver | null = null;
 let bottomObserver: IntersectionObserver | null = null;
-let mo: MutationObserver | null = null;
 let lastObservedScrollTop = 0;
+// Last observed heights of the message list and container, read for free from
+// the ResizeObserver entries' contentRect (no forced layout). When the list
+// shrinks — or the container grows (composer resizing, panels opening) — the
+// browser clamps scrollTop down, which is indistinguishable from a user
+// scroll-up if you only watch scrollTop. content-visibility:auto makes this
+// routine: off-screen chunks swap their estimated height for the real one as
+// they lay out, so scrollHeight (and the max scrollTop) keeps changing.
+// Misreading those clamps as scroll-ups wrongly disarmed auto-follow and left
+// the scroll-to-bottom button stranded (GitHub #245). The ResizeObserver fires
+// before the clamp's scroll event, so it hands handleScroll a pixel budget to
+// discount; when a forced reflow flushes the clamp first instead, the
+// ResizeObserver retroactively undoes the misread (see inferredScrollUpAt).
+// (lastListHeight/clampBudget are declared with atBottom near the top of
+// setup: the immediate conversationId watch resets them, and a `let` in TDZ
+// there would throw during setup and strand the composer disabled.)
 
 function handleScroll() {
   const container = messagesContainerRef.value;
   if (!container) return;
-  const upwardDelta = lastObservedScrollTop - container.scrollTop;
+  perfCount("chat.handleScroll");
+  let upwardDelta = lastObservedScrollTop - container.scrollTop;
+  // Discount any scrollTop drop the ResizeObserver already attributed to a
+  // list shrink (a layout clamp, not a gesture).
+  if (upwardDelta > 0 && clampBudget > 0) {
+    const absorbed = Math.min(upwardDelta, clampBudget);
+    upwardDelta -= absorbed;
+    clampBudget -= absorbed;
+  }
   if (bottomPinActive && upwardDelta >= BOTTOM_PIN_SCROLL_RELEASE_DELTA) {
     stopBottomPin();
   }
   if (!bottomPinActive && upwardDelta > 0) {
+    // Record the inference so the container ResizeObserver can undo it if a
+    // growth report arrives that explains this drop as a layout clamp.
+    const now = performance.now();
+    inferredScrollUpDelta =
+      now - inferredScrollUpAt < CLAMP_MISREAD_UNDO_WINDOW_MS
+        ? inferredScrollUpDelta + upwardDelta
+        : upwardDelta;
+    inferredScrollUpAt = now;
     userScrolled = true;
+    atBottom = false;
     showScrollToBottom.value = true;
   }
+  // A layout clamp emits its scroll event synchronously right after the resize
+  // that caused it, so any unconsumed budget now is stale; drop it so it can't
+  // silently absorb a later genuine scroll-up.
+  clampBudget = 0;
   lastObservedScrollTop = container.scrollTop;
   if (scrollSaveTimer) clearTimeout(scrollSaveTimer);
   scrollSaveTimer = window.setTimeout(() => {
@@ -2662,6 +2800,8 @@ function setupScrollObservers() {
   bottomObserver = new IntersectionObserver(
     ([entry]) => {
       const nearBottom = entry?.isIntersecting ?? false;
+      sentinelAtBottom = nearBottom;
+      atBottom = nearBottom;
       showScrollToBottom.value = !nearBottom;
       if (nearBottom) {
         userScrolled = false;
@@ -2670,35 +2810,75 @@ function setupScrollObservers() {
     },
     { root: container, rootMargin: "0px 0px 100px 0px", threshold: 0 },
   );
-  ro = new ResizeObserver(() => {
-    if (!bottomPinActive && container.scrollTop < lastObservedScrollTop) {
-      userScrolled = true;
-      showScrollToBottom.value = true;
-      lastObservedScrollTop = container.scrollTop;
-      return;
+  ro = new ResizeObserver((entries) => {
+    perfCount("chat.listResizeObserver");
+    // contentRect.height is already computed for the ResizeObserver callback,
+    // so reading it forces no extra layout — unlike container.scrollHeight,
+    // which would lay out off-screen content-visibility chunks and stall the
+    // main thread. A list shrink means the imminent scroll event is a clamp,
+    // not a gesture, so record how much handleScroll should discount.
+    let listHeight = lastListHeight;
+    let containerHeight = lastContainerHeight;
+    for (const entry of entries) {
+      if (entry.target === container) containerHeight = entry.contentRect.height;
+      else listHeight = entry.contentRect.height;
     }
+    if (listHeight < lastListHeight) {
+      clampBudget += lastListHeight - listHeight;
+    }
+    // Container growth clamps scrollTop down too (the viewport got taller, so
+    // the max offset got smaller). When we were following the bottom, that
+    // clamp is not a gesture. Its scroll event may land before or after this
+    // callback depending on when layout flushed, so cover both orders:
+    // budget the pixels for a scroll event still to come, or retroactively
+    // undo a scroll-up handleScroll already misread.
+    const containerGrowth = containerHeight - lastContainerHeight;
+    if (lastContainerHeight > 0 && containerGrowth > 0 && sentinelAtBottom) {
+      const now = performance.now();
+      if (
+        now - inferredScrollUpAt < CLAMP_MISREAD_UNDO_WINDOW_MS &&
+        now - lastScrollGestureAt > CLAMP_MISREAD_UNDO_WINDOW_MS &&
+        inferredScrollUpDelta <= containerGrowth + 1
+      ) {
+        userScrolled = false;
+        atBottom = true;
+        showScrollToBottom.value = false;
+        inferredScrollUpAt = -Infinity;
+        inferredScrollUpDelta = 0;
+      } else {
+        clampBudget += containerGrowth;
+      }
+    }
+    lastContainerHeight = containerHeight;
+    lastListHeight = listHeight;
+    // Keep following pinned to the bottom as content streams in. User scroll-up
+    // detection lives solely in handleScroll (with clamp discounting); inferring
+    // it from resize events is what misfired on layout clamps.
     if (!userScrolled && !catchingUp) {
       container.scrollTop = MAX_SCROLL_OFFSET;
-      lastObservedScrollTop = container.scrollTop;
     }
+    lastObservedScrollTop = container.scrollTop;
   });
-  const attachObservers = () => {
-    const list = container.querySelector(".messages-list");
-    const sentinel = bottomSentinelRef.value;
-    if (!list || !sentinel) return false;
-    ro!.observe(list);
-    bottomObserver!.observe(sentinel);
-    return true;
-  };
-  if (!attachObservers()) {
-    mo = new MutationObserver((_, self) => {
-      if (attachObservers()) {
-        self.disconnect();
-        mo = null;
-      }
-    });
-    mo.observe(container, { childList: true, subtree: true });
-  }
+  // (Re)attach the element observers whenever the list/sentinel nodes change.
+  // The v-if="loading" spinner tears down and recreates .messages-list on every
+  // conversation load, so observers bound to the old nodes go stale — which is
+  // what silently broke auto-scroll and the scroll-to-bottom button after a
+  // conversation finished loading. A reactive watch re-observes the live nodes.
+  watch(
+    [messagesListRef, bottomSentinelRef],
+    ([list, sentinel]) => {
+      ro?.disconnect();
+      bottomObserver?.disconnect();
+      // Observe the container alongside the list: container resizes (composer
+      // growing/shrinking, panels opening) clamp scrollTop just like list
+      // shrinks do, and must not read as user scroll-ups.
+      lastContainerHeight = 0;
+      ro?.observe(container);
+      if (list) ro?.observe(list);
+      if (sentinel) bottomObserver?.observe(sentinel);
+    },
+    { immediate: true, flush: "post" },
+  );
 }
 
 // Save scroll on page hide.
@@ -2870,7 +3050,6 @@ onUnmounted(() => {
   container?.removeEventListener("wheel", handleBottomPinWheel);
   container?.removeEventListener("touchstart", handleBottomPinTouch);
   if (scrollSaveTimer) clearTimeout(scrollSaveTimer);
-  mo?.disconnect();
   ro?.disconnect();
   bottomObserver?.disconnect();
   document.removeEventListener("visibilitychange", onVisChangeSave);

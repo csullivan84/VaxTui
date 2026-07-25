@@ -10,6 +10,7 @@
 import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { renderMarkdownToSafeHTML } from "../../utils/markdownRender";
 import { announceA11y } from "../../services/a11yAnnouncer";
+import { perfWrap } from "../../utils/perf";
 
 const props = defineProps<{
   text: string;
@@ -19,7 +20,9 @@ const props = defineProps<{
   messageId?: string;
 }>();
 
-const html = computed(() => renderMarkdownToSafeHTML(props.text, props.messageId));
+const html = computed(
+  perfWrap("markdown.render", () => renderMarkdownToSafeHTML(props.text, props.messageId)),
+);
 const rootRef = ref<HTMLDivElement | null>(null);
 
 function codeBlocks(): HTMLElement[] {

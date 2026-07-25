@@ -18,10 +18,6 @@ export const es: TranslationKeys = {
   archiveConversation: "Archivar conversación",
   exportConversation: "Exportar conversación",
   checkForNewVersion: "Buscar nueva versión",
-  markdown: "Markdown",
-  off: "Desactivado",
-  agent: "Agente",
-  all: "Todo",
 
   // Theme
   system: "Sistema",
@@ -101,6 +97,7 @@ export const es: TranslationKeys = {
   duplicateName: "Ya existe una conversación con este nombre",
   agentIsWorking: "El agente está trabajando...",
   subagentIsWorking: "El subagente está trabajando...",
+  running: "en ejecución",
   hideSubagents: "Ocultar subagentes",
   showSubagents: "Mostrar subagentes",
   groupConversations: "Agrupar conversaciones",
@@ -132,6 +129,15 @@ export const es: TranslationKeys = {
   addModel: "Agregar modelo",
   refreshModels: "Actualizar",
   refreshingModels: "Actualizando...",
+  searchModels: "Buscar modelos",
+  noModelsFound: "No se encontraron modelos",
+  notReadyBadge: "no listo",
+  showAllModels: "Todos los modelos",
+  showFewerModels: "Menos modelos",
+  manageModelsAction: "Administrar modelos…",
+  effortLabel: "Esfuerzo de razonamiento",
+  effortAuto: "auto",
+  customModelsGroup: "Modelos personalizados",
   editModel: "Editar modelo",
   loadingModels: "Cargando modelos...",
   providerApiFormat: "Proveedor / Formato de API",
@@ -154,7 +160,6 @@ export const es: TranslationKeys = {
   columnName: "Nombre",
   columnModelId: "ID del modelo",
   columnProvider: "Forma de API",
-  columnSource: "Origen",
   columnActions: "Acciones",
   columnImages: "Imágenes",
   imageSupportAutoShort: "auto",
@@ -242,20 +247,19 @@ export const es: TranslationKeys = {
     "No hay modelos de IA configurados. Presione Ctrl+K o ⌘+K para agregar un modelo.",
 
   // Status Bar
-  modelLabel: "Modelo:",
-  thinkingLabel: "Esfuerzo:",
   dirLabel: "Dir.:",
 
   // Sidebar buttons
   editUserAgentsMd: "Editar AGENTS.md de usuario",
+  editFile: "Editar archivo…",
 
   openConversations: "Abrir conversaciones",
   expandSidebar: "Expandir barra lateral",
 
   // Language
   language: "Idioma",
+  off: "Desactivado",
   switchLanguage: "Cambiar idioma",
-  reportBug: "Reportar un error",
   english: "English",
   japanese: "日本語",
   french: "Français",

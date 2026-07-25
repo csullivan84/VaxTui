@@ -79,10 +79,12 @@ const props = withDefaults(
     isOpen: boolean;
     path: string;
     title?: string;
+    /** Explicit Monaco language id. When omitted, the language is detected
+     *  from the file extension (falling back to markdown). */
     language?: string;
     loadUrl?: string;
   }>(),
-  { language: "markdown" },
+  {},
 );
 const emit = defineEmits<{
   (e: "close"): void;
@@ -114,6 +116,11 @@ const isDesktop = ref(window.innerWidth >= 768);
 function onResize() {
   isDesktop.value = window.innerWidth >= 768;
 }
+
+// Re-apply viewport-dependent Monaco options when crossing the breakpoint.
+watch(isDesktop, (desktop) => {
+  editor.value?.updateOptions(mobileLayoutOptions(!desktop));
+});
 
 // --- File load (when opened / path / loadUrl change) ---
 watch(
@@ -215,6 +222,41 @@ useMonacoVim(
   handleVimQuit,
 );
 
+// Resolve the Monaco language id: an explicit prop wins; otherwise detect
+// from the file extension via Monaco's registered languages (matching
+// DiffViewer), defaulting to markdown when unknown.
+function resolveLanguage(monaco: typeof Monaco, path: string): string {
+  if (props.language) return props.language;
+  const dot = path.lastIndexOf(".");
+  if (dot < 0) return "markdown";
+  const ext = path.slice(dot).toLowerCase();
+  for (const lang of monaco.languages.getLanguages()) {
+    if (lang.extensions?.includes(ext)) return lang.id;
+  }
+  return "markdown";
+}
+
+// Viewport-dependent layout options (mirrors DiffViewer's mobile handling).
+// On mobile we drop line numbers / folding / glyph margin so Monaco's own
+// layout leaves only a slim gutter. This must be real Monaco options — the
+// mobile CSS that squeezes `.margin` to 8px doesn't change Monaco's internal
+// layout math, so with a wide margin the text column (and its scrollbar)
+// would end ~54px short of the right edge.
+function mobileLayoutOptions(mobile: boolean): Monaco.editor.IEditorOptions {
+  return {
+    lineNumbers: mobile ? "off" : "on",
+    lineNumbersMinChars: mobile ? 0 : 3,
+    lineDecorationsWidth: mobile ? 8 : 10,
+    glyphMargin: !mobile,
+    folding: !mobile,
+    scrollbar: {
+      verticalScrollbarSize: mobile ? 8 : 14,
+      horizontalScrollbarSize: mobile ? 8 : 12,
+    },
+    overviewRulerLanes: mobile ? 1 : 3,
+  };
+}
+
 // --- Create the editor once content + monaco are ready ---
 watch(
   () => [monacoLoaded.value, content.value, props.language] as const,
@@ -225,15 +267,15 @@ watch(
     const monaco = monacoMod;
     const nextEditor = monaco.editor.create(containerRef.value, {
       value: content.value,
-      language: props.language,
+      language: resolveLanguage(monaco, props.path),
       theme: isDarkModeActive() ? "vs-dark" : "vs",
       minimap: { enabled: false },
       wordWrap: "on",
-      lineNumbers: "on",
       scrollBeyondLastLine: false,
       automaticLayout: true,
       fontSize: 14,
       padding: { top: 8 },
+      ...mobileLayoutOptions(!isDesktop.value),
     });
     editor.value = nextEditor;
 

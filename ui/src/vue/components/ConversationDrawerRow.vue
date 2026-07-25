@@ -123,11 +123,17 @@
         <button
           v-if="!isDraft && !itemArchived && hasSubagents"
           class="subagent-count-badge"
-          v-tooltip.top="isExpanded ? ctx.t('hideSubagents') : ctx.t('showSubagents')"
+          v-tooltip.top="subagentBadgeTooltip"
           :aria-label="isExpanded ? ctx.t('collapseSubagents') : ctx.t('expandSubagents')"
           @click="ctx.toggleSubagents($event, conversation.conversation_id)"
         >
-          <span class="drawer-subagent-count-badge-text">{{ subagentCount }}</span>
+          <span
+            v-if="runningSubagentCount > 0"
+            class="working-indicator"
+            data-testid="subagent-badge-running"
+            aria-hidden="true"
+          />
+          <span class="drawer-subagent-count-badge-text">{{ subagentBadgeText }}</span>
           <svg
             fill="none"
             stroke="currentColor"
@@ -280,7 +286,7 @@
           </div>
           <span
             v-if="sub.working"
-            class="working-indicator drawer-subagent-working-indicator"
+            class="working-indicator"
             :title="ctx.t('subagentIsWorking')"
           />
         </div>
@@ -308,6 +314,7 @@ import {
   stripSnippetMarks,
   renderSnippetSegments,
 } from "./conversationDrawerShared";
+import { perfCount } from "../../utils/perf";
 
 const props = defineProps<{
   conversation: Conversation | ConversationWithState;
@@ -330,6 +337,22 @@ const subagentCount = computed(() =>
   isDraft.value ? 0 : conversationSubagents.value.length || convState.value.subagent_count || 0,
 );
 const hasSubagents = computed(() => subagentCount.value > 0);
+// How many of this conversation's subagents are currently working. Drives
+// the working ring + "running/total" split on the count badge.
+const runningSubagentCount = computed(
+  () => conversationSubagents.value.filter((s) => s.working).length,
+);
+const subagentBadgeText = computed(() =>
+  runningSubagentCount.value > 0
+    ? `${runningSubagentCount.value}/${subagentCount.value}`
+    : `${subagentCount.value}`,
+);
+const subagentBadgeTooltip = computed(() => {
+  const base = isExpanded.value ? ctx.t("hideSubagents") : ctx.t("showSubagents");
+  return runningSubagentCount.value > 0
+    ? `${base} (${runningSubagentCount.value} ${ctx.t("running")})`
+    : base;
+});
 const isExpanded = computed(() =>
   ctx.expandedSubagents.value.has(props.conversation.conversation_id),
 );
@@ -348,7 +371,10 @@ const conversationAriaLabel = computed(() => {
     isNew.value ? ", unread" : ""
   }, model ${props.conversation.model || "unknown"}`;
 });
-const conversationTags = computed(() => (isDraft.value ? [] : parseTags(props.conversation)));
+const conversationTags = computed(() => {
+  perfCount("drawerRow.tags");
+  return isDraft.value ? [] : parseTags(props.conversation);
+});
 const tagsEditing = computed(
   () => !isDraft.value && ctx.tagEditorId.value === props.conversation.conversation_id,
 );
