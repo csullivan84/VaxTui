@@ -332,16 +332,27 @@
             <div class="spinner"></div>
             <span>Loading...</span>
           </div>
-          <div v-if="!loading && !monacoLoaded && !fileDiff && !error" class="diff-viewer-loading">
+          <div
+            v-if="
+              readingMode === 'visual' && !loading && !monacoLoaded && !fileDiff && !error
+            "
+            class="diff-viewer-loading"
+          >
             <div class="spinner"></div>
             <span>Loading editor...</span>
           </div>
-          <div v-if="!loading && monacoLoaded && !fileDiff && !error" class="diff-viewer-empty">
+          <div
+            v-if="!loading && !fileDiff && !error && (readingMode === 'text' || monacoLoaded)"
+            class="diff-viewer-empty"
+          >
             <p>Select a diff and file to view changes.</p>
-            <p class="diff-viewer-hint">
+            <p v-if="readingMode === 'visual'" class="diff-viewer-hint">
               Click a line to comment, or select text and click Comment.
             </p>
           </div>
+          <!-- Text mode is the only pane in the a11y tree when active. Monaco must
+               not stay mounted with display:none — VO still finds its blank
+               editor block (and Copy grabs nothing). -->
           <section
             v-if="fileDiff && (readingMode === 'text' || !monacoLoaded)"
             ref="textDiffRef"
@@ -365,11 +376,10 @@
             </ol>
           </section>
           <div
+            v-if="readingMode === 'visual' && monacoLoaded"
             ref="editorContainerRef"
             class="diff-viewer-editor"
-            :style="{
-              display: fileDiff && monacoLoaded && readingMode === 'visual' ? 'block' : 'none',
-            }"
+            :aria-hidden="!fileDiff ? 'true' : undefined"
           />
           <div
             v-if="!isMobile && vimEnabled && fileDiff && monacoLoaded && readingMode === 'visual'"
@@ -913,6 +923,8 @@ function createEditor() {
 let commentsCleanup: (() => void) | null = null;
 
 function disposeEditor() {
+  diffUpdateDisposable?.dispose();
+  diffUpdateDisposable = null;
   if (!diffEditor) return;
   commentsCleanup?.();
   commentsCleanup = null;
@@ -924,15 +936,23 @@ function disposeEditor() {
   modifiedEditor.value = null;
 }
 
-// Create/dispose the editor when isOpen + monacoLoaded change.
+// Create Monaco only for visual mode with a mounted, visible container.
+// Text mode (incl. screen-reader default) never mounts Monaco — a hidden
+// editor still injects blank a11y nodes VO+L/C will hit before the summary.
 watch(
-  [() => props.isOpen, monacoLoaded],
+  [() => props.isOpen, monacoLoaded, readingMode],
   () => {
-    if (props.isOpen && monacoLoaded.value) {
-      nextTick(() => createEditor());
-    } else {
+    if (!props.isOpen || !monacoLoaded.value || readingMode.value !== "visual") {
       disposeEditor();
+      return;
     }
+    // Double nextTick: v-if must mount editorContainerRef before createDiffEditor.
+    nextTick(() => {
+      nextTick(() => {
+        createEditor();
+        applyFileDiffToEditor();
+      });
+    });
   },
   { immediate: true, flush: "post" },
 );
@@ -960,81 +980,88 @@ watch(isMobile, (mob) => {
 
 // Swap models into the existing editor when fileDiff changes.
 let diffUpdateDisposable: Monaco.IDisposable | null = null;
-watch(
-  [monacoLoaded, fileDiff],
-  () => {
-    if (!monacoLoaded.value || !fileDiff.value || !diffEditor || !monacoMod) return;
-    const monaco = monacoMod;
-    const fd = fileDiff.value;
 
-    const isCommitMsg = isCommitMessageFile(fd.path);
-    const commitHash = isCommitMsg ? commitHashFromPath(fd.path) : null;
-    const isHeadCommit =
-      isCommitMsg && commitMessagesVal.some((m) => m.hash === commitHash && m.isHead);
-    currentFileIsHeadCommit = isHeadCommit;
+function applyFileDiffToEditor() {
+  if (
+    readingMode.value !== "visual" ||
+    !monacoLoaded.value ||
+    !fileDiff.value ||
+    !diffEditor ||
+    !monacoMod
+  ) {
+    return;
+  }
+  const monaco = monacoMod;
+  const fd = fileDiff.value;
 
-    let language = "plaintext";
-    if (!isCommitMsg) {
-      const ext = "." + (fd.path.split(".").pop()?.toLowerCase() || "");
-      const languages = monaco.languages.getLanguages();
-      for (const lang of languages) {
-        if (lang.extensions?.includes(ext)) {
-          language = lang.id;
-          break;
-        }
+  const isCommitMsg = isCommitMessageFile(fd.path);
+  const commitHash = isCommitMsg ? commitHashFromPath(fd.path) : null;
+  const isHeadCommit =
+    isCommitMsg && commitMessagesVal.some((m) => m.hash === commitHash && m.isHead);
+  currentFileIsHeadCommit = isHeadCommit;
+
+  let language = "plaintext";
+  if (!isCommitMsg) {
+    const ext = "." + (fd.path.split(".").pop()?.toLowerCase() || "");
+    const languages = monaco.languages.getLanguages();
+    for (const lang of languages) {
+      if (lang.extensions?.includes(ext)) {
+        language = lang.id;
+        break;
       }
     }
+  }
 
-    const timestamp = Date.now();
-    const originalUri = monaco.Uri.file(`original-${timestamp}-${fd.path}`);
-    const modifiedUri = monaco.Uri.file(`modified-${timestamp}-${fd.path}`);
-    const originalModel = monaco.editor.createModel(fd.oldContent, language, originalUri);
-    const modifiedModel = monaco.editor.createModel(fd.newContent, language, modifiedUri);
+  const timestamp = Date.now();
+  const originalUri = monaco.Uri.file(`original-${timestamp}-${fd.path}`);
+  const modifiedUri = monaco.Uri.file(`modified-${timestamp}-${fd.path}`);
+  const originalModel = monaco.editor.createModel(fd.oldContent, language, originalUri);
+  const modifiedModel = monaco.editor.createModel(fd.newContent, language, modifiedUri);
 
-    const prev = diffEditor.getModel();
-    diffEditor.setModel({ original: originalModel, modified: modifiedModel });
-    prev?.original.dispose();
-    prev?.modified.dispose();
+  const prev = diffEditor.getModel();
+  diffEditor.setModel({ original: originalModel, modified: modifiedModel });
+  prev?.original.dispose();
+  prev?.modified.dispose();
 
-    const isWorkingView = selectedDiff.value === "working" || selectedTo.value === "working";
-    const readOnly = isCommitMsg ? !isHeadCommit : modeVal === "comment" || !isWorkingView;
-    // Drag-and-drop of text only in edit mode (never on commit messages).
-    const dragAndDrop = !isCommitMsg && modeVal === "edit";
-    // For new/deleted files one side is empty; shrink it so the non-empty
-    // side gets most of the width instead of wasting half the screen.
-    splitViewRatioVal = 0.5;
-    if (fd.oldContent === "" && fd.newContent !== "") {
-      splitViewRatioVal = EMPTY_SIDE_SPLIT_RATIO;
-    } else if (fd.newContent === "" && fd.oldContent !== "") {
-      splitViewRatioVal = 1 - EMPTY_SIDE_SPLIT_RATIO;
+  const isWorkingView = selectedDiff.value === "working" || selectedTo.value === "working";
+  const readOnly = isCommitMsg ? !isHeadCommit : modeVal === "comment" || !isWorkingView;
+  // Drag-and-drop of text only in edit mode (never on commit messages).
+  const dragAndDrop = !isCommitMsg && modeVal === "edit";
+  // For new/deleted files one side is empty; shrink it so the non-empty
+  // side gets most of the width instead of wasting half the screen.
+  splitViewRatioVal = 0.5;
+  if (fd.oldContent === "" && fd.newContent !== "") {
+    splitViewRatioVal = EMPTY_SIDE_SPLIT_RATIO;
+  } else if (fd.newContent === "" && fd.oldContent !== "") {
+    splitViewRatioVal = 1 - EMPTY_SIDE_SPLIT_RATIO;
+  }
+  diffEditor.updateOptions({
+    readOnly,
+    dragAndDrop,
+    splitViewDefaultRatio: splitViewRatioVal,
+  });
+  diffEditor.getModifiedEditor().updateOptions({ readOnly, dragAndDrop });
+
+  let hasScrolledToFirstChange = false;
+  const scrollToFirstChange = () => {
+    if (hasScrolledToFirstChange || !diffEditor) return;
+    const changes = diffEditor.getLineChanges();
+    if (changes && changes.length > 0) {
+      hasScrolledToFirstChange = true;
+      const firstChange = changes[0];
+      const targetLine = firstChange.modifiedStartLineNumber || 1;
+      const editor = diffEditor.getModifiedEditor();
+      editor.revealLineInCenter(targetLine);
+      editor.setPosition({ lineNumber: targetLine, column: 1 });
+      currentChangeIndex.value = 0;
     }
-    diffEditor.updateOptions({
-      readOnly,
-      dragAndDrop,
-      splitViewDefaultRatio: splitViewRatioVal,
-    });
-    diffEditor.getModifiedEditor().updateOptions({ readOnly, dragAndDrop });
+  };
+  scrollToFirstChange();
+  diffUpdateDisposable?.dispose();
+  diffUpdateDisposable = diffEditor.onDidUpdateDiff(scrollToFirstChange);
+}
 
-    let hasScrolledToFirstChange = false;
-    const scrollToFirstChange = () => {
-      if (hasScrolledToFirstChange || !diffEditor) return;
-      const changes = diffEditor.getLineChanges();
-      if (changes && changes.length > 0) {
-        hasScrolledToFirstChange = true;
-        const firstChange = changes[0];
-        const targetLine = firstChange.modifiedStartLineNumber || 1;
-        const editor = diffEditor.getModifiedEditor();
-        editor.revealLineInCenter(targetLine);
-        editor.setPosition({ lineNumber: targetLine, column: 1 });
-        currentChangeIndex.value = 0;
-      }
-    };
-    scrollToFirstChange();
-    diffUpdateDisposable?.dispose();
-    diffUpdateDisposable = diffEditor.onDidUpdateDiff(scrollToFirstChange);
-  },
-  { flush: "post" },
-);
+watch([monacoLoaded, fileDiff, readingMode], () => applyFileDiffToEditor(), { flush: "post" });
 
 // --- Data loaders ---
 async function loadDiffs() {
