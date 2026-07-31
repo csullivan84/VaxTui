@@ -19,7 +19,12 @@
    input.dispatchEvent(new Event('input', { bubbles: true }));
    ```
    Simply setting `input.value = '...'` won't work because the framework won't detect the change.
-10. Commit your changes before finishing your turn.
+10. Commit code changes before finishing your turn when the work is code
+   (Go, UI, tools, migrations, tests, config that ships with the product).
+   **Never commit documentation** — `*.md` notes, exercises, README/FORK
+   edits, design dumps, journals — unless the user explicitly says to commit
+   docs. Leave docs untracked or unstaged; do not bundle them into code
+   commits either.
 11. If you are testing Shelley itself, be aware that you might be running "under" shelley,
   and indiscriminately running pkill -f shelley may break things.
 12. To test the Shelley UI in a separate instance, build with `make build`, then run on a
