@@ -26,6 +26,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import type { EphemeralTerminal } from "./terminalTypes";
 import { getTerminalTheme, base64ToUint8Array, type TermStatus } from "./terminalHelpers";
 
+
 const props = defineProps<{
   term: EphemeralTerminal;
   isVisible: boolean;
@@ -54,12 +55,16 @@ let handlePointerDown: ((e: PointerEvent) => void) | null = null;
 onMounted(() => {
   if (!containerRef.value) return;
 
+  // Always enable xterm screenReaderMode: without it, buffer cells are not in
+  // the a11y tree and VO left/right cannot read command output (e.g. ls).
+  // Preference toggle still forces it on when already off mid-session.
   const xterm = new Terminal({
     cursorBlink: true,
     fontSize: 14,
     fontFamily: 'Consolas, "Liberation Mono", Menlo, Courier, monospace',
     theme: getTerminalTheme(props.isDark),
     scrollback: 10000,
+    screenReaderMode: true,
     // Kitty keyboard protocol — clients opt in via `CSI = u` so this is safe to leave on.
     vtExtensions: { kittyKeyboard: true },
   } as ConstructorParameters<typeof Terminal>[0]);

@@ -93,9 +93,9 @@
           <CopyIcon v-else />
         </button>
         <button
-          v-tooltip.top="'Copy all output'"
+          v-tooltip.top="'Copy all output (clipboard; enable Screen reader mode to arrow-read the buffer)'"
           :class="`terminal-panel-action-btn${copyFeedback === 'copyAll' ? ' terminal-panel-action-btn-feedback' : ''}`"
-          aria-label="Copy all output"
+          aria-label="Copy all terminal output to clipboard"
           @click="copyAll"
         >
           <CheckIcon v-if="copyFeedback === 'copyAll'" />
@@ -479,23 +479,46 @@ function getBufferText(mode: "screen" | "all"): string {
 }
 
 function copyScreen() {
-  navigator.clipboard.writeText(getBufferText("screen"));
+  const text = getBufferText("screen");
+  void navigator.clipboard.writeText(text);
   showFeedback("copyScreen");
+  const n = text ? text.split("\n").length : 0;
+  announceA11y(
+    n
+      ? `Copied ${n} visible line${n === 1 ? "" : "s"} to clipboard.`
+      : "Nothing to copy from the visible screen.",
+  );
 }
 function copyAll() {
-  navigator.clipboard.writeText(getBufferText("all"));
+  const text = getBufferText("all");
+  void navigator.clipboard.writeText(text);
   showFeedback("copyAll");
+  const n = text ? text.split("\n").length : 0;
+  // Clipboard is not navigable with VO left/right; announce so the action is audible.
+  announceA11y(
+    n
+      ? `Copied ${n} line${n === 1 ? "" : "s"} of terminal output to clipboard. Paste elsewhere to read, or use Screen reader mode and arrow through the terminal rows.`
+      : "Nothing to copy from the terminal.",
+  );
 }
 function insertScreen() {
   if (props.canInsertIntoInput) {
-    emit("insert-into-input", getBufferText("screen"));
+    const text = getBufferText("screen");
+    emit("insert-into-input", text);
     showFeedback("insertScreen");
+    const n = text ? text.split("\n").length : 0;
+    announceA11y(n ? `Inserted ${n} visible lines into the message input.` : "Nothing to insert.");
   }
 }
 function insertAll() {
   if (props.canInsertIntoInput) {
-    emit("insert-into-input", getBufferText("all"));
+    const text = getBufferText("all");
+    emit("insert-into-input", text);
     showFeedback("insertAll");
+    const n = text ? text.split("\n").length : 0;
+    announceA11y(
+      n ? `Inserted ${n} lines into the message input.` : "Nothing to insert.",
+    );
   }
 }
 
