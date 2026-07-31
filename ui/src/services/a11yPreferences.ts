@@ -5,9 +5,16 @@ const SEND_KEYSTROKE_KEY = "shelley-send-keystroke";
 
 export type SendKeystroke = "enter" | "modifier-enter";
 
-/** When on, tool/terminal bodies stay expanded and auto-expand on completion. */
+/**
+ * When on, tool/terminal bodies stay expanded and auto-expand on completion.
+ * VaxTui default: ON unless the user has explicitly turned it off ("0").
+ * Absent key = first visit / default-on (not the same as opt-out).
+ */
 export function getScreenReaderMode(): boolean {
-  return getA11yStrict() || localStorage.getItem(SCREEN_READER_MODE_KEY) === "1";
+  if (getA11yStrict()) return true;
+  const v = localStorage.getItem(SCREEN_READER_MODE_KEY);
+  if (v === null) return true; // out-of-the-box default for this fork
+  return v === "1";
 }
 
 /** Client-side feature flag: force screen-reader-first defaults for this browser. */
@@ -45,8 +52,8 @@ export function isToolAnnouncementMuted(toolName: string): boolean {
 }
 
 export function setScreenReaderMode(on: boolean): void {
-  if (on) localStorage.setItem(SCREEN_READER_MODE_KEY, "1");
-  else localStorage.removeItem(SCREEN_READER_MODE_KEY);
+  // Persist both sides so "off" is explicit and survives default-on.
+  localStorage.setItem(SCREEN_READER_MODE_KEY, on ? "1" : "0");
 }
 
 export function getSendKeystroke(): SendKeystroke {

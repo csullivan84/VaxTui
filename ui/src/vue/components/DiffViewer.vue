@@ -478,7 +478,6 @@ import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } fr
 import type * as Monaco from "monaco-editor";
 import { api } from "../../services/api";
 import { announceA11y } from "../../services/a11yAnnouncer";
-import { getScreenReaderMode } from "../../services/a11yPreferences";
 import { loadMonaco } from "../../services/monaco";
 import { isDarkModeActive } from "../../services/theme";
 import { useVimEnabled, useMonacoVim } from "../composables/monacoVim";
@@ -567,7 +566,8 @@ const monacoLoaded = ref(false);
 const currentChangeIndex = ref(-1);
 const saveStatus = ref<"idle" | "saving" | "saved" | "error">("idle");
 const mode = ref<ViewMode>("comment");
-const readingMode = ref<ReadingMode>(getScreenReaderMode() ? "text" : "visual");
+// Linear text is the default (VO-friendly). Visual Monaco is opt-in per open.
+const readingMode = ref<ReadingMode>("text");
 const commitMessages = ref<GitCommitMessage[]>([]);
 const amendStatus = ref<"idle" | "saving" | "saved" | "error">("idle");
 const showKeyboardHint = ref(false);
