@@ -68,13 +68,42 @@ onMounted(() => {
   // Ensure control key combinations (like Ctrl-B for tmux) are passed
   // through to the terminal and not intercepted by the browser.
   xterm.attachCustomKeyEventHandler((e: KeyboardEvent) => {
+    if (e.type !== "keydown") return true;
+
+    // Cmd/Ctrl+A: never let the browser select the whole Shelley page
+    // (Chrome + VO "select all" was painting the chat UI and stealing focus).
+    // - Cmd+A (macOS): select the xterm buffer only, for copy.
+    // - Ctrl+A (no meta): pass through as ^A (readline beginning-of-line).
+    if ((e.key === "a" || e.key === "A") && (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.metaKey) {
+        window.getSelection()?.removeAllRanges();
+        xterm.selectAll();
+        return false;
+      }
+      // bare Ctrl+A → shell
+      return true;
+    }
+
+    // Cmd+C with an xterm selection: copy buffer text, not the DOM page.
+    if ((e.key === "c" || e.key === "C") && e.metaKey && !e.altKey && !e.shiftKey) {
+      const sel = xterm.getSelection();
+      if (sel) {
+        e.preventDefault();
+        e.stopPropagation();
+        void navigator.clipboard.writeText(sel);
+        return false;
+      }
+    }
+
     // Allow Ctrl+Shift+C / Ctrl+Shift+V for copy/paste
     if (e.ctrlKey && e.shiftKey && (e.key === "C" || e.key === "V")) {
       return false; // Let browser handle it
     }
     // For all Ctrl+<key> combos (e.g. Ctrl-B for tmux prefix),
     // prevent the browser default and let xterm handle it.
-    if (e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey && e.type === "keydown") {
+    if (e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey) {
       e.preventDefault();
       return true; // Let xterm process it
     }
