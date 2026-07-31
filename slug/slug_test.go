@@ -2,6 +2,7 @@ package slug
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -156,7 +157,7 @@ func TestGenerateSlug_DatabaseIntegration(t *testing.T) {
 	}
 
 	// Generate first slug - should succeed with "test-slug"
-	slug1, err := GenerateSlug(ctx, mockLLM, database, logger, conv1.ConversationID, "Test message", "test-model")
+	slug1, _, err := GenerateSlug(ctx, mockLLM, database, logger, conv1.ConversationID, "Test message", "test-model")
 	if err != nil {
 		t.Fatalf("Failed to generate first slug: %v", err)
 	}
@@ -171,7 +172,7 @@ func TestGenerateSlug_DatabaseIntegration(t *testing.T) {
 	}
 
 	// Generate second slug - should get "test-slug-1" due to conflict
-	slug2, err := GenerateSlug(ctx, mockLLM, database, logger, conv2.ConversationID, "Test message", "test-model")
+	slug2, _, err := GenerateSlug(ctx, mockLLM, database, logger, conv2.ConversationID, "Test message", "test-model")
 	if err != nil {
 		t.Fatalf("Failed to generate second slug: %v", err)
 	}
@@ -186,7 +187,7 @@ func TestGenerateSlug_DatabaseIntegration(t *testing.T) {
 	}
 
 	// Generate third slug - should get "test-slug-2" due to conflict
-	slug3, err := GenerateSlug(ctx, mockLLM, database, logger, conv3.ConversationID, "Test message", "test-model")
+	slug3, _, err := GenerateSlug(ctx, mockLLM, database, logger, conv3.ConversationID, "Test message", "test-model")
 	if err != nil {
 		t.Fatalf("Failed to generate third slug: %v", err)
 	}
@@ -232,7 +233,7 @@ func TestGenerateSlug_PreservesExisting(t *testing.T) {
 		t.Fatalf("Failed to set initial slug: %v", err)
 	}
 
-	result, err := GenerateSlug(ctx, mockLLM, database, logger, conv.ConversationID, "Some new first-looking message", "test-model")
+	result, _, err := GenerateSlug(ctx, mockLLM, database, logger, conv.ConversationID, "Some new first-looking message", "test-model")
 	if err != nil {
 		t.Fatalf("GenerateSlug returned error: %v", err)
 	}
@@ -466,7 +467,7 @@ func TestGenerateSlug_DatabaseError(t *testing.T) {
 	}
 	closedDB.Close()
 
-	_, err = GenerateSlug(ctx, mockLLM, closedDB, logger, "test-conversation-id", "Test message", "test-model")
+	_, _, err = GenerateSlug(ctx, mockLLM, closedDB, logger, "test-conversation-id", "Test message", "test-model")
 	if err == nil {
 		t.Error("Expected database error, got nil")
 	}
@@ -646,7 +647,7 @@ func TestGenerateSlug_ReasoningModel(t *testing.T) {
 		t.Fatalf("Failed to create conversation: %v", err)
 	}
 
-	slug, err := GenerateSlug(ctx, mockLLM, database, logger, conv.ConversationID, "how do I parse JSON in Go", "test-model")
+	slug, _, err := GenerateSlug(ctx, mockLLM, database, logger, conv.ConversationID, "how do I parse JSON in Go", "test-model")
 	if err != nil {
 		t.Fatalf("GenerateSlug failed: %v", err)
 	}
@@ -658,3 +659,291 @@ func TestGenerateSlug_ReasoningModel(t *testing.T) {
 func (m *MockLLMService) SupportsImages() bool              { return true }
 func (m *MockLLMServiceWithError) SupportsImages() bool     { return true }
 func (m *MockLLMServiceEmptyResponse) SupportsImages() bool { return true }
+
+// recordingProvider is a mock provider with a fixed model list and per-model
+// tags (empty by default, mimicking models discovered from a gateway
+// integration). It records which model IDs GetService was asked for.
+type recordingProvider struct {
+	modelIDs   []string
+	tags       map[string]string // optional per-model tags
+	requested  []string
+	services   map[string]llm.Service // optional per-model service override
+	fallbackTo llm.Service
+}
+
+func (p *recordingProvider) GetService(modelID string) (llm.Service, error) {
+	p.requested = append(p.requested, modelID)
+	if svc, ok := p.services[modelID]; ok {
+		return svc, nil
+	}
+	return p.fallbackTo, nil
+}
+
+func (p *recordingProvider) GetAvailableModels() []string { return p.modelIDs }
+
+func (p *recordingProvider) GetModelInfo(modelID string) *models.ModelInfo {
+	return &models.ModelInfo{DisplayName: modelID, Tags: p.tags[modelID]}
+}
+
+// TestGenerateSlugText_PreferenceFallback verifies that when no model is
+// tagged "slug"/"slug-backup" (e.g. all models come from a gateway
+// integration, which strips tags), slug generation picks a model from the
+// substring preference list instead of the conversation's model.
+func TestGenerateSlugText_PreferenceFallback(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	provider := &recordingProvider{
+		modelIDs:   []string{"claude-opus-5", "claude-fable-5", "claude-haiku-4-5", "gpt-oss-20b-fireworks"},
+		fallbackTo: &MockLLMService{ResponseText: "my-slug"},
+	}
+
+	slug, err := generateSlugText(context.Background(), provider, logger, "some message", "claude-fable-5")
+	if err != nil {
+		t.Fatalf("generateSlugText failed: %v", err)
+	}
+	if slug != "my-slug" {
+		t.Errorf("expected slug %q, got %q", "my-slug", slug)
+	}
+	if len(provider.requested) == 0 {
+		t.Fatal("no model requested")
+	}
+	// gpt-oss-20b is first in the preference list and present in the model list.
+	if provider.requested[0] != "gpt-oss-20b-fireworks" {
+		t.Errorf("expected preferred model gpt-oss-20b-fireworks to be tried first, got %q (all: %v)", provider.requested[0], provider.requested)
+	}
+}
+
+// TestGenerateSlugText_PreferenceFallbackChain verifies that a failing
+// preferred model falls through to the next preference, and ultimately to the
+// conversation model.
+func TestGenerateSlugText_PreferenceFallbackChain(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	provider := &recordingProvider{
+		modelIDs: []string{"claude-fable-5", "claude-haiku-4-5", "gpt-oss-20b-fireworks"},
+		services: map[string]llm.Service{
+			"gpt-oss-20b-fireworks": &MockLLMServiceWithError{},
+		},
+		fallbackTo: &MockLLMService{ResponseText: "haiku-slug"},
+	}
+
+	slug, err := generateSlugText(context.Background(), provider, logger, "some message", "claude-fable-5")
+	if err != nil {
+		t.Fatalf("generateSlugText failed: %v", err)
+	}
+	if slug != "haiku-slug" {
+		t.Errorf("expected slug %q, got %q", "haiku-slug", slug)
+	}
+	want := []string{"gpt-oss-20b-fireworks", "claude-haiku-4-5"}
+	if len(provider.requested) < 2 || provider.requested[0] != want[0] || provider.requested[1] != want[1] {
+		t.Errorf("expected request order %v, got %v", want, provider.requested)
+	}
+}
+
+// TestGenerateSlugText_ConversationModelLastResort verifies that when every
+// preferred model fails, the conversation model is finally tried.
+func TestGenerateSlugText_ConversationModelLastResort(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	provider := &recordingProvider{
+		modelIDs: []string{"claude-fable-5", "claude-haiku-4-5", "gpt-oss-20b-fireworks"},
+		services: map[string]llm.Service{
+			"gpt-oss-20b-fireworks": &MockLLMServiceWithError{},
+			"claude-haiku-4-5":      &MockLLMServiceWithError{},
+		},
+		fallbackTo: &MockLLMService{ResponseText: "fable-slug"},
+	}
+
+	slug, err := generateSlugText(context.Background(), provider, logger, "some message", "claude-fable-5")
+	if err != nil {
+		t.Fatalf("generateSlugText failed: %v", err)
+	}
+	if slug != "fable-slug" {
+		t.Errorf("expected slug %q, got %q", "fable-slug", slug)
+	}
+	want := []string{"gpt-oss-20b-fireworks", "claude-haiku-4-5", "claude-fable-5"}
+	if len(provider.requested) != 3 || provider.requested[0] != want[0] || provider.requested[1] != want[1] || provider.requested[2] != want[2] {
+		t.Errorf("expected request order %v, got %v", want, provider.requested)
+	}
+}
+
+// TestGenerateSlugText_TaggedModelWins verifies that tagged models still take
+// priority over the substring preference list, and that a tagged model which
+// fails is not retried by the substring fallback.
+func TestGenerateSlugText_TaggedModelWins(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	// claude-fable-5 is tagged "slug" and doesn't match any preferred substring.
+	provider := &recordingProvider{
+		modelIDs:   []string{"gpt-oss-20b-fireworks", "claude-fable-5"},
+		tags:       map[string]string{"claude-fable-5": "slug"},
+		fallbackTo: &MockLLMService{ResponseText: "tagged-slug"},
+	}
+
+	slug, err := generateSlugText(context.Background(), provider, logger, "some message", "")
+	if err != nil {
+		t.Fatalf("generateSlugText failed: %v", err)
+	}
+	if slug != "tagged-slug" {
+		t.Errorf("expected slug %q, got %q", "tagged-slug", slug)
+	}
+	if provider.requested[0] != "claude-fable-5" {
+		t.Errorf("expected tagged model claude-fable-5 first, got %v", provider.requested)
+	}
+
+	// Now make the tagged model fail: it must not be retried by the substring
+	// fallback (it matches no substring here, so verify with a model that does).
+	provider2 := &recordingProvider{
+		modelIDs: []string{"gpt-oss-20b-fireworks", "claude-haiku-4-5"},
+		tags:     map[string]string{"gpt-oss-20b-fireworks": "slug"},
+		services: map[string]llm.Service{
+			"gpt-oss-20b-fireworks": &MockLLMServiceWithError{},
+		},
+		fallbackTo: &MockLLMService{ResponseText: "backup-slug"},
+	}
+	slug2, err := generateSlugText(context.Background(), provider2, logger, "some message", "")
+	if err != nil {
+		t.Fatalf("generateSlugText failed: %v", err)
+	}
+	if slug2 != "backup-slug" {
+		t.Errorf("expected slug %q, got %q", "backup-slug", slug2)
+	}
+	// gpt-oss tried once (tagged), then haiku via substring list; gpt-oss NOT retried.
+	want := []string{"gpt-oss-20b-fireworks", "claude-haiku-4-5"}
+	if len(provider2.requested) != 2 || provider2.requested[0] != want[0] || provider2.requested[1] != want[1] {
+		t.Errorf("expected request order %v (no retries), got %v", want, provider2.requested)
+	}
+}
+
+func TestPreferredModels(t *testing.T) {
+	available := []string{
+		"claude-opus-5",
+		"gpt-5.4-mini",
+		"claude-haiku-4-5",
+		"gpt-5.6-luna",
+		"gpt-oss-20b-fireworks",
+		"gpt-5.4-nano",
+	}
+	got := preferredModels(available, map[string]bool{"claude-haiku-4-5": true})
+	want := []string{"gpt-oss-20b-fireworks", "gpt-5.6-luna", "gpt-5.4-nano", "gpt-5.4-mini"}
+	if len(got) != len(want) {
+		t.Fatalf("preferredModels = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("preferredModels = %v, want %v", got, want)
+		}
+	}
+}
+
+// usageLLMService returns a fixed slug with non-zero usage, mimicking a real
+// provider response.
+type usageLLMService struct{ MockLLMService }
+
+func (u *usageLLMService) Do(ctx context.Context, req *llm.Request) (*llm.Response, error) {
+	return &llm.Response{
+		Content: []llm.Content{{Type: llm.ContentTypeText, Text: "my-generated-slug"}},
+		Model:   "slug-model-v1",
+		Usage:   llm.Usage{InputTokens: 25, OutputTokens: 5, CostUSD: 0.0002},
+	}, nil
+}
+
+// TestGenerateSlug_UsageOnAppendedMarker runs GenerateSlug through a real
+// models.Manager (whose loggingService feeds the usage collector) and verifies
+// the slug call's usage lands on a NEWLY APPENDED slug marker message, leaving
+// the already-published user message untouched.
+//
+// Appending is the only way to record this without breaking the append-only
+// contract on message rows: the browser caches them by (conversation_id,
+// sequence_id) and only ever fetches the tail, forks copy them, and a
+// sequence_id is delivered exactly once. An in-place UPDATE (the original
+// design) is invisible to all three.
+func TestGenerateSlug_UsageOnAppendedMarker(t *testing.T) {
+	tempDB := t.TempDir() + "/slug_usage_test.db"
+	database, err := db.New(db.Config{DSN: tempDB})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	ctx := context.Background()
+	if err := database.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	mgr, err := models.NewManager(&models.Config{
+		Models: []models.Built{{ID: "slug-model", Provider: models.ProviderBuiltIn, Source: "test", Service: &usageLLMService{}}},
+		Logger: logger,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	conv, err := database.CreateConversation(ctx, nil, true, nil, nil, db.ConversationOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.CreateMessage(ctx, db.CreateMessageParams{
+		ConversationID: conv.ConversationID,
+		Type:           db.MessageTypeUser,
+		LLMData:        llm.Message{Role: llm.MessageRoleUser},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, marker, err := GenerateSlug(ctx, mgr, database, logger, conv.ConversationID, "first message", "slug-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "my-generated-slug" {
+		t.Errorf("slug = %q", got)
+	}
+
+	// The pre-existing user message must be untouched: no in-place mutation of
+	// an already published row. The cost lands on a NEW appended marker.
+	messages, err := database.ListMessages(ctx, conv.ConversationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("got %d messages, want the user message plus an appended slug marker: %+v", len(messages), messages)
+	}
+	if messages[0].Type != string(db.MessageTypeUser) || messages[0].OtherUsageData != nil {
+		t.Errorf("first user message = type %q usage %v, want an untouched user message: messages are append-only",
+			messages[0].Type, messages[0].OtherUsageData)
+	}
+
+	row := messages[1]
+	if row.Type != string(db.MessageTypeSlug) {
+		t.Fatalf("appended message type = %q, want slug", row.Type)
+	}
+	if row.OtherUsageData == nil {
+		t.Fatal("slug marker carries no other_usage_data")
+	}
+	// GenerateSlug must hand the marker back so the caller can publish it: it
+	// owns a real sequence_id, and a client that never receives it sees a hole
+	// and discards its cached history.
+	if marker == nil {
+		t.Fatal("GenerateSlug returned no marker; the caller cannot publish it")
+	}
+	if marker.MessageID != row.MessageID || marker.SequenceID != row.SequenceID {
+		t.Errorf("returned marker %s/seq %d does not match the stored row %s/seq %d",
+			marker.MessageID, marker.SequenceID, row.MessageID, row.SequenceID)
+	}
+	var entries []llm.PurposedUsage
+	if err := json.Unmarshal([]byte(*row.OtherUsageData), &entries); err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Purpose != "slug" || entries[0].InputTokens != 25 || entries[0].Model != "slug-model-v1" {
+		t.Errorf("entries = %+v", entries)
+	}
+
+	// The slug write comes after the usage write; both must survive.
+	updated, err := database.GetConversationByID(ctx, conv.ConversationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Slug == nil || *updated.Slug != "my-generated-slug" {
+		t.Errorf("slug on conversation = %v, want my-generated-slug", updated.Slug)
+	}
+}

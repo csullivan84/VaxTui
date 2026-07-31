@@ -404,15 +404,6 @@ func (s *Service) thinkingConfig(req *llm.Request) *gemini.ThinkingConfig {
 		if effort == "xhigh" {
 			effort = "high"
 		}
-		// gemini-3-pro-preview accepts only "low" and "high"; collapse minimal/medium.
-		if model == "gemini-3-pro-preview" {
-			switch effort {
-			case "minimal", "low":
-				effort = "low"
-			case "medium", "high":
-				effort = "high"
-			}
-		}
 		return &gemini.ThinkingConfig{ThinkingLevel: effort, IncludeThoughts: true}
 	}
 
@@ -615,9 +606,9 @@ func (s *Service) TokenContextWindow() int {
 
 	// Gemini models generally have large context windows
 	switch model {
-	case "gemini-3-pro-preview", "gemini-3-flash-preview",
-		"gemini-3.1-pro-preview", "gemini-3.1-flash-lite-preview":
-		return 1000000 // 1M tokens for Gemini 3 / 3.1
+	case "gemini-3-flash-preview", "gemini-3.1-pro-preview",
+		"gemini-3.1-flash-lite-preview", "gemini-3.6-flash":
+		return 1000000 // 1M tokens for Gemini 3 / 3.1 / 3.6
 	case "gemini-2.5-pro", "gemini-2.5-flash":
 		return 1000000 // 1M tokens for Gemini 2.5
 	case "gemini-2.0-flash-exp", "gemini-2.0-flash":

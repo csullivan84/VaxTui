@@ -78,6 +78,7 @@
           :on-terminal-close="handleTerminalClose"
           :navigate-user-message-trigger="navigateUserMessageTrigger"
           :on-conversation-unarchived="handleConversationUnarchived"
+          :external-comment-text="editorCommentText"
         />
       </div>
 
@@ -199,7 +200,9 @@
         :path="editorFilePath"
         :title="`Edit ${tildifyPath(editorFilePath)}`"
         :load-url="`/api/read-file?path=${encodeURIComponent(editorFilePath)}`"
+        commentable
         @close="editorFilePath = null"
+        @comment="onEditorComment"
       />
 
       <div v-if="drawerOpen" class="backdrop hide-on-desktop" @click="drawerOpen = false" />
@@ -325,6 +328,9 @@ const featureFlagsModalOpen = ref(false);
 // Fuzzy file finder (Cmd/Ctrl+Shift+P) + the generic editor it opens.
 const fileFinderOpen = ref(false);
 const editorFilePath = ref<string | null>(null);
+// Comment submitted from the file editor's comment mode, to be injected into
+// the chat message input. Fresh object per submit so the watcher always fires.
+const editorCommentText = ref<{ text: string } | null>(null);
 const modelsRefreshTrigger = ref(0);
 const cwdSyncTrigger = ref(0);
 const navigateUserMessageTrigger = ref(0);
@@ -666,6 +672,12 @@ function openFileFinder() {
 function openFileInEditor(absPath: string) {
   fileFinderOpen.value = false;
   editorFilePath.value = absPath;
+}
+
+// A comment submitted from the file editor's comment mode: hand it to
+// ChatInterface for injection into the message input.
+function onEditorComment(text: string) {
+  editorCommentText.value = { text };
 }
 
 async function handleFirstMessage(

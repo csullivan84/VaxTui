@@ -42,6 +42,7 @@ export interface ApiMessageForTS {
   llm_data?: string | null;
   user_data?: string | null;
   usage_data?: string | null;
+  other_usage_data?: string | null;
   created_at: string;
   display_data?: string | null;
   generation: number;
@@ -112,6 +113,7 @@ export type MessageType =
   | "system"
   | "gitinfo"
   | "warning"
-  | "modelchange";
+  | "modelchange"
+  | "slug";
 
 export type EventType = string;

@@ -266,10 +266,10 @@ func All() []Model {
 			Build: oaiChatSvc(oai.GLM52Fireworks, "fireworks"),
 		},
 		{
-			ID: "gemini-3-pro", Provider: ProviderGemini,
-			Description: "Gemini 3 Pro", APIModelName: "gemini-3-pro-preview",
+			ID: "gemini-3.1-pro", Provider: ProviderGemini,
+			Description: "Gemini 3.1 Pro", APIModelName: "gemini-3.1-pro-preview",
 			APIType: APITypeGemini, DefaultBaseURL: DefaultGeminiBaseURL,
-			Build: gemSvc("gemini-3-pro-preview"),
+			Build: gemSvc("gemini-3.1-pro-preview"),
 		},
 		{
 			ID: "grok-4.5", Provider: ProviderXAI,
@@ -288,6 +288,12 @@ func All() []Model {
 			Description: "Kimi K2.7 Code on Fireworks", APIModelName: oai.KimiK27CodeFireworks.ModelName,
 			APIType: APITypeOpenAIChat, DefaultBaseURL: DefaultFireworksBaseURL,
 			Build: oaiChatSvc(oai.KimiK27CodeFireworks, "fireworks"),
+		},
+		{
+			ID: "kimi-k3-fireworks", Provider: ProviderFireworks,
+			Description: "Kimi K3 on Fireworks", APIModelName: oai.KimiK3Fireworks.ModelName,
+			APIType: APITypeOpenAIChat, DefaultBaseURL: DefaultFireworksBaseURL,
+			Build: oaiChatSvc(oai.KimiK3Fireworks, "fireworks"),
 		},
 		{
 			ID: "deepseek-v4-pro-fireworks", Provider: ProviderFireworks,
@@ -362,10 +368,10 @@ func All() []Model {
 			Build: oaiResponsesSvc(oai.GPT53Codex),
 		},
 		{
-			ID: "gpt-5.2-codex", Provider: ProviderOpenAI,
-			Description: "GPT-5.2 Codex", APIModelName: oai.GPT52Codex.ModelName,
-			APIType: APITypeOpenAIResponses, DefaultBaseURL: DefaultOpenAIBaseURL,
-			Build: oaiResponsesSvc(oai.GPT52Codex),
+			ID: "gemini-3.6-flash", Provider: ProviderGemini,
+			Description: "Gemini 3.6 Flash", APIModelName: "gemini-3.6-flash",
+			APIType: APITypeGemini, DefaultBaseURL: DefaultGeminiBaseURL,
+			Build: gemSvc("gemini-3.6-flash"),
 		},
 		{
 			ID: "gemini-3-flash", Provider: ProviderGemini,
@@ -390,12 +396,6 @@ func All() []Model {
 			Description: "DeepSeek V4 Flash on Fireworks — 1M-token context, reasoning and tool use; text-only, no images", APIModelName: oai.DeepseekV4FlashFireworks.ModelName,
 			APIType: APITypeOpenAIChat, DefaultBaseURL: DefaultFireworksBaseURL,
 			Build: oaiChatSvc(oai.DeepseekV4FlashFireworks, "fireworks"),
-		},
-		{
-			ID: "qwen3.7-plus-fireworks", Provider: ProviderFireworks,
-			Description: "Qwen 3.7 Plus on Fireworks", APIModelName: oai.Qwen37PlusFireworks.ModelName,
-			APIType: APITypeOpenAIChat, DefaultBaseURL: DefaultFireworksBaseURL,
-			Build: oaiChatSvc(oai.Qwen37PlusFireworks, "fireworks"),
 		},
 		{
 			ID: "gpt-oss-20b-fireworks", Provider: ProviderFireworks, Tags: "slug",
@@ -512,6 +512,15 @@ func (l *loggingService) Do(ctx context.Context, request *llm.Request) (*llm.Res
 		}
 	}
 	l.logger.Info("LLM request completed", logAttrs...)
+	if purpose := llmhttp.PurposeFromContext(ctx); purpose != "" && !response.Usage.IsZero() {
+		if collect := llmhttp.UsageCollectorFromContext(ctx); collect != nil {
+			usage := response.UsageWithMeta()
+			if usage.Model == "" {
+				usage.Model = l.modelID
+			}
+			collect(purpose, usage)
+		}
+	}
 	return response, err
 }
 

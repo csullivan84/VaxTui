@@ -10,12 +10,18 @@ import (
 )
 
 const copyMessagesForFork = `-- name: CopyMessagesForFork :exec
-INSERT INTO messages (message_id, conversation_id, sequence_id, generation, type, llm_data, user_data, usage_data, display_data, excluded_from_context, llm_api_url, model_name, user_email, forked_from_message_id, created_at)
-SELECT lower(hex(randomblob(16))), ?1, m.sequence_id, 1, m.type, m.llm_data, m.user_data, m.usage_data, m.display_data, m.excluded_from_context, m.llm_api_url, m.model_name, m.user_email, m.message_id, m.created_at
+INSERT INTO messages (message_id, conversation_id, sequence_id, generation, type, llm_data, user_data, usage_data, display_data, excluded_from_context, llm_api_url, model_name, user_email, forked_from_message_id, created_at, other_usage_data)
+SELECT lower(hex(randomblob(16))), ?1, m.sequence_id, 1, m.type, m.llm_data, m.user_data, m.usage_data, m.display_data, m.excluded_from_context, m.llm_api_url, m.model_name, m.user_email, m.message_id, m.created_at, m.other_usage_data
 FROM messages m
 WHERE m.conversation_id = ?2
   AND m.sequence_id <= ?3
   AND m.generation = ?4
+  -- Skip slug markers: a fork derives its slug from the source's synchronously,
+  -- with no LLM call, so copying the marker would re-report a cost the fork
+  -- never incurred. Leaving a hole in the copied sequence is fine here: this
+  -- already copies a single generation while preserving source sequence_ids, so
+  -- forks legitimately have gaps and clients must already tolerate them.
+  AND m.type != 'slug'
 ORDER BY m.sequence_id ASC
 `
 
@@ -50,7 +56,8 @@ WHERE m.conversation_id = ?1
     (SELECT MAX(prev.sequence_id) FROM messages prev
      WHERE prev.conversation_id = ?1
        AND prev.generation = ?2
-       AND prev.type != ?3),
+       AND prev.type != ?3
+       AND prev.type != 'slug'),
     0)
 `
 
@@ -60,6 +67,14 @@ type CountConsecutiveMessagesByTypeParams struct {
 	Type           string `json:"type"`
 }
 
+// Counts the trailing run of messages of the given type, i.e. those after the
+// last message of any OTHER type. Used to cap consecutive retry warnings.
+//
+// Slug markers don't break a run: they are bookkeeping rows carrying only the
+// cost of the LLM call that named the conversation, they render as nothing, and
+// slug generation races the first turn, so a marker landing in the middle of a
+// retry-warning storm would reset the counter and let a fresh batch of warnings
+// through.
 func (q *Queries) CountConsecutiveMessagesByType(ctx context.Context, arg CountConsecutiveMessagesByTypeParams) (int64, error) {
 	row := q.db.QueryRowContext(ctx, countConsecutiveMessagesByType, arg.ConversationID, arg.Generation, arg.Type)
 	var count int64
@@ -97,9 +112,9 @@ func (q *Queries) CountMessagesInConversation(ctx context.Context, conversationI
 }
 
 const createMessage = `-- name: CreateMessage :one
-INSERT INTO messages (message_id, conversation_id, sequence_id, generation, type, llm_data, user_data, usage_data, display_data, excluded_from_context, llm_api_url, model_name, user_email)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-RETURNING message_id, conversation_id, sequence_id, type, llm_data, user_data, usage_data, created_at, display_data, excluded_from_context, generation, llm_api_url, model_name, forked_from_message_id, user_email
+INSERT INTO messages (message_id, conversation_id, sequence_id, generation, type, llm_data, user_data, usage_data, display_data, excluded_from_context, llm_api_url, model_name, user_email, other_usage_data)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING message_id, conversation_id, sequence_id, type, llm_data, user_data, usage_data, created_at, display_data, excluded_from_context, generation, llm_api_url, model_name, forked_from_message_id, user_email, other_usage_data
 `
 
 type CreateMessageParams struct {
@@ -116,6 +131,7 @@ type CreateMessageParams struct {
 	LlmApiUrl           *string `json:"llm_api_url"`
 	ModelName           *string `json:"model_name"`
 	UserEmail           *string `json:"user_email"`
+	OtherUsageData      *string `json:"other_usage_data"`
 }
 
 func (q *Queries) CreateMessage(ctx context.Context, arg CreateMessageParams) (Message, error) {
@@ -133,6 +149,7 @@ func (q *Queries) CreateMessage(ctx context.Context, arg CreateMessageParams) (M
 		arg.LlmApiUrl,
 		arg.ModelName,
 		arg.UserEmail,
+		arg.OtherUsageData,
 	)
 	var i Message
 	err := row.Scan(
@@ -151,6 +168,7 @@ func (q *Queries) CreateMessage(ctx context.Context, arg CreateMessageParams) (M
 		&i.ModelName,
 		&i.ForkedFromMessageID,
 		&i.UserEmail,
+		&i.OtherUsageData,
 	)
 	return i, err
 }
@@ -177,7 +195,7 @@ func (q *Queries) DeleteMessage(ctx context.Context, messageID string) error {
 
 const getGenerationAtOrBeforeSequence = `-- name: GetGenerationAtOrBeforeSequence :one
 SELECT generation FROM messages
-WHERE conversation_id = ? AND sequence_id <= ?
+WHERE conversation_id = ? AND sequence_id <= ? AND type != 'slug'
 ORDER BY sequence_id DESC LIMIT 1
 `
 
@@ -189,6 +207,12 @@ type GetGenerationAtOrBeforeSequenceParams struct {
 // Returns the generation of the last message at or before a sequence_id.
 // Used by fork to copy the generation that was active at the fork point,
 // which may be older than the conversation's current_generation.
+//
+// Slug markers are excluded, matching CopyMessagesForFork. A marker is stamped
+// with whatever current_generation holds when the (racing, 15s-timeout) slug
+// goroutine lands, so a marker written after a compaction bumped the generation
+// would otherwise answer this question with the new generation and make the fork
+// copy the wrong one.
 func (q *Queries) GetGenerationAtOrBeforeSequence(ctx context.Context, arg GetGenerationAtOrBeforeSequenceParams) (int64, error) {
 	row := q.db.QueryRowContext(ctx, getGenerationAtOrBeforeSequence, arg.ConversationID, arg.SequenceID)
 	var generation int64
@@ -196,15 +220,20 @@ func (q *Queries) GetGenerationAtOrBeforeSequence(ctx context.Context, arg GetGe
 	return generation, err
 }
 
-const getLatestMessage = `-- name: GetLatestMessage :one
-SELECT message_id, conversation_id, sequence_id, type, llm_data, user_data, usage_data, created_at, display_data, excluded_from_context, generation, llm_api_url, model_name, forked_from_message_id, user_email FROM messages
-WHERE conversation_id = ?
+const getLatestActionableMessage = `-- name: GetLatestActionableMessage :one
+SELECT message_id, conversation_id, sequence_id, type, llm_data, user_data, usage_data, created_at, display_data, excluded_from_context, generation, llm_api_url, model_name, forked_from_message_id, user_email, other_usage_data FROM messages
+WHERE conversation_id = ? AND type != 'slug'
 ORDER BY sequence_id DESC
 LIMIT 1
 `
 
-func (q *Queries) GetLatestMessage(ctx context.Context, conversationID string) (Message, error) {
-	row := q.db.QueryRowContext(ctx, getLatestMessage, conversationID)
+// The latest message a user could act on. Slug markers are excluded: they hold
+// only the slug LLM call's usage, render as nothing, and land at an arbitrary
+// point (the call races the first turn). Callers gate the Retry/Continue
+// affordances on this row's type being 'error', so a trailing slug marker would
+// otherwise silently disable them.
+func (q *Queries) GetLatestActionableMessage(ctx context.Context, conversationID string) (Message, error) {
+	row := q.db.QueryRowContext(ctx, getLatestActionableMessage, conversationID)
 	var i Message
 	err := row.Scan(
 		&i.MessageID,
@@ -222,6 +251,7 @@ func (q *Queries) GetLatestMessage(ctx context.Context, conversationID string) (
 		&i.ModelName,
 		&i.ForkedFromMessageID,
 		&i.UserEmail,
+		&i.OtherUsageData,
 	)
 	return i, err
 }
@@ -261,7 +291,7 @@ func (q *Queries) GetMaxSequenceIDsForAllConversations(ctx context.Context) ([]G
 }
 
 const getMessage = `-- name: GetMessage :one
-SELECT message_id, conversation_id, sequence_id, type, llm_data, user_data, usage_data, created_at, display_data, excluded_from_context, generation, llm_api_url, model_name, forked_from_message_id, user_email FROM messages
+SELECT message_id, conversation_id, sequence_id, type, llm_data, user_data, usage_data, created_at, display_data, excluded_from_context, generation, llm_api_url, model_name, forked_from_message_id, user_email, other_usage_data FROM messages
 WHERE message_id = ?
 `
 
@@ -284,6 +314,7 @@ func (q *Queries) GetMessage(ctx context.Context, messageID string) (Message, er
 		&i.ModelName,
 		&i.ForkedFromMessageID,
 		&i.UserEmail,
+		&i.OtherUsageData,
 	)
 	return i, err
 }
@@ -305,7 +336,8 @@ const listAgentMessagesSinceLastUser = `-- name: ListAgentMessagesSinceLastUser 
 SELECT m.message_id, m.conversation_id, m.sequence_id, m.type,
        m.llm_data, m.user_data, m.usage_data, m.created_at,
        m.display_data, m.excluded_from_context, m.generation,
-       m.llm_api_url, m.model_name, m.forked_from_message_id, m.user_email
+       m.llm_api_url, m.model_name, m.forked_from_message_id, m.user_email,
+       m.other_usage_data
 FROM messages m
 WHERE m.conversation_id = ? AND m.type = 'agent'
   AND m.sequence_id > COALESCE(
@@ -351,6 +383,7 @@ func (q *Queries) ListAgentMessagesSinceLastUser(ctx context.Context, arg ListAg
 			&i.ModelName,
 			&i.ForkedFromMessageID,
 			&i.UserEmail,
+			&i.OtherUsageData,
 		); err != nil {
 			return nil, err
 		}
@@ -366,7 +399,7 @@ func (q *Queries) ListAgentMessagesSinceLastUser(ctx context.Context, arg ListAg
 }
 
 const listMessages = `-- name: ListMessages :many
-SELECT message_id, conversation_id, sequence_id, type, llm_data, user_data, usage_data, created_at, display_data, excluded_from_context, generation, llm_api_url, model_name, forked_from_message_id, user_email FROM messages
+SELECT message_id, conversation_id, sequence_id, type, llm_data, user_data, usage_data, created_at, display_data, excluded_from_context, generation, llm_api_url, model_name, forked_from_message_id, user_email, other_usage_data FROM messages
 WHERE conversation_id = ?
 ORDER BY sequence_id ASC
 `
@@ -396,6 +429,7 @@ func (q *Queries) ListMessages(ctx context.Context, conversationID string) ([]Me
 			&i.ModelName,
 			&i.ForkedFromMessageID,
 			&i.UserEmail,
+			&i.OtherUsageData,
 		); err != nil {
 			return nil, err
 		}
@@ -411,7 +445,7 @@ func (q *Queries) ListMessages(ctx context.Context, conversationID string) ([]Me
 }
 
 const listMessagesByType = `-- name: ListMessagesByType :many
-SELECT message_id, conversation_id, sequence_id, type, llm_data, user_data, usage_data, created_at, display_data, excluded_from_context, generation, llm_api_url, model_name, forked_from_message_id, user_email FROM messages
+SELECT message_id, conversation_id, sequence_id, type, llm_data, user_data, usage_data, created_at, display_data, excluded_from_context, generation, llm_api_url, model_name, forked_from_message_id, user_email, other_usage_data FROM messages
 WHERE conversation_id = ? AND type = ?
 ORDER BY sequence_id ASC
 `
@@ -446,6 +480,7 @@ func (q *Queries) ListMessagesByType(ctx context.Context, arg ListMessagesByType
 			&i.ModelName,
 			&i.ForkedFromMessageID,
 			&i.UserEmail,
+			&i.OtherUsageData,
 		); err != nil {
 			return nil, err
 		}
@@ -461,7 +496,7 @@ func (q *Queries) ListMessagesByType(ctx context.Context, arg ListMessagesByType
 }
 
 const listMessagesForContext = `-- name: ListMessagesForContext :many
-SELECT m.message_id, m.conversation_id, m.sequence_id, m.type, m.llm_data, m.user_data, m.usage_data, m.created_at, m.display_data, m.excluded_from_context, m.generation, m.llm_api_url, m.model_name, m.forked_from_message_id, m.user_email FROM messages m
+SELECT m.message_id, m.conversation_id, m.sequence_id, m.type, m.llm_data, m.user_data, m.usage_data, m.created_at, m.display_data, m.excluded_from_context, m.generation, m.llm_api_url, m.model_name, m.forked_from_message_id, m.user_email, m.other_usage_data FROM messages m
 INNER JOIN conversations c ON m.conversation_id = c.conversation_id
 WHERE m.conversation_id = ?
   AND m.excluded_from_context = FALSE
@@ -494,6 +529,7 @@ func (q *Queries) ListMessagesForContext(ctx context.Context, conversationID str
 			&i.ModelName,
 			&i.ForkedFromMessageID,
 			&i.UserEmail,
+			&i.OtherUsageData,
 		); err != nil {
 			return nil, err
 		}
@@ -509,7 +545,7 @@ func (q *Queries) ListMessagesForContext(ctx context.Context, conversationID str
 }
 
 const listMessagesPaginated = `-- name: ListMessagesPaginated :many
-SELECT message_id, conversation_id, sequence_id, type, llm_data, user_data, usage_data, created_at, display_data, excluded_from_context, generation, llm_api_url, model_name, forked_from_message_id, user_email FROM messages
+SELECT message_id, conversation_id, sequence_id, type, llm_data, user_data, usage_data, created_at, display_data, excluded_from_context, generation, llm_api_url, model_name, forked_from_message_id, user_email, other_usage_data FROM messages
 WHERE conversation_id = ?
 ORDER BY sequence_id ASC
 LIMIT ? OFFSET ?
@@ -546,6 +582,7 @@ func (q *Queries) ListMessagesPaginated(ctx context.Context, arg ListMessagesPag
 			&i.ModelName,
 			&i.ForkedFromMessageID,
 			&i.UserEmail,
+			&i.OtherUsageData,
 		); err != nil {
 			return nil, err
 		}
@@ -561,7 +598,7 @@ func (q *Queries) ListMessagesPaginated(ctx context.Context, arg ListMessagesPag
 }
 
 const listMessagesSince = `-- name: ListMessagesSince :many
-SELECT message_id, conversation_id, sequence_id, type, llm_data, user_data, usage_data, created_at, display_data, excluded_from_context, generation, llm_api_url, model_name, forked_from_message_id, user_email FROM messages
+SELECT message_id, conversation_id, sequence_id, type, llm_data, user_data, usage_data, created_at, display_data, excluded_from_context, generation, llm_api_url, model_name, forked_from_message_id, user_email, other_usage_data FROM messages
 WHERE conversation_id = ? AND sequence_id > ?
 ORDER BY sequence_id ASC
 `
@@ -571,6 +608,11 @@ type ListMessagesSinceParams struct {
 	SequenceID     int64  `json:"sequence_id"`
 }
 
+// The client cache-repair path (?last_sequence_id=N). Must NOT filter any type:
+// it is what heals a client whose view of the sequence space has a hole, so it
+// has to be able to deliver every row, markers included. Deliberately different
+// from ListMessagesTail (a display window, which counts visible rows); don't
+// "make these consistent".
 func (q *Queries) ListMessagesSince(ctx context.Context, arg ListMessagesSinceParams) ([]Message, error) {
 	rows, err := q.db.QueryContext(ctx, listMessagesSince, arg.ConversationID, arg.SequenceID)
 	if err != nil {
@@ -596,6 +638,7 @@ func (q *Queries) ListMessagesSince(ctx context.Context, arg ListMessagesSincePa
 			&i.ModelName,
 			&i.ForkedFromMessageID,
 			&i.UserEmail,
+			&i.OtherUsageData,
 		); err != nil {
 			return nil, err
 		}
@@ -611,12 +654,18 @@ func (q *Queries) ListMessagesSince(ctx context.Context, arg ListMessagesSincePa
 }
 
 const listMessagesTail = `-- name: ListMessagesTail :many
-SELECT message_id, conversation_id, sequence_id, type, llm_data, user_data, usage_data, created_at, display_data, excluded_from_context, generation, llm_api_url, model_name, forked_from_message_id, user_email FROM (
-  SELECT message_id, conversation_id, sequence_id, type, llm_data, user_data, usage_data, created_at, display_data, excluded_from_context, generation, llm_api_url, model_name, forked_from_message_id, user_email FROM messages
-  WHERE conversation_id = ?
-  ORDER BY sequence_id DESC
-  LIMIT ?
-) ORDER BY sequence_id ASC
+SELECT m.message_id, m.conversation_id, m.sequence_id, m.type, m.llm_data, m.user_data, m.usage_data, m.created_at, m.display_data, m.excluded_from_context, m.generation, m.llm_api_url, m.model_name, m.forked_from_message_id, m.user_email, m.other_usage_data FROM messages m
+WHERE m.conversation_id = ?1
+  AND m.sequence_id >= COALESCE((
+    SELECT MIN(v.sequence_id) FROM (
+      SELECT vis.sequence_id FROM messages vis
+      WHERE vis.conversation_id = ?1
+        AND vis.type != 'slug'
+      ORDER BY vis.sequence_id DESC
+      LIMIT ?2
+    ) v
+  ), 0)
+ORDER BY m.sequence_id ASC
 `
 
 type ListMessagesTailParams struct {
@@ -626,6 +675,14 @@ type ListMessagesTailParams struct {
 
 // Returns the last N messages in ascending order. If fewer than N
 // exist, returns all of them.
+//
+// N counts VISIBLE messages, but slug markers inside the resulting window are
+// still returned. Two reasons to do it this way rather than just excluding them:
+// an invisible bookkeeping row must not eat the window (?tail=1 would hand back
+// nothing displayable), yet dropping markers from the middle would punch holes
+// in the sequence space, and clients that detect lost messages by sequence
+// contiguity (see the iOS store's firstGapBoundary) would read those holes as
+// missing data and re-fetch forever.
 func (q *Queries) ListMessagesTail(ctx context.Context, arg ListMessagesTailParams) ([]Message, error) {
 	rows, err := q.db.QueryContext(ctx, listMessagesTail, arg.ConversationID, arg.Limit)
 	if err != nil {
@@ -651,6 +708,7 @@ func (q *Queries) ListMessagesTail(ctx context.Context, arg ListMessagesTailPara
 			&i.ModelName,
 			&i.ForkedFromMessageID,
 			&i.UserEmail,
+			&i.OtherUsageData,
 		); err != nil {
 			return nil, err
 		}

@@ -675,6 +675,17 @@ func (s *Server) serveIndexWithInit(w http.ResponseWriter, r *http.Request, fs h
 		"default_cwd":         defaultCwd,
 		"home_dir":            homeDir,
 		"user_agents_md_path": userAgentsMdPath,
+		// is_exe_dev lets the UI pick exe.dev-specific setup advice even when
+		// model_setup_hint is absent (the catalog can empty AFTER page load, via
+		// a detached integration plus Refresh).
+		"is_exe_dev": isExeDev(),
+	}
+	// With no models the UI cannot send anything, so tell it WHY. On exe.dev
+	// the usual cause is a missing reflection or llm integration, and each has
+	// a different fix; see modelSetupHintForModels. Only computed for the empty
+	// case, so the healthy path pays no reflection probe.
+	if hint := modelSetupHintForModels(r.Context(), modelList, isExeDev()); hint != "" {
+		initData["model_setup_hint"] = hint
 	}
 	// On exe.dev VMs (where /exe.dev exists), auto-derive the terminal URL and
 	// default links from the current hostname so they pick up hostname changes
@@ -1112,7 +1123,7 @@ func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, 
 	llmService, err := s.llmManager.GetService(modelID)
 	if err != nil {
 		s.logger.Error("Unsupported model requested", "model", modelID, "error", err)
-		http.Error(w, fmt.Sprintf("Unsupported model: %s", modelID), http.StatusBadRequest)
+		http.Error(w, unsupportedModelMessage(modelID, s.getModelList()), http.StatusBadRequest)
 		return
 	}
 
@@ -1179,7 +1190,7 @@ func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, 
 			llmService, err = s.llmManager.GetService(modelID)
 			if err != nil {
 				s.logger.Error("Unsupported model on promoted draft", "model", modelID, "error", err)
-				http.Error(w, fmt.Sprintf("Unsupported model: %s", modelID), http.StatusBadRequest)
+				http.Error(w, unsupportedModelMessage(modelID, s.getModelList()), http.StatusBadRequest)
 				return
 			}
 		}
@@ -1294,7 +1305,14 @@ func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, 
 		go func() {
 			slugCtx, cancel := context.WithTimeout(ctxNoCancel, 15*time.Second)
 			defer cancel()
-			_, err := slug.GenerateSlug(slugCtx, s.llmManager, s.db, s.logger, conversationID, req.Message, modelID)
+			_, marker, err := slug.GenerateSlug(slugCtx, s.llmManager, s.db, s.logger, conversationID, req.Message, modelID)
+			// Publish the usage marker before anything else. It owns a real
+			// sequence_id, so a client that never sees it observes a hole and
+			// throws away its cached history. Publish even when slug assignment
+			// failed: the row exists regardless.
+			if marker != nil {
+				s.notifySubscribersNewMessage(ctxNoCancel, conversationID, marker)
+			}
 			if err != nil {
 				s.logger.Warn("Failed to generate slug for conversation", "conversationID", conversationID, "error", err)
 			} else {
@@ -1337,7 +1355,7 @@ func (s *Server) handleNewConversation(w http.ResponseWriter, r *http.Request) {
 	llmService, err := s.llmManager.GetService(modelID)
 	if err != nil {
 		s.logger.Error("Unsupported model requested", "model", modelID, "error", err)
-		http.Error(w, fmt.Sprintf("Unsupported model: %s", modelID), http.StatusBadRequest)
+		http.Error(w, unsupportedModelMessage(modelID, s.getModelList()), http.StatusBadRequest)
 		return
 	}
 
@@ -1485,7 +1503,14 @@ func (s *Server) handleNewConversation(w http.ResponseWriter, r *http.Request) {
 		go func() {
 			slugCtx, cancel := context.WithTimeout(ctxNoCancel, 15*time.Second)
 			defer cancel()
-			_, err := slug.GenerateSlug(slugCtx, s.llmManager, s.db, s.logger, conversationID, req.Message, modelID)
+			_, marker, err := slug.GenerateSlug(slugCtx, s.llmManager, s.db, s.logger, conversationID, req.Message, modelID)
+			// Publish the usage marker before anything else. It owns a real
+			// sequence_id, so a client that never sees it observes a hole and
+			// throws away its cached history. Publish even when slug assignment
+			// failed: the row exists regardless.
+			if marker != nil {
+				s.notifySubscribersNewMessage(ctxNoCancel, conversationID, marker)
+			}
 			if err != nil {
 				s.logger.Warn("Failed to generate slug for conversation", "conversationID", conversationID, "error", err)
 			} else {
@@ -1561,7 +1586,7 @@ func (s *Server) handleRetryConversation(w http.ResponseWriter, r *http.Request,
 	// Validate that there's actually a retryable error to act on BEFORE
 	// spinning up a fresh loop with tools and a 12-hour context. This keeps
 	// the cold-storage path lightweight when the request is bogus.
-	latest, err := s.db.GetLatestMessage(ctx, conversationID)
+	latest, err := s.db.GetLatestActionableMessage(ctx, conversationID)
 	if err != nil {
 		s.logger.Warn("Retry: failed to load latest message", "conversationID", conversationID, "error", err)
 		http.Error(w, "conversation not found or empty", http.StatusNotFound)
@@ -1604,7 +1629,7 @@ func (s *Server) handleRetryConversation(w http.ResponseWriter, r *http.Request,
 		}
 		llmService, err := s.llmManager.GetService(modelID)
 		if err != nil {
-			http.Error(w, fmt.Sprintf("Unsupported model: %s", modelID), http.StatusBadRequest)
+			http.Error(w, unsupportedModelMessage(modelID, s.getModelList()), http.StatusBadRequest)
 			return
 		}
 		if err := manager.Hydrate(ctx); err != nil {
@@ -1668,7 +1693,7 @@ func (s *Server) handleContinueConversation(w http.ResponseWriter, r *http.Reque
 
 	// Validate that the bottom message is a refusal error BEFORE spinning up a
 	// loop with tools and a 12-hour context.
-	latest, err := s.db.GetLatestMessage(ctx, conversationID)
+	latest, err := s.db.GetLatestActionableMessage(ctx, conversationID)
 	if err != nil {
 		s.logger.Warn("Continue: failed to load latest message", "conversationID", conversationID, "error", err)
 		http.Error(w, "conversation not found or empty", http.StatusNotFound)
@@ -1714,7 +1739,7 @@ func (s *Server) handleContinueConversation(w http.ResponseWriter, r *http.Reque
 
 	llmService, err := s.llmManager.GetService(newModel)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Unsupported model: %s", newModel), http.StatusBadRequest)
+		http.Error(w, unsupportedModelMessage(newModel, s.getModelList()), http.StatusBadRequest)
 		return
 	}
 
@@ -3428,7 +3453,7 @@ func (s *Server) handleForkConversation(w http.ResponseWriter, r *http.Request, 
 		// No explicit message_id: clamp the cutoff to the conversation's latest
 		// sequence_id. A non-positive (or out-of-range) value forks the whole
 		// conversation. This also rejects forks of empty conversations.
-		latest, err := s.db.GetLatestMessage(ctx, conversationID)
+		latest, err := s.db.GetLatestActionableMessage(ctx, conversationID)
 		if err != nil {
 			http.Error(w, "Conversation has no messages to fork", http.StatusBadRequest)
 			return
@@ -3608,6 +3633,15 @@ func (s *Server) handleStartNewGeneration(w http.ResponseWriter, r *http.Request
 }
 
 func (s *Server) startNewGeneration(ctx context.Context, conversationID string) (generated.Conversation, error) {
+	// Detach from the caller's context. Bumping the generation and hydrating the
+	// new one is a two-step mutation that must not be abandoned half-done: the
+	// bump commits in its own transaction, so a client that disconnects in
+	// between leaves the conversation on a new generation with no system prompt,
+	// and /clear reports a 500. CI saw this as "hydrate after generation bump:
+	// failed to store system prompt: context canceled" -- a loaded host widens
+	// the window, but a user navigating away is enough.
+	ctx = context.WithoutCancel(ctx)
+
 	conversation, err := db.WithTxRes(s.db, ctx, func(q *generated.Queries) (generated.Conversation, error) {
 		return q.IncrementConversationGeneration(ctx, conversationID)
 	})
@@ -3732,9 +3766,16 @@ func (s *Server) handleCreateDraft(w http.ResponseWriter, r *http.Request) {
 	if modelID == "" {
 		modelID = s.effectiveDefaultModel(s.getModelList())
 	}
-	if _, err := s.llmManager.GetService(modelID); err != nil {
-		http.Error(w, fmt.Sprintf("Unsupported model: %s", modelID), http.StatusBadRequest)
-		return
+	// A draft is autosaved composer text, not a turn, so it must not require a
+	// usable model. Rejecting it would discard what the user typed and wedge
+	// the client's draft autosave in a retry loop while they are off fixing
+	// their model setup. An EXPLICIT model is still validated (that's a real
+	// client error); an empty/defaulted one is left to the promoting send.
+	if req.Model != "" {
+		if _, err := s.llmManager.GetService(modelID); err != nil {
+			http.Error(w, unsupportedModelMessage(modelID, s.getModelList()), http.StatusBadRequest)
+			return
+		}
 	}
 	var cwdPtr *string
 	if req.Cwd != "" {
@@ -3797,7 +3838,7 @@ func (s *Server) handleUpdateDraft(w http.ResponseWriter, r *http.Request, conve
 			return
 		}
 		if _, err := s.llmManager.GetService(*req.Model); err != nil {
-			http.Error(w, fmt.Sprintf("Unsupported model: %s", *req.Model), http.StatusBadRequest)
+			http.Error(w, unsupportedModelMessage(*req.Model, s.getModelList()), http.StatusBadRequest)
 			return
 		}
 	}

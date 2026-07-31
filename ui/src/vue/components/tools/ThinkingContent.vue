@@ -17,7 +17,9 @@
       @keydown.space.prevent="isExpanded = !isExpanded"
     >
       <span class="thinking-emoji" aria-hidden="true">💭</span>
-      <div class="thinking-text" aria-hidden="true">{{ isExpanded ? thinking : preview }}</div>
+      <div class="thinking-text" :class="{ 'thinking-text-collapsed': !isExpanded }" aria-hidden="true">
+        {{ isExpanded ? thinking : preview }}
+      </div>
       <button
         type="button"
         class="thinking-toggle thinking-toggle-button"
@@ -67,15 +69,14 @@ const props = defineProps<{ thinking: string }>();
 
 const isExpanded = ref(false);
 
-// Truncate thinking for display - get first 80 chars
-const truncateThinking = (text: string, maxLen = 80) => {
-  if (!text) return "";
-  const firstLine = text.split("\n")[0];
-  if (firstLine.length <= maxLen) return firstLine;
-  return firstLine.substring(0, maxLen) + "...";
-};
-
-const preview = computed(() => truncateThinking(props.thinking));
+// Collapsed preview: first line only, capped to keep the DOM light.
+// Visual truncation (ellipsis at the edge of the line) is done in CSS
+// via .thinking-text-collapsed. Full text remains in the a11y tree below.
+const preview = computed(() => {
+  if (!props.thinking) return "";
+  const firstLine = props.thinking.split("\n", 1)[0];
+  return firstLine.length > 500 ? firstLine.substring(0, 500) : firstLine;
+});
 const toggleLabel = computed(() =>
   isExpanded.value ? "Collapse reasoning" : "Expand reasoning",
 );

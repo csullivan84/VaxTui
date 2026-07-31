@@ -23,7 +23,7 @@ func TestDeepSeekKeySelectsFlashWhenDefaultUnset(t *testing.T) {
 	t.Cleanup(func() { discoverLLMIntegrations = original })
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	got, _ := buildLLMModelSources(context.Background(), GlobalConfig{DisableGateway: true}, logger)
+	got, _ := buildLLMModelSources(context.Background(), GlobalConfig{DisableGateway: true}, shelleyConfig{}, logger)
 	if got != "deepseek-v4-flash" {
 		t.Fatalf("default model = %q, want deepseek-v4-flash", got)
 	}
@@ -36,7 +36,7 @@ func TestConfiguredDefaultBeatsDeepSeekProfile(t *testing.T) {
 		DefaultModel:          "predictable",
 		DisableGateway:        true,
 		DisableLLMIntegration: true,
-	}, logger)
+	}, shelleyConfig{}, logger)
 	if got != "predictable" {
 		t.Fatalf("default model = %q, want predictable", got)
 	}

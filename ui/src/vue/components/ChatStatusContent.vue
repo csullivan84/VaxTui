@@ -23,7 +23,11 @@
 
   <!-- Error -->
   <template v-else-if="error">
-    <span class="status-message status-error" role="alert" aria-live="assertive">{{ error }}</span>
+    <span
+      :class="['status-message', models.length === 0 ? 'status-no-models' : 'status-error']"
+      role="alert"
+      aria-live="assertive"
+    >{{ error }}</span>
     <button class="status-button status-button-text" @click="onClearError">
       <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path
@@ -72,6 +76,7 @@
       :conversation-id="conversationId"
       :model-name="selectedModelDisplayName"
       :usage-entries="usageEntries"
+      :other-usage-rows="otherUsageRows"
       :on-distill-new-generation="onDistillNewGeneration"
       :on-start-new-generation="onStartNewGeneration"
       :agent-working="agentWorking"
@@ -192,6 +197,7 @@
       :conversation-id="conversationId"
       :model-name="selectedModelDisplayName"
       :usage-entries="usageEntries"
+      :other-usage-rows="otherUsageRows"
       :on-distill-new-generation="onDistillNewGeneration"
       :on-start-new-generation="onStartNewGeneration"
       :agent-working="agentWorking"
@@ -202,7 +208,7 @@
 <script setup lang="ts">
 import { computed, ref, watch, onUnmounted } from "vue";
 import type { Conversation } from "../../types";
-import type { UsageEntry } from "../../utils/tokenCostGraph";
+import type { OtherUsageRow, UsageEntry } from "../../utils/tokenCostGraph";
 import { tildifyPath } from "../../utils/tildify";
 import { useI18n } from "../composables/i18n";
 import type { ThinkingLevel } from "./thinkingLevel";
@@ -233,6 +239,7 @@ const props = defineProps<{
   contextWindowSize: number;
   maxContextTokens: number;
   usageEntries: UsageEntry[];
+  otherUsageRows: OtherUsageRow[];
   selectedModelDisplayName: string;
   hostname: string;
   models: ModelInfo[];

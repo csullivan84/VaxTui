@@ -715,12 +715,6 @@ body {
   animation: conversationItemEnter 180ms ease-out;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .conversation-item-enter {
-    animation: none;
-  }
-}
-
 .group-by-menu-item:hover {
   background: var(--bg-tertiary);
 }
@@ -3243,6 +3237,13 @@ select:disabled {
 
 .status-message.status-warning {
   color: var(--blue-text);
+  font-weight: 500;
+}
+
+/* No models configured is a setup gap, not a failure: warning color, because
+   red reads like something broke inside Shelley. */
+.status-message.status-no-models {
+  color: var(--warning-text);
   font-weight: 500;
 }
 
@@ -8882,6 +8883,59 @@ kbd {
   color: var(--text-secondary);
 }
 
+/* Empty-model-list warning. Shown in the welcome panel when the server
+   serves no models. Warning-colored (not plain secondary text) because the
+   composer is unusable until it's resolved — this is a blocking condition,
+   not an informational note. Constrained width and left alignment keep it
+   readable on mobile, where the surrounding welcome copy is centered. */
+/* PrimeVue's Message (severity="warn") supplies the warning palette and
+   chrome; only layout and the command list belong here. */
+.no-models-message {
+  max-width: 34rem;
+  margin: 0.75rem auto 0;
+  text-align: left;
+  line-height: 1.5;
+}
+
+.no-models-title {
+  margin: 0;
+  font-weight: 600;
+}
+
+.no-models-message p + p,
+.no-models-message .no-models-commands + p {
+  margin: 0.375rem 0 0;
+}
+
+/* One command per line, each a click-to-apply suggest link. */
+.no-models-commands {
+  margin: 0.5rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.no-models-commands li + li {
+  margin-top: 0.25rem;
+}
+
+/* Links inherit the Message's warning color: default link blue fights the
+   amber panel, and the underline alone already marks them clickable. */
+.no-models-commands a {
+  color: inherit;
+  text-decoration-color: color-mix(in srgb, currentcolor 45%, transparent);
+  text-underline-offset: 2px;
+}
+
+.no-models-commands a:hover {
+  text-decoration-color: currentcolor;
+}
+
+.no-models-commands code {
+  font-size: 0.8125rem;
+  /* Long commands wrap instead of overflowing on narrow viewports. */
+  overflow-wrap: anywhere;
+}
+
 .chat-icon-1rem {
   width: 1rem;
   height: 1rem;
@@ -8934,6 +8988,15 @@ kbd {
   color: var(--text-secondary);
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* Collapsed preview: single line, ellipsis at the edge instead of a
+   mid-line "..." cutoff. min-width lets the flex item shrink. */
+.thinking-text-collapsed {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
 }
 
 .thinking-toggle-button {
@@ -9723,7 +9786,6 @@ kbd {
   display: flex;
   gap: 0.5rem;
   align-items: center;
-  margin-top: 0.25rem;
 }
 
 .git-graph-open-diff {
@@ -12112,5 +12174,94 @@ kbd {
     max-width: 60vw;
     max-height: 40vh;
     font-size: 10px;
+  }
+}
+
+/* Reduced motion.
+ *
+ * Users who ask for less motion should get it. This is also what makes the e2e
+ * suite quick: PrimeVue's Dialog animates in and out over 0.3s, and Playwright
+ * waits for an element to stop moving before clicking it, so every open/close
+ * of a tool-detail modal cost ~0.6s of pure waiting. The universal rule below
+ * covers PrimeVue's runtime-injected theme too -- !important outranks
+ * specificity, so `*` beats its single-class .p-dialog-enter-active rule.
+ *
+ * The blanket rule collapses one-shot entrances, exits and transitions. But
+ * indefinite animations (spinners, pulsing "running" badges, the streaming
+ * caret) are the UI saying it is still working: freezing those would make a
+ * busy app look hung, which is worse than the motion. They are restored below.
+ *
+ * That restore list is hand-maintained, so `reduced-motion.spec.ts` derives the
+ * set of infinite animations from every stylesheet the server ships -- including
+ * dependency CSS, which the rule above reaches too -- and fails if any of them
+ * stops animating under reduce, whether by duration or iteration count. Add a
+ * spinner, and the test tells you to add it here.
+ *
+ * Killing transitions is safe: nothing keys behaviour off transitionend, and
+ * the one animationend listener (message highlight, ChatInterface) has a 2s
+ * timeout fallback -- and a near-zero animation still fires the event, so it
+ * cannot latch. JS scrolls pass `behavior: "smooth"` explicitly, which wins
+ * over the scroll-behavior below; that is deliberate, since those are direct
+ * responses to a user action rather than ambient motion.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-delay: 0ms !important;
+    transition-duration: 0.01ms !important;
+    transition-delay: 0ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  /* Looping progress indicators keep looping. iteration-count is untouched by
+     the rule above, so only the duration needs restoring. */
+  .bash-tool-running,
+  .command-palette-spinner,
+  .conversation-loading-bar-fill,
+  .export-spinner,
+  .message-voice-btn.listening,
+  .patch-tool-running,
+  .reconnecting-dots,
+  .screencast-tool-emoji,
+  .screenshot-tool-running,
+  .spinner,
+  .status-message.status-reconnecting,
+  .streaming-cursor,
+  .thinking-dots,
+  .thinking-dots span,
+  .tool-detail-status-spinner,
+  .tool-detail-status-time,
+  .tool-pill-spinner,
+  .tool-running,
+  .tool-running-header,
+  .tool-status-running,
+  .p-select-overlay.model-picker-panel .model-picker-refresh-icon.spinning {
+    animation-duration: 1.5s !important;
+  }
+
+  /* PrimeIcons ships its own reduce rule that freezes .pi-spin by setting
+     animation-iteration-count to 1, so restoring the duration alone would leave
+     it stopped after a single turn. Nothing in our source uses .pi-spin today;
+     this keeps it usable. */
+  .pi-spin {
+    animation-duration: 2s !important;
+    animation-iteration-count: infinite !important;
+  }
+
+  /* Monaco's own looping indicators. The universal rule above reaches into
+     lazily-loaded dependency CSS too, and a frozen indeterminate progress bar or
+     "syncing" icon is exactly the hung-looking UI this exemption exists to
+     avoid. Durations match monaco-editor.css. */
+  .monaco-progress-container.infinite .progress-bit {
+    animation-duration: 4s !important;
+  }
+
+  .codicon-sync.codicon-modifier-spin,
+  .codicon-loading.codicon-modifier-spin,
+  .codicon-gear.codicon-modifier-spin,
+  .codicon-notebook-state-executing.codicon-modifier-spin {
+    animation-duration: 1.5s !important;
   }
 }

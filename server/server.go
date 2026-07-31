@@ -35,13 +35,19 @@ import (
 // APIMessage is the message format sent to clients
 // TODO: We could maybe omit llm_data when display_data is available
 type APIMessage struct {
-	MessageID      string    `json:"message_id"`
-	ConversationID string    `json:"conversation_id"`
-	SequenceID     int64     `json:"sequence_id"`
-	Type           string    `json:"type"`
-	LlmData        *string   `json:"llm_data,omitempty"`
-	UserData       *string   `json:"user_data,omitempty"`
-	UsageData      *string   `json:"usage_data,omitempty"`
+	MessageID      string  `json:"message_id"`
+	ConversationID string  `json:"conversation_id"`
+	SequenceID     int64   `json:"sequence_id"`
+	Type           string  `json:"type"`
+	LlmData        *string `json:"llm_data,omitempty"`
+	UserData       *string `json:"user_data,omitempty"`
+	UsageData      *string `json:"usage_data,omitempty"`
+	// OtherUsageData is a JSON array of llm.PurposedUsage: usage from indirect
+	// LLM calls affiliated with this message (compaction summarization,
+	// LLM-backed tools). Nil when none. Slug-generation usage rides on its own
+	// appended slug marker message rather than on the message that triggered it,
+	// because message rows are append-only.
+	OtherUsageData *string   `json:"other_usage_data,omitempty"`
 	CreatedAt      time.Time `json:"created_at"`
 	DisplayData    *string   `json:"display_data,omitempty"`
 	Generation     int64     `json:"generation"`
@@ -173,6 +179,7 @@ func toAPIMessages(messages []generated.Message) []APIMessage {
 			LlmData:             llmData,
 			UserData:            msg.UserData,
 			UsageData:           msg.UsageData,
+			OtherUsageData:      msg.OtherUsageData,
 			CreatedAt:           msg.CreatedAt,
 			DisplayData:         msg.DisplayData,
 			Generation:          msg.Generation,
@@ -904,18 +911,21 @@ func (s *Server) getOrCreateConversationManager(ctx context.Context, conversatio
 		}
 		s.mu.Unlock()
 
-		recordMessage := func(ctx context.Context, message llm.Message, usage llm.Usage) error {
-			return s.recordMessage(ctx, conversationID, message, usage)
+		recordMessage := func(ctx context.Context, message llm.Message, usage llm.Usage, otherUsage []llm.PurposedUsage) error {
+			return s.recordMessage(ctx, conversationID, message, usage, otherUsage)
 		}
-		recordTurnStart := func(ctx context.Context, message llm.Message, usage llm.Usage) error {
-			return s.recordTurnStartMessage(ctx, conversationID, message, usage)
+		recordTurnStart := func(ctx context.Context, message llm.Message, usage llm.Usage, otherUsage []llm.PurposedUsage) error {
+			return s.recordTurnStartMessage(ctx, conversationID, message, usage, otherUsage)
+		}
+		recordBatch := func(ctx context.Context, msgs []recordMessageInput) error {
+			return s.recordMessages(ctx, conversationID, msgs)
 		}
 
 		onStateChange := func(state ConversationState) {
 			s.publishConversationState(state)
 		}
 
-		manager := NewConversationManager(conversationID, s.db, s.logger, s.toolSetConfig, recordMessage, recordTurnStart, onStateChange, s.streamPub)
+		manager := NewConversationManager(conversationID, s.db, s.logger, s.toolSetConfig, recordMessage, recordTurnStart, recordBatch, onStateChange, s.streamPub)
 		manager.userEmail = userEmail
 		manager.serverPort = s.listenPort
 		// Hydrate runs DB transactions, which fire OnCommit hooks. Those hooks
@@ -954,11 +964,14 @@ func (s *Server) getOrCreateSubagentConversationManager(ctx context.Context, con
 		}
 		s.mu.Unlock()
 
-		recordMessage := func(ctx context.Context, message llm.Message, usage llm.Usage) error {
-			return s.recordMessage(ctx, conversationID, message, usage)
+		recordMessage := func(ctx context.Context, message llm.Message, usage llm.Usage, otherUsage []llm.PurposedUsage) error {
+			return s.recordMessage(ctx, conversationID, message, usage, otherUsage)
 		}
-		recordTurnStart := func(ctx context.Context, message llm.Message, usage llm.Usage) error {
-			return s.recordTurnStartMessage(ctx, conversationID, message, usage)
+		recordTurnStart := func(ctx context.Context, message llm.Message, usage llm.Usage, otherUsage []llm.PurposedUsage) error {
+			return s.recordTurnStartMessage(ctx, conversationID, message, usage, otherUsage)
+		}
+		recordBatch := func(ctx context.Context, msgs []recordMessageInput) error {
+			return s.recordMessages(ctx, conversationID, msgs)
 		}
 
 		onStateChange := func(state ConversationState) {
@@ -969,12 +982,15 @@ func (s *Server) getOrCreateSubagentConversationManager(ctx context.Context, con
 		subagentConfig := s.toolSetConfig
 		subagentConfig.SubagentDepth = s.toolSetConfig.SubagentDepth + 1
 
-		manager := NewConversationManager(conversationID, s.db, s.logger, subagentConfig, recordMessage, recordTurnStart, onStateChange, s.streamPub)
+		manager := NewConversationManager(conversationID, s.db, s.logger, subagentConfig, recordMessage, recordTurnStart, recordBatch, onStateChange, s.streamPub)
 		manager.serverPort = s.listenPort
-		// Wire up done notification: when this subagent finishes, notify the parent
-		// by injecting a user message into the parent's loop so the LLM sees it.
+		// Wire up done notification: when this subagent finishes, notify the
+		// parent by splicing a synthetic tool_use/result pair into the
+		// parent's conversation. dispatchSubagentDone captures the completed
+		// turn's response synchronously (fixing what is announced) and then
+		// notifies asynchronously.
 		manager.onDone = func() {
-			go s.notifyParentSubagentDone(conversationID)
+			s.dispatchSubagentDone(conversationID)
 		}
 		// See getOrCreateConversationManager for why we don't hold s.mu here.
 		if err := manager.Hydrate(ctx); err != nil {
@@ -1031,7 +1047,7 @@ func ExtractDisplayData(message llm.Message) interface{} {
 // applying the same message-type detection, display-data extraction, error
 // user_data stamping, and end-of-turn agent-done folding that recordMessage
 // uses. Shared by recordMessage and recordMessages.
-func (s *Server) buildCreateMessageParams(conversationID string, message llm.Message, usage llm.Usage, userData ...interface{}) (db.CreateMessageParams, error) {
+func (s *Server) buildCreateMessageParams(conversationID string, message llm.Message, usage llm.Usage, otherUsage []llm.PurposedUsage, userData ...interface{}) (db.CreateMessageParams, error) {
 	// Log message based on role
 	if message.Role == llm.MessageRoleUser {
 		s.logger.Info("User message", "conversation_id", conversationID, "content_items", len(message.Content))
@@ -1075,7 +1091,7 @@ func (s *Server) buildCreateMessageParams(conversationID string, message llm.Mes
 	// visible" flake. Mirror of AcceptUserMessage's SetAgentWorking(true)-
 	// before-recordMessage ordering on the Send side.
 	markAgentDone := (messageType == db.MessageTypeAgent || messageType == db.MessageTypeError) && message.EndOfTurn
-	return db.CreateMessageParams{
+	params := db.CreateMessageParams{
 		ConversationID:      conversationID,
 		Type:                messageType,
 		LLMData:             message,
@@ -1086,11 +1102,15 @@ func (s *Server) buildCreateMessageParams(conversationID string, message llm.Mes
 		DisplayData:         ExtractDisplayData(message),
 		ExcludedFromContext: message.ExcludedFromContext,
 		MarkAgentDone:       markAgentDone,
-	}, nil
+	}
+	if len(otherUsage) > 0 {
+		params.OtherUsageData = otherUsage
+	}
+	return params, nil
 }
 
-func (s *Server) recordMessage(ctx context.Context, conversationID string, message llm.Message, usage llm.Usage, userData ...interface{}) error {
-	params, err := s.buildCreateMessageParams(conversationID, message, usage, userData...)
+func (s *Server) recordMessage(ctx context.Context, conversationID string, message llm.Message, usage llm.Usage, otherUsage []llm.PurposedUsage, userData ...interface{}) error {
+	params, err := s.buildCreateMessageParams(conversationID, message, usage, otherUsage, userData...)
 	if err != nil {
 		return err
 	}
@@ -1146,7 +1166,7 @@ func (s *Server) recordMessage(ctx context.Context, conversationID string, messa
 // background context, so it can't be read from the request here); it is
 // stamped onto the new row. Empty when the queuing request carried no header.
 func (s *Server) recordDrainedQueuedMessage(ctx context.Context, conversationID, queuedID string, message llm.Message, userEmail string) error {
-	params, err := s.buildCreateMessageParams(conversationID, message, llm.Usage{})
+	params, err := s.buildCreateMessageParams(conversationID, message, llm.Usage{}, nil)
 	if err != nil {
 		return err
 	}
@@ -1196,8 +1216,8 @@ func userEmailFromContext(ctx context.Context) string {
 // AND working=true, so the conversation-list patch can't briefly snapshot a
 // stale working=false row (the flicker the old ordering guarded against), and
 // we drop two commits (the working flip and the timestamp bump) per turn.
-func (s *Server) recordTurnStartMessage(ctx context.Context, conversationID string, message llm.Message, usage llm.Usage) error {
-	params, err := s.buildCreateMessageParams(conversationID, message, usage)
+func (s *Server) recordTurnStartMessage(ctx context.Context, conversationID string, message llm.Message, usage llm.Usage, otherUsage []llm.PurposedUsage) error {
+	params, err := s.buildCreateMessageParams(conversationID, message, usage, otherUsage)
 	if err != nil {
 		return err
 	}
@@ -1236,7 +1256,7 @@ func (s *Server) recordMessages(ctx context.Context, conversationID string, msgs
 	}
 	paramsList := make([]db.CreateMessageParams, 0, len(msgs))
 	for _, m := range msgs {
-		params, err := s.buildCreateMessageParams(conversationID, m.message, m.usage, m.userData...)
+		params, err := s.buildCreateMessageParams(conversationID, m.message, m.usage, m.otherUsage, m.userData...)
 		if err != nil {
 			return err
 		}
@@ -1276,9 +1296,10 @@ func (s *Server) recordMessages(ctx context.Context, conversationID string, msgs
 
 // recordMessageInput is one message to record via recordMessages.
 type recordMessageInput struct {
-	message  llm.Message
-	usage    llm.Usage
-	userData []interface{}
+	message    llm.Message
+	usage      llm.Usage
+	otherUsage []llm.PurposedUsage
+	userData   []interface{}
 }
 
 // getMessageType determines the message type from an LLM message

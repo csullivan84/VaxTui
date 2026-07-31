@@ -181,9 +181,21 @@
                   <template v-else>{{ part }}</template>
                 </template>
               </p>
-              <div v-if="models.length === 0" class="add-model-hint">
-                <p class="text-sm chat-secondary-text">{{ t("noModelsConfiguredHint") }}</p>
-              </div>
+              <PvMessage v-if="models.length === 0" severity="warn" class="no-models-message">
+                <p class="no-models-title">{{ t(modelSetupHint.title) }}</p>
+                <p v-if="modelSetupHint.note">{{ t(modelSetupHint.note) }}</p>
+                <!-- Render each remedy as the literal command it runs, so the
+                     user can see what a click does (and copy it to a terminal
+                     instead if they prefer). -->
+                <ul v-if="modelSetupHint.actions.length" class="no-models-commands">
+                  <li v-for="action in modelSetupHint.actions" :key="action.command">
+                    <a :href="suggestURL(action.command)" target="_blank" rel="noopener noreferrer"
+                      ><code>{{ sshCommandLine(action.command) }}</code></a
+                    >
+                  </li>
+                </ul>
+                <p v-if="modelSetupHint.footer">{{ t(modelSetupHint.footer) }}</p>
+              </PvMessage>
               <p v-else class="text-sm chat-secondary-text">{{ t("sendMessageToStart") }}</p>
             </div>
           </div>
@@ -413,6 +425,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, provide, ref, watch } from "vue";
 import Button from "primevue/button";
+import PvMessage from "primevue/message";
 import {
   type Message,
   type Conversation,
@@ -428,6 +441,7 @@ import { api } from "../../services/api";
 import { announceA11y } from "../../services/a11yAnnouncer";
 import { messageStore } from "../../services/messageStore";
 import { plainTextCache } from "../../services/plainTextCache";
+import { cacheDiag } from "../../services/cacheDiag";
 import { currentTurnAssistantPreview } from "./assistantTurnPreview";
 import { countTurnToolStats } from "./turnToolStats";
 import type { ToolTurnStats } from "./statusAnnouncer";
@@ -443,6 +457,13 @@ import {
   reconcileComposerDraft,
 } from "../../services/draftCache";
 import { setFaviconStatus } from "../../services/favicon";
+import {
+  modelSetupHintKeys,
+  canSendWithModel,
+  needsModel,
+  sshCommandLine,
+  suggestURL,
+} from "../../utils/modelSetupHint";
 import { useMarkdownMode } from "../composables/markdownMode";
 import { useI18n } from "../composables/i18n";
 import { useDraftAutosave } from "../composables/draftAutosave";
@@ -459,7 +480,12 @@ import { isAutoExpandTool } from "../../utils/toolMeta";
 import { formatDay } from "../../utils/messageTime";
 import { SLASH_COMMANDS } from "../../utils/slashCommands";
 import { perfCount, perfWrap } from "../../utils/perf";
-import type { UsageEntry } from "../../utils/tokenCostGraph";
+import {
+  aggregateOtherUsage,
+  type OtherUsageEntry,
+  type OtherUsageRow,
+  type UsageEntry,
+} from "../../utils/tokenCostGraph";
 import { coalesceMessages, type CoalescedItem } from "./coalesce";
 import type { RenderNode, RenderChunk, GenerationBlock } from "./renderNode";
 import type { EphemeralTerminal } from "./terminalTypes";
@@ -531,6 +557,9 @@ const props = withDefaults(
     navigateUserMessageTrigger?: number;
     onConversationUnarchived?: (conversation: Conversation) => void;
     onDraftCreated?: (conversationId: string) => void;
+    /** Comment block from the standalone file editor (App-level modal) to
+     *  inject into the message input. Fresh object per submit. */
+    externalCommentText?: { text: string } | null;
   }>(),
   {
     streamStatus: "connected",
@@ -559,9 +588,18 @@ const messages = ref<Message[]>([]);
 // an error message can show its Retry button only when it is last: once a
 // retry (or any new turn) appends a message, the error is no longer at the
 // bottom and retrying it would be a server-side no-op.
-const lastMessageId = computed(() =>
-  messages.value.length > 0 ? messages.value[messages.value.length - 1].message_id : null,
-);
+//
+// Slug markers don't count. They render as nothing, carry only the usage of the
+// LLM call that named the conversation, and land at an arbitrary point (that
+// call races the first turn), so treating one as "last" would hide the Retry
+// button on a genuinely retryable error. The server's GetLatestMessage skips
+// them for the same reason.
+const lastMessageId = computed(() => {
+  for (let i = messages.value.length - 1; i >= 0; i--) {
+    if (messages.value[i].type !== "slug") return messages.value[i].message_id;
+  }
+  return null;
+});
 provide("lastMessageId", lastMessageId);
 
 // When more than one distinct human user (by exe.dev email) has participated in
@@ -598,6 +636,26 @@ const models = ref<
 // Ready model ids, surfaced to MessageInput for /model argument autocomplete.
 const readyModelIds = computed(() => models.value.filter((m) => m.ready).map((m) => m.id));
 
+// Copy for the empty-model-list state. The server tells us WHY the list is
+// empty (missing exe.dev reflection/llm integration, or not on exe.dev at
+// all) so the advice names the right fix.
+const modelSetupHint = computed(() =>
+  modelSetupHintKeys(
+    window.__SHELLEY_INIT__?.model_setup_hint,
+    window.__SHELLEY_INIT__?.is_exe_dev,
+  ),
+);
+
+// noModelErrorMessage is the terse inline error when a send is blocked for
+// want of a model. The remedies live in the warning panel (and its suggest
+// links), so repeating them in the status bar would just be noise; inside an
+// existing conversation the panel is hidden, so add the one-line note.
+function noModelErrorMessage(): string {
+  const hint = modelSetupHint.value;
+  if (messages.value.length === 0 || !hint.note) return t(hint.title);
+  return `${t(hint.title)}. ${t(hint.note)}`;
+}
+
 const THINKING_LEVEL_KEY = "shelley.thinkingLevel.v2";
 const thinkingLevel = ref<ThinkingLevel>(
   (() => {
@@ -630,6 +688,11 @@ function setThinkingLevel(level: ThinkingLevel) {
   }
 }
 
+// selectedModel is "" when the server serves no models. Deliberately no
+// hardcoded fallback id: inventing one (this used to default to
+// "claude-sonnet-4.6") made the composer look usable and turned a clear
+// "no models configured" state into a misleading "Unsupported model:
+// claude-sonnet-4.6" error from the server. Empty disables sending instead.
 const selectedModel = ref<string>(
   (() => {
     const storedModel = localStorage.getItem("shelley_selected_model");
@@ -641,7 +704,7 @@ const selectedModel = ref<string>(
     const defaultModel = window.__SHELLEY_INIT__?.default_model;
     if (defaultModel) return defaultModel;
     const firstReady = initModels.find((m) => m.ready);
-    return firstReady?.id || "claude-sonnet-4.6";
+    return firstReady?.id || "";
   })(),
 );
 // applyModel updates the picker's local state only (ref + localStorage).
@@ -1023,9 +1086,16 @@ function isHumanUserMessage(m: Message): boolean {
 // cost, not just the live context window. All-zero records (e.g. error
 // placeholders) are skipped. Empty while the flag is off so the default path
 // doesn't JSON.parse usage for every message on each stream update.
-const usageEntries = computed<UsageEntry[]>(() => {
-  if (!tokenCostGraphEnabled.value) return [];
+//
+// The same single walk also collects "other" (indirect) LLM usage —
+// compaction summarization, LLM-backed tools, slug generation, … — from any
+// message (any type) carrying other_usage_data, aggregated into per-
+// (purpose, model, url) rows. Inclusion semantics are identical to
+// usage_data: forked copies carry both fields and both are counted.
+const usageData = computed<{ entries: UsageEntry[]; otherRows: OtherUsageRow[] }>(() => {
+  if (!tokenCostGraphEnabled.value) return { entries: [], otherRows: [] };
   const out: UsageEntry[] = [];
+  const otherEntries: OtherUsageEntry[] = [];
   // A turn starts at the first call, after a human user message, or after an
   // agent message that declared end_of_turn. Tool results also arrive as
   // "user" messages; those don't start turns.
@@ -1034,6 +1104,14 @@ const usageEntries = computed<UsageEntry[]>(() => {
   // first call's duration (created_at only marks call completion).
   let turnStartTs = 0;
   for (const m of messages.value) {
+    if (m.other_usage_data) {
+      try {
+        const parsed = JSON.parse(m.other_usage_data);
+        if (Array.isArray(parsed)) otherEntries.push(...parsed);
+      } catch {
+        /* ignore malformed other usage */
+      }
+    }
     if (isHumanUserMessage(m)) {
       nextStartsTurn = true;
       turnStartTs = Date.parse(m.created_at) || 0;
@@ -1075,8 +1153,10 @@ const usageEntries = computed<UsageEntry[]>(() => {
       turnStartTs = 0;
     }
   }
-  return out;
+  return { entries: out, otherRows: aggregateOtherUsage(otherEntries) };
 });
+const usageEntries = computed<UsageEntry[]>(() => usageData.value.entries);
+const otherUsageRows = computed<OtherUsageRow[]>(() => usageData.value.otherRows);
 
 watch(
   selectedModelInfo,
@@ -1384,6 +1464,11 @@ const showStreamingPreview = computed(() => !!streamingText.value && agentWorkin
 // ---- scroll ----
 const MAX_SCROLL_OFFSET = 0x7fffffff;
 const BOTTOM_PIN_SCROLL_RELEASE_DELTA = 128;
+// The bottom sentinel's IntersectionObserver rootMargin, which the observer
+// below is built from. An upward scroll larger than this cannot be one of the
+// sub-margin layout clamps that handleScroll must ignore: it necessarily takes
+// the sentinel out of the near-bottom zone.
+const BOTTOM_SENTINEL_MARGIN_PX = 100;
 // How long a clamp bookkeeping entry stays valid. A layout clamp and its
 // scroll event land within a rendering update or two of each other; anything
 // older is stale and must not affect genuine gestures.
@@ -1513,20 +1598,80 @@ async function loadMessages(focusedId: string) {
     }
   }
 
-  if (
-    cached &&
+  const cacheIsComplete =
+    !!cached &&
     cached.hasFullHistory &&
-    (cached.maxSequenceIdKnown <= 0 || cached.maxSequenceId >= cached.maxSequenceIdKnown)
-  ) {
+    (cached.maxSequenceIdKnown <= 0 || cached.maxSequenceId >= cached.maxSequenceIdKnown);
+
+  if (cacheIsComplete && !cached!.needsRefresh) {
     // We have the full history (even if it's legitimately empty). Clear the
     // loading state so a genuinely empty conversation shows its empty-state
     // rather than an indefinite spinner.
+    cacheDiag("hit", "load.served_from_cache", {
+      conversation_id: focusedId,
+      messages: cached!.messages.length,
+    });
     loadingFlag = false;
     loading.value = false;
     showLoadingProgressUI.value = false;
     loadingProgress.value = null;
     return;
   }
+
+  // Incremental path: the cache holds a complete contiguous history, we just
+  // don't know whether the server has grown past it (stream reconnect, or the
+  // list's known-max is ahead of us). Ask only for the tail — a few hundred
+  // bytes instead of re-downloading the whole conversation. The messages
+  // already on screen stay on screen while this runs.
+  if (cached && cached.hasFullHistory && cached.messages.length > 0) {
+    const fromSeq = cached.maxSequenceId;
+    try {
+      const tail = await api.getConversationSince(focusedId, fromSeq);
+      if (!isCurrent()) return;
+      messageStore.applyIncrementalTail(focusedId, tail, fromSeq);
+      cached = messageStore.peek(focusedId);
+      pendingScroll = loadScroll();
+      const merged = cached?.messages ?? [];
+      messages.value = merged;
+      lastKnownMessageCount.value = merged.length;
+      saveMsgCount(merged.length);
+      loadingFlag = false;
+      loading.value = false;
+      if (loadingProgressDelay) {
+        clearTimeout(loadingProgressDelay);
+        loadingProgressDelay = null;
+      }
+      showLoadingProgressUI.value = false;
+      loadingProgress.value = null;
+      if (props.onConversationUpdate && tail.conversation) {
+        props.onConversationUpdate(tail.conversation);
+      }
+      return;
+    } catch (err) {
+      // Fall through to the full load below; the cached view stays on screen.
+      cacheDiag(
+        "fail",
+        "refresh.incremental_failed",
+        { conversation_id: focusedId, error: String(err) },
+        focusedId,
+      );
+      if (!isCurrent()) return;
+    }
+  }
+
+  cacheDiag("info", "load.full_rest", {
+    conversation_id: focusedId,
+    reason: !cached
+      ? "cold"
+      : !cached.hasFullHistory
+        ? "partial-history"
+        : cached.needsRefresh
+          ? "reconnect"
+          : "server-ahead",
+    cached_messages: cached?.messages.length ?? 0,
+    cached_max: cached?.maxSequenceId ?? -1,
+    known_max: cached?.maxSequenceIdKnown ?? 0,
+  });
 
   try {
     loadingFlag = true;
@@ -1589,6 +1734,14 @@ async function loadMessages(focusedId: string) {
 // ---- sending / actions ----
 async function queueMessage(message: string) {
   if (!message.trim() || !props.conversationId) return;
+  // Same guard as sendMessage: a queued turn runs the LLM later, so an
+  // unavailable model just defers the confusing "Unsupported model" error.
+  // Throws (not returns) so MessageInput's catch restores the composer text.
+  if (!canSendWithModel(selectedModel.value, readyModelIds.value)) {
+    const err = new Error(noModelErrorMessage());
+    error.value = err.message;
+    throw err;
+  }
   try {
     await api.sendMessage(props.conversationId, {
       message: message.trim(),
@@ -1649,6 +1802,9 @@ function buildConversationOptions(): ChatRequest["conversation_options"] | undef
 
 async function sendFirstMessage(prompt: string) {
   if (!props.onFirstMessage) return;
+  if (!canSendWithModel(selectedModel.value, readyModelIds.value)) {
+    throw new Error(noModelErrorMessage());
+  }
   if (selectedCwd.value) {
     const validation = await api.validateCwd(selectedCwd.value);
     if (!validation.valid) {
@@ -1683,6 +1839,23 @@ const forkHandler = (messageId: string) => {
 async function sendMessage(message: string) {
   if (!message.trim() || sending.value) return;
   const trimmedMessage = message.trim();
+
+  // Guard every send path on actually having a model. Shelley used to fall
+  // back to a hardcoded "claude-sonnet-4.6" here, which the server then
+  // rejected with a confusing "Unsupported model" naming an id the user never
+  // picked. Fail locally with setup advice instead. Slash commands that don't
+  // hit the LLM (/fork, /diff, /archive, ...) are handled below and stay
+  // usable; the checks live on the paths that need a model.
+  //
+  // THROW rather than return: MessageInput clears the textarea optimistically
+  // and only restores it in its catch ("Keep the message on error so user can
+  // retry"). Returning would look like success and silently discard what the
+  // user typed — along with its cached draft — exactly when they can't send.
+  if (!canSendWithModel(selectedModel.value, readyModelIds.value) && needsModel(trimmedMessage)) {
+    const err = new Error(noModelErrorMessage());
+    error.value = err.message;
+    throw err;
+  }
 
   if (trimmedMessage === SLASH_COMMANDS.FORK.command) {
     await forkConversation();
@@ -2124,6 +2297,14 @@ function setDiffCommentText(text: string) {
   diffCommentText.value = text;
 }
 
+// Comments submitted from the App-level file editor modal flow in via prop.
+watch(
+  () => props.externalCommentText,
+  (v) => {
+    if (v?.text) diffCommentText.value = v.text;
+  },
+);
+
 function onTerminalCloseHandler(id: string) {
   if (props.onTerminalClose) {
     props.onTerminalClose(id);
@@ -2170,6 +2351,7 @@ const statusContentProps = computed(() => {
     contextWindowSize: contextWindowSize.value,
     maxContextTokens: maxContextTokens.value,
     usageEntries: usageEntries.value,
+    otherUsageRows: otherUsageRows.value,
     selectedModelDisplayName: selectedModelDisplayName.value,
     hostname,
     models: models.value,
@@ -2295,6 +2477,27 @@ watch(
         if (window.__SHELLEY_INIT__) window.__SHELLEY_INIT__.models = newModels;
       })
       .catch((err) => console.error("Failed to refresh models:", err));
+  },
+  { immediate: true },
+);
+
+// Keep the picker honest about availability. A model id can go stale two
+// ways: it was persisted in localStorage while the integrations were healthy,
+// or the catalog shrank under us (integration detached, refresh returned
+// fewer models). Displaying a stale id invites the user to send it, and the
+// server then rejects it with a confusing "Unsupported model" naming a model
+// they never chose — the same class of bug as the old hardcoded fallback.
+// Clear the selection so the picker reads "No model available" and the send
+// guard blocks locally with setup advice.
+watch(
+  readyModelIds,
+  (ready) => {
+    if (!selectedModel.value) return;
+    if (ready.includes(selectedModel.value)) return;
+    // Prefer the server's default (or any ready model) over showing nothing,
+    // so a mere catalog reshuffle doesn't strand the composer.
+    const fallback = window.__SHELLEY_INIT__?.default_model;
+    applyModel(fallback && ready.includes(fallback) ? fallback : ready[0] || "");
   },
   { immediate: true },
 );
@@ -2766,7 +2969,34 @@ function handleScroll() {
   if (bottomPinActive && upwardDelta >= BOTTOM_PIN_SCROLL_RELEASE_DELTA) {
     stopBottomPin();
   }
-  if (!bottomPinActive && upwardDelta > 0) {
+  // An upward delta this large, after clamp accounting, is unambiguously a
+  // gesture: clampBudget has already absorbed the pixels the ResizeObserver
+  // attributed to a list shrink or container growth, so what remains is not
+  // explained by layout. (Clamps themselves can far exceed this — a 1200px list
+  // shrink is ordinary — which is why the discounting above has to come first.)
+  // Acting on it immediately matters because the observer is async — if the list
+  // grows in the same task, the ResizeObserver's follow-the-bottom branch runs
+  // while sentinelAtBottom is still stale-true and yanks the reader back down
+  // (measured: scrollTop 0 -> 1607). The wheel/touch handlers only cover this
+  // while the bottom pin is active, so they are not a substitute.
+  const definitelyGesture = upwardDelta > BOTTOM_SENTINEL_MARGIN_PX;
+  if (!bottomPinActive && upwardDelta > 0 && (!sentinelAtBottom || definitelyGesture)) {
+    // Below the gesture threshold, only act when the bottom sentinel has
+    // actually left the near-bottom zone. While it still intersects we are
+    // following the conversation, and the
+    // IntersectionObserver reports only *changes*, so it will not fire again:
+    // showing the button here would strand it visible with the container
+    // sitting at the bottom, and disarming auto-follow here would silently
+    // stop streaming from following. Sub-margin drops are routine —
+    // content-visibility:auto chunks swapping estimated for real heights clamp
+    // scrollTop by a few pixels. sentinelAtBottom comes from the observer, so
+    // testing it costs no forced layout (reading scrollHeight here would lay
+    // out every off-screen chunk and stall the main thread).
+    //
+    // A genuine gesture that outruns the observer is still handled: the wheel
+    // and touchstart handlers release the pin synchronously, and the observer
+    // shows the button a frame later when the sentinel leaves the margin.
+    //
     // Record the inference so the container ResizeObserver can undo it if a
     // growth report arrives that explains this drop as a layout clamp.
     const now = performance.now();
@@ -2806,9 +3036,23 @@ function setupScrollObservers() {
       if (nearBottom) {
         userScrolled = false;
         stopBottomPin();
+      } else if (!bottomPinActive) {
+        // The sentinel left the near-bottom zone, so we are no longer following
+        // the conversation and must stop auto-scrolling. handleScroll cannot be
+        // relied on to have noticed: it defers to sentinelAtBottom (so that
+        // routine sub-margin clamps don't strand the button), and this callback
+        // is async, so a genuine gesture's scroll event can land while that flag
+        // is still stale-true. Showing the button without arming userScrolled
+        // left auto-follow on, and the next list growth yanked the reader back
+        // to the bottom.
+        //
+        // Excluded while the bottom pin is active: the pin scrolls the container
+        // itself and briefly moves the sentinel out of view, which is not a
+        // gesture. The pin releases via wheel/touch or a real upward delta.
+        userScrolled = true;
       }
     },
-    { root: container, rootMargin: "0px 0px 100px 0px", threshold: 0 },
+    { root: container, rootMargin: `0px 0px ${BOTTOM_SENTINEL_MARGIN_PX}px 0px`, threshold: 0 },
   );
   ro = new ResizeObserver((entries) => {
     perfCount("chat.listResizeObserver");

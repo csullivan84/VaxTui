@@ -13,6 +13,7 @@ import (
 	"shelley.exe.dev/db"
 	"shelley.exe.dev/db/generated"
 	"shelley.exe.dev/llm"
+	"shelley.exe.dev/llm/llmhttp"
 	"shelley.exe.dev/loop"
 )
 
@@ -72,7 +73,7 @@ func TestByID(t *testing.T) {
 		{id: "gpt-5.5-pro", wantNil: true},
 		{id: "deepseek-v4-pro-fireworks", wantID: "deepseek-v4-pro-fireworks"},
 		{id: "gpt-oss-20b-fireworks", wantID: "gpt-oss-20b-fireworks"},
-		{id: "gpt-5.2-codex", wantID: "gpt-5.2-codex"},
+		{id: "gpt-5.3-codex", wantID: "gpt-5.3-codex"},
 		{id: "claude-opus-5", wantID: "claude-opus-5"},
 		{id: "claude-sonnet-5", wantID: "claude-sonnet-5"},
 		{id: "claude-sonnet-4.5", wantID: "claude-sonnet-4.5"},
@@ -101,6 +102,34 @@ func TestByID(t *testing.T) {
 				t.Errorf("ByID(%q).ID = %q, want %q", tt.id, m.ID, tt.wantID)
 			}
 		})
+	}
+}
+
+func TestKimiK3FireworksCatalogEntry(t *testing.T) {
+	m := ByID("kimi-k3-fireworks")
+	if m == nil {
+		t.Fatal("ByID(kimi-k3-fireworks) = nil, want non-nil")
+	}
+	if m.Provider != ProviderFireworks {
+		t.Errorf("Provider = %q, want %q", m.Provider, ProviderFireworks)
+	}
+	if m.APIType != APITypeOpenAIChat {
+		t.Errorf("APIType = %q, want %q", m.APIType, APITypeOpenAIChat)
+	}
+	if m.APIModelName != "accounts/fireworks/models/kimi-k3" {
+		t.Errorf("APIModelName = %q, want %q", m.APIModelName, "accounts/fireworks/models/kimi-k3")
+	}
+	if m.DefaultBaseURL != DefaultFireworksBaseURL {
+		t.Errorf("DefaultBaseURL = %q, want %q", m.DefaultBaseURL, DefaultFireworksBaseURL)
+	}
+	if m.Build == nil {
+		t.Fatal("Build is nil")
+	}
+	// Existing Kimi K2.x entries remain available.
+	for _, id := range []string{"kimi-k2.6-fireworks", "kimi-k2.7-code-fireworks"} {
+		if ByID(id) == nil {
+			t.Errorf("ByID(%q) = nil, want non-nil", id)
+		}
 	}
 }
 
@@ -177,6 +206,72 @@ func TestLoggingService(t *testing.T) {
 	if loggingSvc.MaxImageDimension() != mockService.MaxImageDimension() {
 		t.Errorf("MaxImageDimension mismatch")
 	}
+}
+
+func TestLoggingServiceUsageCollector(t *testing.T) {
+	type collected struct {
+		purpose string
+		usage   llm.Usage
+	}
+	var got []collected
+	svc := &loggingService{
+		service: &mockLLMService{},
+		logger:  slog.Default(),
+		modelID: "test-model",
+	}
+	req := &llm.Request{Messages: []llm.Message{llm.UserStringMessage("hi")}}
+	ctxWithCollector := llmhttp.WithUsageCollector(context.Background(), func(purpose string, usage llm.Usage) {
+		got = append(got, collected{purpose, usage})
+	})
+
+	// No purpose tag: nothing collected even with a collector.
+	if _, err := svc.Do(ctxWithCollector, req); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("collected %d calls without purpose, want 0", len(got))
+	}
+
+	// Purpose tag: collected, model falls back to modelID (mock leaves Model empty).
+	ctx := llmhttp.WithPurpose(ctxWithCollector, "keyword_search")
+	if _, err := svc.Do(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("collected %d calls, want 1", len(got))
+	}
+	r := got[0]
+	if r.purpose != "keyword_search" || r.usage.Model != "test-model" {
+		t.Errorf("collected purpose=%q model=%q, want keyword_search/test-model", r.purpose, r.usage.Model)
+	}
+	if r.usage.InputTokens != 10 || r.usage.OutputTokens != 5 || r.usage.CostUSD != 0.001 {
+		t.Errorf("collected usage = %+v", r.usage)
+	}
+
+	// Zero usage: not collected even with a purpose tag.
+	svc.service = &zeroUsageLLMService{}
+	if _, err := svc.Do(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("zero-usage response was collected (%d calls)", len(got))
+	}
+
+	// Purpose tag but no collector in ctx: no panic, nothing collected.
+	svc.service = &mockLLMService{}
+	if _, err := svc.Do(llmhttp.WithPurpose(context.Background(), "keyword_search"), req); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("collector-less call was collected (%d calls)", len(got))
+	}
+}
+
+// zeroUsageLLMService responds with no usage data.
+type zeroUsageLLMService struct{ mockLLMService }
+
+func (z *zeroUsageLLMService) Do(ctx context.Context, request *llm.Request) (*llm.Response, error) {
+	return &llm.Response{Content: llm.TextContent("ok")}, nil
 }
 
 // mockLLMService implements llm.Service for testing.

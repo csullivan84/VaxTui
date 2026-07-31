@@ -303,17 +303,6 @@ var (
 		SupportsImages:     false,
 	}
 
-	Qwen37PlusFireworks = Model{
-		UserName:           "qwen3.7-plus-fireworks",
-		ModelName:          "accounts/fireworks/models/qwen3p7-plus",
-		TextVerbosity:      "",
-		URL:                FireworksURL,
-		APIKeyEnv:          FireworksAPIKeyEnv,
-		IsReasoningModel:   true,
-		UseSimplifiedPatch: false,
-		SupportsImages:     true,
-	}
-
 	MoonshotKimiK2 = Model{
 		UserName:           "moonshot-kimi-k2",
 		ModelName:          "moonshot-v1-auto",
@@ -372,6 +361,17 @@ var (
 	KimiK27CodeFireworks = Model{
 		UserName:           "kimi-k2.7-code-fireworks",
 		ModelName:          "accounts/fireworks/models/kimi-k2p7-code",
+		TextVerbosity:      "",
+		URL:                FireworksURL,
+		APIKeyEnv:          FireworksAPIKeyEnv,
+		IsReasoningModel:   true,
+		UseSimplifiedPatch: false,
+		SupportsImages:     true,
+	}
+
+	KimiK3Fireworks = Model{
+		UserName:           "kimi-k3-fireworks",
+		ModelName:          "accounts/fireworks/models/kimi-k3",
 		TextVerbosity:      "",
 		URL:                FireworksURL,
 		APIKeyEnv:          FireworksAPIKeyEnv,
@@ -439,28 +439,6 @@ var (
 		UserName:           "gpt-5-thinking-nano",
 		ModelName:          "gpt-5.1-nano",
 		TextVerbosity:      "medium",
-		URL:                OpenAIURL,
-		APIKeyEnv:          OpenAIAPIKeyEnv,
-		IsReasoningModel:   false,
-		UseSimplifiedPatch: false,
-		SupportsImages:     true,
-	}
-
-	GPT5Codex = Model{
-		UserName:           "gpt-5.1-codex",
-		ModelName:          "gpt-5.1-codex",
-		TextVerbosity:      "low",
-		URL:                OpenAIURL,
-		APIKeyEnv:          OpenAIAPIKeyEnv,
-		IsReasoningModel:   false,
-		UseSimplifiedPatch: false,
-		SupportsImages:     true,
-	}
-
-	GPT52Codex = Model{
-		UserName:           "gpt-5.2-codex",
-		ModelName:          "gpt-5.2-codex",
-		TextVerbosity:      "low",
 		URL:                OpenAIURL,
 		APIKeyEnv:          OpenAIAPIKeyEnv,
 		IsReasoningModel:   false,
@@ -635,8 +613,6 @@ var ModelsRegistry = []Model{
 	O4Mini,
 	O3,
 	// Codex
-	GPT5Codex,
-	GPT52Codex,
 	GPT53Codex,
 	// Gemini
 	Gemini25Flash,
@@ -658,7 +634,7 @@ var ModelsRegistry = []Model{
 	GLM52Fireworks,
 	KimiK26Fireworks,
 	KimiK27CodeFireworks,
-	Qwen37PlusFireworks,
+	KimiK3Fireworks,
 	GPTOSS120B,
 	GPTOSS20B,
 	LlamaCPP,
@@ -1209,8 +1185,10 @@ func (s *Service) TokenContextWindow() int {
 		return 128000
 	case "deepseek-v4-pro", "deepseek-v4-flash", "accounts/fireworks/models/deepseek-v4-pro", "accounts/fireworks/models/deepseek-v4-flash":
 		return 1048576
-	case "accounts/fireworks/models/qwen3p7-plus", "accounts/fireworks/models/kimi-k2p7-code", "accounts/fireworks/models/kimi-k2p6":
+	case "accounts/fireworks/models/kimi-k2p7-code", "accounts/fireworks/models/kimi-k2p6":
 		return 262144
+	case "accounts/fireworks/models/kimi-k3":
+		return 1048576
 	case "gpt-5.1", "gpt-5.1-mini", "gpt-5.1-nano":
 		return 256000
 	default:

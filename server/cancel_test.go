@@ -128,13 +128,16 @@ func TestCancelWithPredictableModel(t *testing.T) {
 		t.Fatalf("expected status 200, got %d: %s", cancelW.Code, cancelW.Body.String())
 	}
 
-	var cancelResp map[string]string
+	var cancelResp struct {
+		Status              string `json:"status"`
+		CancelledSubagents  int    `json:"cancelled_subagents"`
+	}
 	if err := json.Unmarshal(cancelW.Body.Bytes(), &cancelResp); err != nil {
 		t.Fatalf("failed to parse cancel response: %v", err)
 	}
 
-	if cancelResp["status"] != "cancelled" {
-		t.Errorf("expected status 'cancelled', got '%s'", cancelResp["status"])
+	if cancelResp.Status != "cancelled" {
+		t.Errorf("expected status 'cancelled', got '%s'", cancelResp.Status)
 	}
 
 	// Wait for agent to stop working (cancellation complete)
@@ -288,13 +291,16 @@ func TestCancelWithNoActiveConversation(t *testing.T) {
 		t.Fatalf("expected status 200, got %d: %s", cancelW.Code, cancelW.Body.String())
 	}
 
-	var cancelResp map[string]string
+	var cancelResp struct {
+		Status             string `json:"status"`
+		CancelledSubagents int    `json:"cancelled_subagents"`
+	}
 	if err := json.Unmarshal(cancelW.Body.Bytes(), &cancelResp); err != nil {
 		t.Fatalf("failed to parse cancel response: %v", err)
 	}
 
-	if cancelResp["status"] != "no_active_conversation" {
-		t.Errorf("expected status 'no_active_conversation', got '%s'", cancelResp["status"])
+	if cancelResp.Status != "no_active_conversation" {
+		t.Errorf("expected status 'no_active_conversation', got '%s'", cancelResp.Status)
 	}
 }
 
