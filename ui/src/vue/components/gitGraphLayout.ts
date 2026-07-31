@@ -420,12 +420,16 @@ export function storeScope(s: Scope) {
 const DETAIL_WIDTH_KEY = "shelley_git_graph_detail_width";
 export const DETAIL_MIN_PX = 220;
 export const DETAIL_DEFAULT_PX = 352; // 22rem at default 16px root
+/** Cap so a persisted oversize width cannot hide the commit table. */
+export const DETAIL_MAX_PX = 560;
 export function loadDetailWidth(): number {
   try {
     const v = localStorage.getItem(DETAIL_WIDTH_KEY);
     if (v) {
       const n = parseInt(v, 10);
-      if (Number.isFinite(n) && n >= DETAIL_MIN_PX) return n;
+      if (Number.isFinite(n) && n >= DETAIL_MIN_PX) {
+        return Math.min(n, DETAIL_MAX_PX);
+      }
     }
   } catch {
     // ignore

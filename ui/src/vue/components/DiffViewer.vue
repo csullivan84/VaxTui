@@ -320,14 +320,14 @@
                   <DiffFileTree
                     :entries="treeEntries"
                     :selected-real-path="selectedFile"
-                    @select="(p: string) => (selectedFile = p)"
+                    @select="onFileTreeSelect"
                   />
                 </div>
               </div>
             </div>
           </div>
         </aside>
-        <div ref="mainRef" class="diff-viewer-main">
+        <div ref="mainRef" class="diff-viewer-main" tabindex="-1">
           <div v-if="loading && !fileDiff" class="diff-viewer-loading">
             <div class="spinner"></div>
             <span>Loading...</span>
@@ -344,7 +344,9 @@
           </div>
           <section
             v-if="fileDiff && (readingMode === 'text' || !monacoLoaded)"
+            ref="textDiffRef"
             class="diff-viewer-text"
+            tabindex="-1"
             :aria-label="`Linear diff for ${fileDiff.path}`"
           >
             <h2>{{ fileDiff.path }}</h2>
@@ -637,6 +639,7 @@ const vimStatusRef = ref<HTMLDivElement | null>(null);
 let monacoMod: typeof Monaco | null = null;
 const editorContainerRef = ref<HTMLDivElement | null>(null);
 const mainRef = ref<HTMLDivElement | null>(null);
+const textDiffRef = ref<HTMLElement | null>(null);
 let diffEditor: Monaco.editor.IStandaloneDiffEditor | null = null;
 let saveTimeout: number | null = null;
 let amendTimeout: number | null = null;
@@ -1509,6 +1512,28 @@ function fileOptionLabel(file: GitFileInfo): string {
   if (file.isGenerated) label += " [generated]";
   return label;
 }
+
+// After Enter/click on a tree file, focus the content once that file's diff
+// has loaded (load is async via selectedFile watch).
+const pendingFocusPath = ref<string | null>(null);
+
+function onFileTreeSelect(path: string) {
+  selectedFile.value = path;
+  pendingFocusPath.value = path;
+}
+
+watch([fileDiff, loading, selectedFile], () => {
+  const want = pendingFocusPath.value;
+  if (!want || loading.value || selectedFile.value !== want) return;
+  if (!fileDiff.value) return;
+  pendingFocusPath.value = null;
+  nextTick(() => {
+    const useText = readingMode.value === "text" || !monacoLoaded.value;
+    announceA11y(`${want}, ${useText ? "text" : "visual"} diff.`);
+    if (useText) textDiffRef.value?.focus();
+    else mainRef.value?.focus();
+  });
+});
 
 // --- Sidebar commit list ---
 const sidebarCommits = computed<GitDiffInfo[]>(() => {

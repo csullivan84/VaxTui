@@ -323,6 +323,7 @@ import {
   DOT_R,
   INITIAL_LIMIT,
   DETAIL_MIN_PX,
+  DETAIL_MAX_PX,
   DETAIL_DEFAULT_PX,
   type Scope,
 } from "./gitGraphLayout";
@@ -403,7 +404,10 @@ function onDividerMouseDown(e: MouseEvent) {
     // Dragging right shrinks detail; dragging left grows it.
     const next = Math.max(
       DETAIL_MIN_PX,
-      Math.min(rect.width - DETAIL_MIN_PX, rect.right - ev.clientX),
+      Math.min(
+        DETAIL_MAX_PX,
+        Math.min(rect.width - DETAIL_MIN_PX, rect.right - ev.clientX),
+      ),
     );
     detailWidth.value = next;
   };

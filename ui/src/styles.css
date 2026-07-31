@@ -9685,6 +9685,7 @@ kbd {
 
 .git-graph-detail {
   width: 22rem;
+  max-width: min(560px, 45vw); /* keep commit table visible */
   flex: 0 0 auto;
   padding: 0.75rem 1rem;
   border-left: 1px solid var(--border-color);

@@ -207,6 +207,16 @@ function onTreeKeydown(event: KeyboardEvent) {
   );
   const index = rows.indexOf(target);
   if (index < 0) return;
+
+  // Enter/Space: activate the focused row. Do this explicitly — under VO and
+  // capture-phase modal handlers, native button activation is easy to lose.
+  if (event.key === "Enter" || event.key === " ") {
+    event.preventDefault();
+    event.stopPropagation();
+    target.click();
+    return;
+  }
+
   let next = -1;
   if (event.key === "ArrowDown") next = Math.min(index + 1, rows.length - 1);
   else if (event.key === "ArrowUp") next = Math.max(index - 1, 0);
