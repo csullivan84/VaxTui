@@ -82,6 +82,37 @@ Shelley is Apache licensed. We require a CLA for contributions.
 
 Run `make`. Run `make serve` to start Shelley locally.
 
+# Keyboard shortcuts (terminals)
+
+Open a terminal from the overflow menu or command palette
+(`Ctrl+K` / `⌘K` → “Terminal”). While any terminal is open:
+
+| Shortcut | Action |
+| --- | --- |
+| `Ctrl+Shift+]` | Next terminal tab |
+| `Ctrl+Shift+[` | Previous terminal tab |
+| `Ctrl+Shift+W` | Close the active terminal |
+| `Ctrl+Shift+1` … `9` | Jump to terminal tab N |
+| `Ctrl+Shift+M` | Minimize or expand the terminal panel |
+| `Tab` (in shell input) | Focus the terminal output log (read with VoiceOver) |
+| `Tab` (in output log) | Return to shell input |
+| `Escape` | Leave the terminal panel |
+| `Ctrl+I` | Send Tab to the shell (completion) |
+| `⌘A` (in terminal) | Select the terminal buffer only (not the whole page) |
+
+On the tab strip (when a tab has focus): arrow keys move between
+tabs; `Delete` / `Backspace` closes that tab; `Enter` activates it.
+
+A fuller list of app shortcuts (composer, diffs, git graph) is under
+`?` → Keyboard shortcuts and accessibility.
+
+# Screen reader defaults (VaxTui)
+
+This fork defaults **screen reader mode on** and opens **diffs in
+text mode**. Turn screen reader mode off from the overflow menu
+(⋯) if you want the old tool-collapse / visual-diff defaults; the
+choice is stored in `localStorage`.
+
 ## Dev Tricks
 
 If you want to see how mobile looks, and you're on your home
