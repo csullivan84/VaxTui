@@ -41,13 +41,22 @@
         <ChevronDownIcon v-else />
       </button>
 
-      <div class="terminal-panel-tabs">
+      <div
+        class="terminal-panel-tabs"
+        role="tablist"
+        aria-label="Terminal sessions. Control+Shift+] next, Control+Shift+[ previous, Control+Shift+W close."
+      >
         <div
-          v-for="t in terminals"
+          v-for="(t, idx) in terminals"
           :key="t.id"
+          role="tab"
+          :tabindex="t.id === activeTabId ? 0 : -1"
+          :aria-selected="t.id === activeTabId"
+          :aria-label="`Terminal ${idx + 1}: ${tabLabel(t.command)}`"
           :class="`terminal-panel-tab${t.id === activeTabId ? ' terminal-panel-tab-active' : ''}`"
           :title="t.command"
           @click="onTabClick(t.id)"
+          @keydown="onTabKeydown($event, t.id, idx)"
         >
           <span
             v-if="statusMap.get(t.id)?.status === 'running'"
@@ -73,7 +82,8 @@
           <button
             v-tooltip.top="'Close terminal'"
             class="terminal-panel-tab-close"
-            aria-label="Close terminal"
+            :aria-label="`Close terminal ${idx + 1}`"
+            tabindex="-1"
             @click.stop="emit('close', t.id)"
           >
             ×
@@ -280,8 +290,12 @@ onMounted(() => {
     attributes: true,
     attributeFilter: ["class"],
   });
+  window.addEventListener("keydown", onPanelShortcut, true);
 });
-onUnmounted(() => observer?.disconnect());
+onUnmounted(() => {
+  observer?.disconnect();
+  window.removeEventListener("keydown", onPanelShortcut, true);
+});
 
 // Auto-select newest tab when a new terminal is added (React effect on
 // [terminals.length]). immediate: true so a mount with pre-existing terminals
@@ -523,16 +537,124 @@ function insertAll() {
 }
 
 function handleCloseActive() {
-  if (activeTabId.value) emit("close", activeTabId.value);
+  if (!activeTabId.value) return;
+  const id = activeTabId.value;
+  const label = tabLabel(props.terminals.find((t) => t.id === id)?.command || "terminal");
+  emit("close", id);
+  announceA11y(`Closed terminal: ${label}.`);
 }
 
 function toggleMinimized() {
   minimized.value = !minimized.value;
+  announceA11y(minimized.value ? "Terminals minimized." : "Terminals expanded.");
 }
 
 function onTabClick(id: string) {
+  selectTerminal(id);
+}
+
+function selectTerminal(id: string, announce = true) {
   activeTabId.value = id;
   if (minimized.value) minimized.value = false;
+  const term = props.terminals.find((t) => t.id === id);
+  const idx = props.terminals.findIndex((t) => t.id === id);
+  if (announce && term) {
+    announceA11y(
+      `Terminal ${idx + 1} of ${props.terminals.length}: ${tabLabel(term.command)}.`,
+    );
+  }
+  // Focus the shell after the tab is shown.
+  requestAnimationFrame(() => {
+    xtermRegistry.get(id)?.focus();
+  });
+}
+
+function switchTerminal(delta: number) {
+  if (props.terminals.length === 0) return;
+  const cur = props.terminals.findIndex((t) => t.id === activeTabId.value);
+  const base = cur < 0 ? 0 : cur;
+  const next = (base + delta + props.terminals.length) % props.terminals.length;
+  selectTerminal(props.terminals[next].id);
+}
+
+function onTabKeydown(e: KeyboardEvent, id: string, idx: number) {
+  if (e.key === "ArrowRight" || e.key === "ArrowDown") {
+    e.preventDefault();
+    switchTerminal(1);
+    return;
+  }
+  if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
+    e.preventDefault();
+    switchTerminal(-1);
+    return;
+  }
+  if (e.key === "Home") {
+    e.preventDefault();
+    selectTerminal(props.terminals[0].id);
+    return;
+  }
+  if (e.key === "End") {
+    e.preventDefault();
+    selectTerminal(props.terminals[props.terminals.length - 1].id);
+    return;
+  }
+  if (e.key === "Delete" || e.key === "Backspace") {
+    e.preventDefault();
+    emit("close", id);
+    announceA11y(`Closed terminal ${idx + 1}.`);
+    return;
+  }
+  if (e.key === "Enter" || e.key === " ") {
+    e.preventDefault();
+    selectTerminal(id);
+  }
+}
+
+// Global chords while any terminal exists. Shift+Ctrl avoids clobbering shell
+// readline (Ctrl+W = kill-word, Ctrl+[ = esc, etc.).
+function onPanelShortcut(e: KeyboardEvent) {
+  if (props.terminals.length === 0) return;
+  if (e.type !== "keydown") return;
+  // Need Ctrl (or Meta on Mac for consistency we accept both) + Shift.
+  if (!e.shiftKey || !(e.ctrlKey || e.metaKey) || e.altKey) return;
+
+  const key = e.key;
+  // Next / previous tab
+  if (key === "]" || key === "}") {
+    e.preventDefault();
+    e.stopPropagation();
+    switchTerminal(1);
+    return;
+  }
+  if (key === "[" || key === "{") {
+    e.preventDefault();
+    e.stopPropagation();
+    switchTerminal(-1);
+    return;
+  }
+  // Close active
+  if (key === "w" || key === "W") {
+    e.preventDefault();
+    e.stopPropagation();
+    handleCloseActive();
+    return;
+  }
+  // Minimize / expand
+  if (key === "m" || key === "M") {
+    e.preventDefault();
+    e.stopPropagation();
+    toggleMinimized();
+    return;
+  }
+  // Jump to terminal 1–9
+  if (key >= "1" && key <= "9") {
+    const n = parseInt(key, 10) - 1;
+    if (n < props.terminals.length) {
+      e.preventDefault();
+      e.stopPropagation();
+      selectTerminal(props.terminals[n].id);
+    }
+  }
 }
 
 // Refit terminals when un-minimizing by nudging the container to trigger

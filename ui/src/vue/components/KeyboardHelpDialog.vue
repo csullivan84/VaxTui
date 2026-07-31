@@ -119,6 +119,30 @@ const shortcuts = [
   { keys: "Control or Command+Arrow Down", action: "Move to the end of the transcript" },
   { keys: "Escape", action: "Close the active dialog" },
   { keys: "Up or Down", action: "Move between commits in the Git graph" },
+  {
+    keys: "Control+Shift+] or }",
+    action: "Next terminal tab (when any terminal is open)",
+  },
+  {
+    keys: "Control+Shift+[ or {",
+    action: "Previous terminal tab",
+  },
+  {
+    keys: "Control+Shift+W",
+    action: "Close the active terminal",
+  },
+  {
+    keys: "Control+Shift+1 to 9",
+    action: "Jump to terminal tab by number",
+  },
+  {
+    keys: "Control+Shift+M",
+    action: "Minimize or expand the terminal panel",
+  },
+  {
+    keys: "Tab (in terminal shell)",
+    action: "Move focus to terminal output log; Tab again returns to the shell",
+  },
 ];
 
 watch(
