@@ -133,7 +133,9 @@ import type { Locale, TranslationKeys } from "../../i18n/types";
 import { api } from "../../services/api";
 import { messageStore } from "../../services/messageStore";
 import { useMarkdownMode } from "../composables/markdownMode";
+import { useScreenReaderMode } from "../composables/screenReaderMode";
 import { useI18n } from "../composables/i18n";
+import { announceA11y } from "../../services/a11yAnnouncer";
 import { tildifyPath } from "../../utils/tildify";
 import { isImeComposing } from "../../utils/imeComposing";
 
@@ -180,6 +182,7 @@ const emit = defineEmits<{
 }>();
 
 const { markdownMode, setMarkdownMode } = useMarkdownMode();
+const { screenReaderMode, setScreenReaderMode } = useScreenReaderMode();
 const { t, locale, setLocale } = useI18n();
 
 const query = ref("");
@@ -498,6 +501,37 @@ const actionItems = computed<CommandItem[]>(() => {
       emit("close");
     },
     keywords: ["markdown", "render", "format", "rich", "text", "plain"],
+  });
+
+  // Screen reader mode (also in overflow menu; palette is easier under VO).
+  const srOn = screenReaderMode.value;
+  items.push({
+    id: "toggle-screen-reader-mode",
+    type: "action",
+    title: srOn ? "Disable screen reader mode" : "Enable screen reader mode",
+    subtitle: srOn
+      ? "Currently on — tool output stays expanded"
+      : "Expand tool output; prefer text diffs",
+    action: () => {
+      const next = !screenReaderMode.value;
+      setScreenReaderMode(next);
+      announceA11y(
+        next
+          ? "Screen reader mode on. Tool output stays expanded."
+          : "Screen reader mode off.",
+      );
+      emit("close");
+    },
+    keywords: [
+      "screen",
+      "reader",
+      "voiceover",
+      "a11y",
+      "accessibility",
+      "expand",
+      "tools",
+      "sr",
+    ],
   });
 
   // Archive current conversation

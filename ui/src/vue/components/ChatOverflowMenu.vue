@@ -52,6 +52,25 @@
       @show="open = true"
       @hide="open = false"
     >
+      <!-- Screen reader mode first: long menus used to clip this off-screen. -->
+      <div class="overflow-menu-control" data-testid="screen-reader-mode-section">
+        <div class="md-toggle-label" id="screen-reader-mode-label">Screen reader</div>
+        <SelectButton
+          v-model="srMode"
+          :options="srModeOptions"
+          option-label="label"
+          option-value="value"
+          data-key="value"
+          :allow-empty="false"
+          aria-labelledby="screen-reader-mode-label"
+          aria-label="Screen reader mode"
+          data-testid="screen-reader-mode-toggle"
+          @update:model-value="onSrModeChange"
+        />
+      </div>
+
+      <div class="overflow-menu-divider" />
+
       <!-- Conversation / workspace actions -->
       <button v-if="hasCwd" class="overflow-menu-item" @click="onDiffs">
         <!-- Diffs: two rows of +/- changes -->
@@ -192,23 +211,6 @@
         </div>
       </template>
 
-      <!-- Screen reader mode: keep tool/terminal output expanded & in the a11y tree -->
-      <div class="overflow-menu-divider" />
-      <div class="overflow-menu-control">
-        <div class="md-toggle-label">Screen reader</div>
-        <SelectButton
-          v-model="srMode"
-          :options="srModeOptions"
-          option-label="label"
-          option-value="value"
-          data-key="value"
-          :allow-empty="false"
-          aria-label="Screen reader mode"
-          data-testid="screen-reader-mode-toggle"
-          @update:model-value="onSrModeChange"
-        />
-      </div>
-
       <!-- Language -->
       <div class="overflow-menu-divider" />
       <div class="overflow-menu-control">
@@ -247,6 +249,7 @@ import type { Link } from "../../types";
 import type { Locale } from "../../i18n/types";
 import { useI18n } from "../composables/i18n";
 import { useScreenReaderMode } from "../composables/screenReaderMode";
+import { announceA11y } from "../../services/a11yAnnouncer";
 import { type ThemeMode, getStoredTheme, setStoredTheme, applyTheme } from "../../services/theme";
 import {
   isChannelEnabled,
@@ -356,6 +359,11 @@ const srModeOptions = [
 function onSrModeChange(on: boolean) {
   srMode.value = on;
   setScreenReaderMode(on);
+  announceA11y(
+    on
+      ? "Screen reader mode on. Tool output stays expanded."
+      : "Screen reader mode off.",
+  );
 }
 
 // ---- Language picker ----

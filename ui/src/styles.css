@@ -11623,6 +11623,9 @@ kbd {
     0 4px 6px -1px rgba(0, 0, 0, 0.1),
     0 2px 4px -1px rgba(0, 0, 0, 0.06);
   min-width: 16rem;
+  /* Keep long menus (diffs, theme, language, …) fully reachable under VO. */
+  max-height: min(80vh, 36rem);
+  overflow-y: auto;
 }
 
 /* PrimeVue draws a little arrow via :before/:after; we don't want it for a

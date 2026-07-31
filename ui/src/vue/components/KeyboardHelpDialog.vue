@@ -19,6 +19,10 @@
 
     <section aria-labelledby="preference-heading">
       <h3 id="preference-heading">Screen reader preferences</h3>
+      <p class="a11y-preference-hint">
+        Expand tools / text diffs: overflow menu (More options) → Screen reader, or command
+        palette (Control or Command+K) → “screen reader”.
+      </p>
       <label class="a11y-preference-row">
         <input
           type="checkbox"
