@@ -68,6 +68,17 @@ func (s *Server) handleCompleteOnboarding(w http.ResponseWriter, r *http.Request
 }
 
 func (s *Server) onboardingResponse(r *http.Request) (onboardingResponse, error) {
+	if s.predictableOnly {
+		modelList := s.getModelList()
+		markDefaultModel(modelList, s.effectiveDefaultModel(modelList))
+		return onboardingResponse{
+			Complete:          true,
+			Candidates:        []providerauth.Candidate{},
+			DiscoveryWarnings: []string{},
+			Models:            modelList,
+		}, nil
+	}
+
 	value, err := s.db.GetSetting(r.Context(), onboardingSettingKey)
 	if err != nil {
 		return onboardingResponse{}, fmt.Errorf("read onboarding state: %w", err)

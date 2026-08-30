@@ -1,5 +1,6 @@
 import {
   normalizeThinkingLevelForModel,
+  reasoningLevelLabel,
   roundThinkingLevel,
   supportedThinkingLevels,
 } from "./thinkingLevel";
@@ -75,6 +76,25 @@ expectSupported({ supports_reasoning: true, reasoning_levels: ["off", "high", "m
 expectSupported({ supports_reasoning: false }, []);
 expectSupported({ supports_reasoning: true }, ["off", "minimal", "low", "medium", "high", "xhigh"]);
 expectSupported(undefined, ["off", "minimal", "low", "medium", "high", "xhigh"]);
+
+function expectLabel(
+  level: Parameters<typeof reasoningLevelLabel>[0],
+  model: Parameters<typeof reasoningLevelLabel>[1],
+  want: string,
+) {
+  const got = reasoningLevelLabel(level, model);
+  if (got === want) {
+    passed++;
+  } else {
+    failed++;
+    console.error(`FAIL: reasoningLevelLabel(${level}) = ${got}, want ${want}`);
+  }
+}
+
+expectLabel("high", { default_reasoning_level: "medium" }, "high");
+expectLabel("default", { default_reasoning_level: "medium" }, "medium");
+expectLabel("default", { supports_reasoning: false }, "off");
+expectLabel("default", { supports_reasoning: true }, "provider default");
 
 if (failed > 0) process.exit(1);
 console.log(`thinkingLevel: ${passed} passed`);

@@ -61,6 +61,18 @@ export function roundThinkingLevel(
 export interface ReasoningModelCapabilities {
   supports_reasoning?: boolean;
   reasoning_levels?: Exclude<ThinkingLevel, "default">[];
+  default_reasoning_level?: string;
+}
+
+export function reasoningLevelLabel(
+  level: string | null | undefined,
+  model: ReasoningModelCapabilities | undefined,
+): string {
+  if (level && level !== "default") return level;
+  if (model?.supports_reasoning === false) return "off";
+  const modelDefault = model?.default_reasoning_level;
+  if (modelDefault && modelDefault !== "default") return modelDefault;
+  return "provider default";
 }
 
 export function normalizeThinkingLevelForModel(

@@ -19,6 +19,7 @@ import { computed } from "vue";
 import { prettyModelLabels } from "../../utils/modelNames";
 import type { Model } from "../../types";
 import { modelHealthText } from "../../services/modelHealth";
+import { reasoningLevelLabel } from "./thinkingLevel";
 
 const props = withDefaults(
   defineProps<{
@@ -71,12 +72,10 @@ const modelTitle = computed(() =>
 );
 
 // The reasoning badge is always shown so a conversation never hides how much
-// thinking it actually uses. An explicit per-conversation thinking_level wins;
-// otherwise fall back to the selected model's default_reasoning_level (what the
-// service applies to un-overridden requests). If neither is known — e.g. a
-// provider with a dynamic default Shelley can't name — show "default".
+// thinking it actually uses. Resolve the sentinel to a concrete model default
+// whenever possible and name the provider fallback when it is unknowable.
 const effectiveReasoning = computed(
-  () => props.thinkingLevel || modelObj.value?.default_reasoning_level || "default",
+  () => reasoningLevelLabel(props.thinkingLevel, modelObj.value),
 );
 
 const healthText = computed(() => {

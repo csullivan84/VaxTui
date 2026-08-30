@@ -96,3 +96,37 @@ func TestOnboardingDiscoversImportsAndRefreshesProviders(t *testing.T) {
 		t.Fatalf("default model = %q", s.defaultModel)
 	}
 }
+
+func TestOnboardingPredictableOnlySkipsSetup(t *testing.T) {
+	mgr, err := models.NewManager(&models.Config{
+		Models: []models.Built{{
+			ID:       "predictable",
+			Provider: models.ProviderBuiltIn,
+			Service:  predictable.NewService(),
+		}},
+		Logger: slog.Default(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{
+		llmManager:      mgr,
+		logger:          slog.Default(),
+		predictableOnly: true,
+		defaultModel:    "predictable",
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/api/onboarding", nil)
+	recorder := httptest.NewRecorder()
+	s.handleGetOnboarding(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %q", recorder.Code, recorder.Body.String())
+	}
+	var response onboardingResponse
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if !response.Complete || len(response.Candidates) != 0 || len(response.Models) != 1 {
+		t.Fatalf("response = %#v", response)
+	}
+}
