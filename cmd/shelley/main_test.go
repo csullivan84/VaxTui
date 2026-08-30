@@ -30,7 +30,10 @@ type tieredModelProvider struct {
 
 func (p *tieredModelProvider) GetService(string) (llm.Service, error) { return nil, nil }
 func (p *tieredModelProvider) GetAvailableModels() []string           { return p.ids }
-func (p *tieredModelProvider) HasModel(string) bool                   { return true }
+func (p *tieredModelProvider) GetWorkhorseService(modelID string) (llm.Service, error) {
+	return p.GetService(modelID)
+}
+func (p *tieredModelProvider) HasModel(string) bool { return true }
 func (p *tieredModelProvider) GetModelInfo(id string) *models.ModelInfo {
 	return p.infos[id]
 }
@@ -291,7 +294,7 @@ func TestToolModelsHideUnknownIntegrationModelsButKeepCustomModels(t *testing.T)
 		},
 	}
 
-	got := setupToolSetConfig(nil, provider).BuildAvailableModels()
+	got := setupToolSetConfig(nil, provider, nil).BuildAvailableModels()
 	if len(got) != 2 || got[0].ID != "gpt-5.6-sol" || got[1].ID != "my-custom-model" {
 		t.Fatalf("available tool models = %+v, want known and custom models", got)
 	}

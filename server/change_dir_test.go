@@ -15,8 +15,7 @@ import (
 
 	"shelley.exe.dev/claudetool"
 	"shelley.exe.dev/db"
-	"shelley.exe.dev/db/generated"
-	"shelley.exe.dev/loop"
+	"shelley.exe.dev/llm/predictable"
 )
 
 // TestChangeDirAffectsBash tests that change_dir updates the working directory
@@ -39,7 +38,7 @@ func TestChangeDirAffectsBash(t *testing.T) {
 	database, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	predictableService := loop.NewPredictableService()
+	predictableService := predictable.NewService()
 	llmManager := &testLLMManager{service: predictableService}
 	logger := slog.Default()
 
@@ -153,11 +152,6 @@ func waitForMessageContaining(t *testing.T, database *db.DB, conversationID, tex
 	t.Fatalf("did not find message containing %q within %v", text, timeout)
 }
 
-// getConversationMessages retrieves all messages for a conversation.
-func getConversationMessages(database *db.DB, conversationID string) ([]generated.Message, error) {
-	return database.ListMessages(context.Background(), conversationID)
-}
-
 // truncate truncates a string to maxLen characters.
 func truncate(s string, maxLen int) string {
 	if len(s) <= maxLen {
@@ -180,7 +174,7 @@ func TestChangeDirBroadcastsCwdUpdate(t *testing.T) {
 	database, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	predictableService := loop.NewPredictableService()
+	predictableService := predictable.NewService()
 	llmManager := &testLLMManager{service: predictableService}
 	logger := slog.Default()
 
@@ -304,7 +298,7 @@ func TestChangeDirBroadcastsConversationListPatch(t *testing.T) {
 
 	database, cleanup := setupTestDB(t)
 	defer cleanup()
-	predictableService := loop.NewPredictableService()
+	predictableService := predictable.NewService()
 	llmManager := &testLLMManager{service: predictableService}
 	server := NewServer(database, llmManager, claudetool.ToolSetConfig{WorkingDir: tmpDir}, slog.Default(), true, "predictable", "")
 

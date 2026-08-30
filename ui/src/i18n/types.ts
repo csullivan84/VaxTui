@@ -9,6 +9,7 @@ export interface TranslationKeys {
   // Chat Header & Actions
   newConversation: string;
   moreOptions: string;
+  actions: string;
   conversations: string;
 
   // Overflow Menu
@@ -76,6 +77,7 @@ export interface TranslationKeys {
   archiveConversationAction: string;
   archiveCurrentConversation: string;
   newConversationInMainRepo: string;
+  newConversationInHomeDirectory: string;
   newConversationInNewWorktree: string;
   createNewWorktree: string;
   setWorkingDirToRepoRoot: string;
@@ -103,6 +105,7 @@ export interface TranslationKeys {
   subagentIsWorking: string;
   running: string;
   hideSubagents: string;
+  terminalsPinnedHere: string;
   showSubagents: string;
   groupConversations: string;
   resortNow: string;
@@ -110,6 +113,12 @@ export interface TranslationKeys {
   directory: string;
   gitRepo: string;
   other: string;
+  clearTagFilter: string;
+  untagged: string;
+  searchOrTagPlaceholder: string;
+  noMatchingTags: string;
+  noTagsToNarrow: string;
+  noConversationsMatchTags: string;
   collapseSubagents: string;
   expandSubagents: string;
   collapseSidebar: string;
@@ -142,6 +151,9 @@ export interface TranslationKeys {
   effortLabel: string;
   effortAuto: string;
   modelSwitchBusy: string;
+  modelSwitchHint: string;
+  cwdChangeHint: string;
+  cwdChangeBusy: string;
   customModelsGroup: string;
   editModel: string;
   loadingModels: string;
@@ -240,6 +252,13 @@ export interface TranslationKeys {
   welcomeTitle: string;
   welcomeSubtitle: string;
   welcomeMessage: string;
+  // welcomeMessageLocal is shown instead of welcomeMessage when Shelley is not
+  // running on an exe.dev host, so it omits exe.dev-specific proxy details.
+  welcomeMessageLocal: string;
+  // Link labels embedded in the welcome messages via {openSourceLink} and
+  // {customizeLink} placeholders.
+  welcomeOpenSource: string;
+  welcomeCustomize: string;
   sendMessageToStart: string;
   noModelsTitle: string;
   noModelsExeNote: string;
@@ -258,6 +277,7 @@ export interface TranslationKeys {
 
   // Sidebar buttons
   openConversations: string;
+  commandMenu: string;
   expandSidebar: string;
 
   // Language

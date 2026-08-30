@@ -5,9 +5,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"testing"
 	"time"
+
+	"shelley.exe.dev/exescroll"
 )
 
 // processExists uses the portable Unix signal 0 probe. It remains true for a
@@ -15,6 +18,73 @@ import (
 func processExists(pid int) bool {
 	err := syscall.Kill(pid, 0)
 	return err == nil || err == syscall.EPERM
+}
+
+func TestForgetRetainsExitStatusForConcurrentAttachments(t *testing.T) {
+	ts, err := NewTerminalSessions(t.TempDir(), slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := "tfinished"
+	exitFile := ts.exitFile(id)
+	if err := os.WriteFile(exitFile, []byte("42\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ts.sessions[id] = &TerminalSession{ID: id, Engine: terminalEngineExeScroll}
+	ts.Forget(id)
+	if _, err := os.Stat(exitFile); err != nil {
+		t.Fatalf("exit status removed before other attachments could read it: %v", err)
+	}
+	if code, err := exescroll.ReadExitStatus(exitFile); err != nil || code != 42 {
+		t.Fatalf("retained exit status = %d, %v", code, err)
+	}
+	os.Remove(exitFile)
+}
+
+func TestKillExeScrollKeepsRecordWhenPIDValidationFails(t *testing.T) {
+	ts, err := NewTerminalSessions(t.TempDir(), slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := &TerminalSession{
+		ID:     "tvalidation",
+		Socket: filepath.Join(ts.dir, "tvalidation.sock"),
+		PID:    os.Getpid(),
+		Engine: terminalEngineExeScroll,
+	}
+	if err := ts.writeSession(sess); err != nil {
+		t.Fatal(err)
+	}
+	if err := ts.Kill(sess.ID); err == nil {
+		t.Fatal("Kill succeeded despite PID title mismatch")
+	}
+	if ts.Get(sess.ID) == nil {
+		t.Fatal("failed Kill removed the in-memory session")
+	}
+	if _, err := os.Stat(filepath.Join(ts.dir, sess.ID+".json")); err != nil {
+		t.Fatalf("failed Kill removed the session record: %v", err)
+	}
+}
+
+// procState returns the single-character process state from /proc/<pid>/stat
+// (e.g. "R", "S", "Z"), or "" if the process no longer exists (fully reaped).
+func procState(pid int) string {
+	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
+	if err != nil {
+		return ""
+	}
+	// Format: "pid (comm) state ...". comm may contain spaces/parens, so the
+	// state field is the first token after the final ')'.
+	s := string(data)
+	for i := len(s) - 1; i >= 0; i-- {
+		if s[i] == ')' {
+			if i+2 < len(s) {
+				return string(s[i+2])
+			}
+			break
+		}
+	}
+	return ""
 }
 
 // TestSpawnSubprocessReapsChild verifies that a spawned dtach child that exits
@@ -56,7 +126,7 @@ func TestSpawnSubprocessReapsChild(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	t.Fatalf("child pid %d was not reaped", pid)
+	t.Fatalf("child pid %d was not reaped; state=%q", pid, procState(pid))
 }
 
 func TestTerminalListPrunesDeadSessions(t *testing.T) {

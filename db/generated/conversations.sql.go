@@ -41,17 +41,6 @@ func (q *Queries) ArchiveConversation(ctx context.Context, conversationID string
 	return i, err
 }
 
-const countArchivedConversations = `-- name: CountArchivedConversations :one
-SELECT COUNT(*) FROM conversations WHERE archived = TRUE
-`
-
-func (q *Queries) CountArchivedConversations(ctx context.Context) (int64, error) {
-	row := q.db.QueryRowContext(ctx, countArchivedConversations)
-	var count int64
-	err := row.Scan(&count)
-	return count, err
-}
-
 const countConversations = `-- name: CountConversations :one
 SELECT COUNT(*) FROM conversations WHERE archived = FALSE AND parent_conversation_id IS NULL
 `
@@ -592,6 +581,38 @@ func (q *Queries) IncrementConversationGeneration(ctx context.Context, conversat
 		&i.QueuedMessages,
 	)
 	return i, err
+}
+
+const listAgentWorkingConversationIDs = `-- name: ListAgentWorkingConversationIDs :many
+SELECT conversation_id FROM conversations
+WHERE agent_working = TRUE
+ORDER BY updated_at DESC
+`
+
+// Conversations left with agent_working = TRUE by the previous process. Used
+// on the resume-after-upgrade path (see DB.ConsumeResumeAfterUpgrade) to find
+// the turns that were interrupted by the upgrade restart.
+func (q *Queries) ListAgentWorkingConversationIDs(ctx context.Context) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, listAgentWorkingConversationIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var conversation_id string
+		if err := rows.Scan(&conversation_id); err != nil {
+			return nil, err
+		}
+		items = append(items, conversation_id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listAllConversations = `-- name: ListAllConversations :many

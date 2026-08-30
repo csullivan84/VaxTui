@@ -22,7 +22,12 @@
     >
       <div class="bash-tool-summary">
         <span class="bash-tool-emoji" :class="{ running: isRunning }" aria-hidden="true">🛠️</span>
-        <span class="bash-tool-command" :title="command">{{ displayCommand }}</span>
+        <HighlightedCode
+          class="bash-tool-command"
+          :source="displayCommand"
+          language="shellscript"
+          :title="command"
+        />
         <span v-if="displayData?.workingDir" class="bash-tool-cwd" :title="displayData.workingDir">
           in {{ displayData.workingDir }}
         </span>
@@ -30,14 +35,12 @@
           <span aria-hidden="true">✗</span>
           cancelled
         </span>
-        <span v-if="isComplete && hasError && !isCancelled" class="bash-tool-error">
-          <span aria-hidden="true">✗</span>
-          <span class="sr-only">failed</span>
-        </span>
-        <span v-if="isComplete && !hasError" class="bash-tool-success">
-          <span aria-hidden="true">✓</span>
-          <span class="sr-only">succeeded</span>
-        </span>
+        <ToolStatusIcon
+          v-if="isComplete && hasError && !isCancelled"
+          state="error"
+          class="bash-tool-error"
+        />
+        <ToolStatusIcon v-if="isComplete && !hasError" state="ok" class="bash-tool-success" />
       </div>
       <button
         type="button"
@@ -47,24 +50,7 @@
         :aria-expanded="isExpanded"
         @click.stop="toggleExpanded"
       >
-        <svg
-          width="12"
-          height="12"
-          viewBox="0 0 12 12"
-          fill="none"
-          xmlns="http://www.w3.org/2000/svg"
-          class="tool-chevron"
-          :class="{ 'tool-chevron-expanded': isExpanded }"
-          aria-hidden="true"
-        >
-          <path
-            d="M4.5 3L7.5 6L4.5 9"
-            stroke="currentColor"
-            stroke-width="1.5"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-          />
-        </svg>
+        <ToolChevron :expanded="isExpanded" />
       </button>
     </div>
 
@@ -112,7 +98,13 @@
       </div>
       <div class="bash-tool-section">
         <div class="bash-tool-label" :id="commandLabelId">Command:</div>
-        <pre class="bash-tool-code" :aria-labelledby="commandLabelId">{{ command }}</pre>
+        <HighlightedCode
+          tag="pre"
+          class="bash-tool-code"
+          :source="command"
+          language="shellscript"
+          :aria-labelledby="commandLabelId"
+        />
       </div>
 
       <div v-if="isRunning && streamingOutput" class="bash-tool-section">
@@ -143,6 +135,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch, useId } from "vue";
 import type { LLMContent } from "../../../types";
+import HighlightedCode from "../HighlightedCode.vue";
 import AnsiText from "./AnsiText.vue";
 import { useToolExpanded, useInToolDetail } from "../../composables/toolDetail";
 import { useScreenReaderMode } from "../../composables/screenReaderMode";
@@ -153,6 +146,9 @@ import {
   terminalOutputLabel,
   terminalToggleLabel,
 } from "./bashToolA11y";
+import ToolChevron from "./ToolChevron.vue";
+import ToolStatusIcon from "./ToolStatusIcon.vue";
+import { isCancelledToolResult } from "../../utils/toolStatus";
 
 interface BashDisplayData {
   workingDir: string;
@@ -272,9 +268,7 @@ const output = computed(() =>
 
 const accessibleOutput = computed(() => output.value || "(no output)");
 
-const isCancelled = computed(
-  () => props.hasError && output.value.includes("Tool execution cancelled by user"),
-);
+const isCancelled = computed(() => props.hasError && isCancelledToolResult(output.value));
 
 const displayCommand = computed(() => {
   const cmd = command.value;

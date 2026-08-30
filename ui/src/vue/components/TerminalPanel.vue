@@ -19,7 +19,7 @@
      insert buttons) is mirrored by the required `canInsertIntoInput` prop. -->
 <template>
   <div
-    v-if="terminals.length > 0"
+    v-show="visible.length > 0"
     :class="`terminal-panel${minimized ? ' terminal-panel-minimized' : ''}`"
     :style="minimized ? undefined : { height: `${height}px`, flexShrink: 0 }"
   >
@@ -46,49 +46,73 @@
         role="tablist"
         aria-label="Terminal sessions. Control+Shift+] next, Control+Shift+[ previous, Control+Shift+W close."
       >
-        <div
-          v-for="(t, idx) in terminals"
-          :key="t.id"
-          role="tab"
-          :tabindex="t.id === activeTabId ? 0 : -1"
-          :aria-selected="t.id === activeTabId"
-          :aria-label="`Terminal ${idx + 1}: ${tabLabel(t.command)}`"
-          :class="`terminal-panel-tab${t.id === activeTabId ? ' terminal-panel-tab-active' : ''}`"
-          :title="t.command"
-          @click="onTabClick(t.id)"
-          @keydown="onTabKeydown($event, t.id, idx)"
-        >
-          <span
-            v-if="statusMap.get(t.id)?.status === 'running'"
-            class="terminal-panel-tab-indicator terminal-panel-tab-running"
-            >●</span
+        <template v-for="(t, idx) in visible" :key="t.id">
+          <!-- Separator between global terminals and the ones pinned to this
+               conversation. -->
+          <div
+            v-if="idx > 0 && t.conversationId !== null && visible[idx - 1].conversationId === null"
+            class="terminal-panel-tabs-divider"
+          />
+          <div
+            role="tab"
+            :tabindex="t.id === activeTabId ? 0 : -1"
+            :aria-selected="t.id === activeTabId"
+            :aria-label="`Terminal ${idx + 1}: ${tabLabel(t.command)}`"
+            :class="`terminal-panel-tab${t.id === activeTabId ? ' terminal-panel-tab-active' : ''}`"
+            :title="t.command"
+            @click="onTabClick(t.id)"
+            @keydown="onTabKeydown($event, t.id, idx)"
           >
-          <span
-            v-if="statusMap.get(t.id)?.status === 'exited' && statusMap.get(t.id)?.exitCode === 0"
-            class="terminal-panel-tab-indicator terminal-panel-tab-success"
-            >✓</span
-          >
-          <span
-            v-if="statusMap.get(t.id)?.status === 'exited' && statusMap.get(t.id)?.exitCode !== 0"
-            class="terminal-panel-tab-indicator terminal-panel-tab-error"
-            >✗</span
-          >
-          <span
-            v-if="statusMap.get(t.id)?.status === 'error'"
-            class="terminal-panel-tab-indicator terminal-panel-tab-error"
-            >✗</span
-          >
-          <span class="terminal-panel-tab-label">{{ tabLabel(t.command) }}</span>
-          <button
-            v-tooltip.top="'Close terminal'"
-            class="terminal-panel-tab-close"
-            :aria-label="`Close terminal ${idx + 1}`"
-            tabindex="-1"
-            @click.stop="emit('close', t.id)"
-          >
-            ×
-          </button>
-        </div>
+            <!-- Per-tab scope toggle. Terminals start pinned to their
+                 conversation: a filled/colored pin. Clicking removes the pin,
+                 making the terminal global (shown everywhere): a muted pin
+                 outline. Hidden once the terminal has exited or errored: the
+                 server has already forgotten the session, so a scope PUT
+                 would 404. The tooltip lives on a wrapper because a disabled
+                 button does not emit hover events. -->
+            <span v-if="isAlive(t.id)" v-tooltip.top="scopeTooltip(t)" class="terminal-panel-tab-scope">
+              <button
+                :class="`terminal-panel-tab-pin${t.conversationId !== null ? ' terminal-panel-tab-pin-pinned' : ''}`"
+                :disabled="scopeDisabled(t)"
+                :aria-label="scopeTooltip(t)"
+                tabindex="-1"
+                @click.stop="toggleScope(t)"
+              >
+                <PinIcon />
+              </button>
+            </span>
+            <span
+              v-if="statusMap.get(t.id)?.status === 'running'"
+              class="terminal-panel-tab-indicator terminal-panel-tab-running"
+              >●</span
+            >
+            <span
+              v-if="statusMap.get(t.id)?.status === 'exited' && statusMap.get(t.id)?.exitCode === 0"
+              class="terminal-panel-tab-indicator terminal-panel-tab-success"
+              >✓</span
+            >
+            <span
+              v-if="statusMap.get(t.id)?.status === 'exited' && statusMap.get(t.id)?.exitCode !== 0"
+              class="terminal-panel-tab-indicator terminal-panel-tab-error"
+              >✗</span
+            >
+            <span
+              v-if="statusMap.get(t.id)?.status === 'error'"
+              class="terminal-panel-tab-indicator terminal-panel-tab-error"
+              >✗</span
+            >
+            <span class="terminal-panel-tab-label">{{ tabLabel(t.command) }}</span>
+            <button
+              v-tooltip.top="'Close terminal'"
+              class="terminal-panel-tab-close"
+              :aria-label="`Close terminal ${idx + 1}`"
+              tabindex="-1"
+              @click.stop="emit('close', t.id)"
+            >
+              ×
+            </button>
+          </div>
+        </template>
       </div>
 
       <!-- Action buttons — hidden when minimized -->
@@ -196,11 +220,12 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import type { Terminal } from "@xterm/xterm";
 import { isDarkModeActive } from "../../services/theme";
 import TerminalInstance from "./TerminalInstance.vue";
 import type { TermStatus } from "./terminalHelpers";
+import { nextActiveTab, visibleTerminals } from "./terminalHelpers";
 import type { EphemeralTerminal } from "./terminalTypes";
 import CopyIcon from "./terminalIcons/CopyIcon.vue";
 import CopyAllIcon from "./terminalIcons/CopyAllIcon.vue";
@@ -211,6 +236,7 @@ import CloseIcon from "./terminalIcons/CloseIcon.vue";
 import ChevronUpIcon from "./terminalIcons/ChevronUpIcon.vue";
 import ChevronDownIcon from "./terminalIcons/ChevronDownIcon.vue";
 import { announceA11y } from "../../services/a11yAnnouncer";
+import PinIcon from "./terminalIcons/PinIcon.vue";
 
 // Re-export EphemeralTerminal so importers can keep importing it from this
 // module (the canonical definition lives in terminalTypes.ts).
@@ -238,6 +264,10 @@ const emit = defineEmits<{
   (e: "auto-focus-consumed"): void;
   (e: "active-terminal-exited"): void;
   (e: "attached", id: string, termId: string): void;
+  // scope-change: terminal id, new owner (null for global). Emitted only after
+  // the server has accepted the change.
+  (e: "scope-change", id: string, conversationId: string | null): void;
+  (e: "scope-error", message: string): void;
 }>();
 
 const activeTabId = ref<string | null>(null);
@@ -245,6 +275,65 @@ const height = ref(300);
 const minimized = ref(false);
 const copyFeedback = ref<string | null>(null);
 const statusMap = ref<Map<string, { status: TermStatus; exitCode: number | null }>>(new Map());
+// Terminals to offer as tabs here: this conversation's own, then the global
+// ones. Every terminal stays mounted regardless; this only drives what is
+// reachable from the tab bar.
+const visible = computed(() => visibleTerminals(props.terminals, props.conversationId ?? null));
+
+// Terminal ids with a scope request in flight, so a pin cannot be
+// double-submitted while its previous request is pending.
+const scopePending = ref<Set<string>>(new Set());
+
+// A terminal is alive if the server hasn't reported it as exited or errored.
+// Dead terminals have no server-side record to scope against.
+function isAlive(id: string): boolean {
+  const s = statusMap.value.get(id)?.status;
+  return s !== "exited" && s !== "error";
+}
+
+// The global -> local direction needs a conversation to pin the terminal to,
+// which /new does not have. A dead terminal can't be scoped at all.
+function scopeDisabled(t: EphemeralTerminal): boolean {
+  if (scopePending.value.has(t.id) || !isAlive(t.id)) return true;
+  return t.conversationId === null && !props.conversationId;
+}
+
+function scopeTooltip(t: EphemeralTerminal): string {
+  if (t.conversationId === null) {
+    if (!props.conversationId) return "Open a conversation to pin this terminal";
+    return "Pin to this conversation";
+  }
+  return "Unpin to show in all conversations";
+}
+
+async function toggleScope(t: EphemeralTerminal) {
+  if (scopeDisabled(t)) return;
+  // Without a server-side session there is nothing to persist against yet.
+  if (!t.termId) {
+    emit("scope-error", "This terminal is still starting up.");
+    return;
+  }
+  const next = t.conversationId === null ? (props.conversationId ?? null) : null;
+  scopePending.value = new Set(scopePending.value).add(t.id);
+  try {
+    const res = await fetch(`/api/terminals/${encodeURIComponent(t.termId)}/scope`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ conversation_id: next }),
+    });
+    if (!res.ok) {
+      throw new Error((await res.text()).trim() || `Request failed with status ${res.status}`);
+    }
+    emit("scope-change", t.id, next);
+  } catch (err) {
+    emit("scope-error", err instanceof Error ? err.message : "Failed to change terminal scope");
+  } finally {
+    const cleared = new Set(scopePending.value);
+    cleared.delete(t.id);
+    scopePending.value = cleared;
+  }
+}
+
 const isResizingRef = { current: false };
 const startYRef = { current: 0 };
 const startHeightRef = { current: 0 };
@@ -301,41 +390,43 @@ onUnmounted(() => {
   window.removeEventListener("keydown", onPanelShortcut, true);
 });
 
-// Auto-select newest tab when a new terminal is added (React effect on
-// [terminals.length]). immediate: true so a mount with pre-existing terminals
-// (e.g. after an HMR reload or remount) still selects an active tab; otherwise
-// activeTabId stays null and every terminal renders hidden.
+// Re-resolve the selected tab whenever the visible set can have changed: the
+// app-wide terminal collection changed, a terminal was re-scoped, or the user
+// switched conversations. Keyed on ids (plus scope) rather than counts, since
+// two conversations can hold the same number of different terminals.
+//
+// knownIds is every terminal id the panel has seen in the app-wide collection.
+// Anything absent from it is brand new — just opened, or restored from the
+// server on load — and takes the selection. A terminal that merely became
+// visible because the user switched conversations is already known, so it
+// leaves the selection alone: that is what keeps a selected global terminal
+// selected across conversation switches.
+let knownIds = new Set<string>();
 watch(
-  () => props.terminals.length,
-  (len, previousLength) => {
-    if (len > 0) {
-      const lastTerminal = props.terminals[props.terminals.length - 1];
-      activeTabId.value = lastTerminal.id;
+  () =>
+    [
+      props.terminals.map((t) => `${t.id}:${t.conversationId ?? ""}`).join("\u0000"),
+      props.conversationId ?? "",
+    ] as const,
+  () => {
+    const created = props.terminals.map((t) => t.id).filter((id) => !knownIds.has(id));
+    knownIds = new Set(props.terminals.map((t) => t.id));
+    const next = nextActiveTab(
+      visible.value.map((t) => t.id),
+      created,
+      activeTabId.value,
+    );
+    activeTabId.value = next.id;
+    if (next.created) {
       minimized.value = false; // expand when a new terminal arrives
-      if (len > (previousLength ?? 0)) {
-        pushHistory(lastTerminal.command);
-        announceA11y(`Terminal opened for ${lastTerminal.command}.`);
+      const createdTerm = props.terminals.find((t) => t.id === next.id);
+      if (createdTerm) {
+        pushHistory(createdTerm.command);
+        announceA11y(`Terminal opened for ${createdTerm.command}.`);
       }
-    } else {
-      activeTabId.value = null;
     }
   },
   { immediate: true },
-);
-
-// If active tab got closed, switch to the last remaining (React effect on
-// [terminals, activeTabId]).
-watch(
-  () => [props.terminals, activeTabId.value] as const,
-  () => {
-    if (activeTabId.value && !props.terminals.find((t) => t.id === activeTabId.value)) {
-      if (props.terminals.length > 0) {
-        activeTabId.value = props.terminals[props.terminals.length - 1].id;
-      } else {
-        activeTabId.value = null;
-      }
-    }
-  },
 );
 
 function handleStatusChange(id: string, status: TermStatus, exitCode: number | null) {
@@ -560,11 +651,12 @@ function onTabClick(id: string) {
 function selectTerminal(id: string, announce = true) {
   activeTabId.value = id;
   if (minimized.value) minimized.value = false;
-  const term = props.terminals.find((t) => t.id === id);
-  const idx = props.terminals.findIndex((t) => t.id === id);
+  const tabs = visible.value;
+  const term = tabs.find((t) => t.id === id);
+  const idx = tabs.findIndex((t) => t.id === id);
   if (announce && term) {
     announceA11y(
-      `Terminal ${idx + 1} of ${props.terminals.length}: ${tabLabel(term.command)}.`,
+      `Terminal ${idx + 1} of ${tabs.length}: ${tabLabel(term.command)}.`,
     );
   }
   // Focus the shell after the tab is shown.
@@ -574,14 +666,16 @@ function selectTerminal(id: string, announce = true) {
 }
 
 function switchTerminal(delta: number) {
-  if (props.terminals.length === 0) return;
-  const cur = props.terminals.findIndex((t) => t.id === activeTabId.value);
+  const tabs = visible.value;
+  if (tabs.length === 0) return;
+  const cur = tabs.findIndex((t) => t.id === activeTabId.value);
   const base = cur < 0 ? 0 : cur;
-  const next = (base + delta + props.terminals.length) % props.terminals.length;
-  selectTerminal(props.terminals[next].id);
+  const next = (base + delta + tabs.length) % tabs.length;
+  selectTerminal(tabs[next].id);
 }
 
 function onTabKeydown(e: KeyboardEvent, id: string, idx: number) {
+  const tabs = visible.value;
   if (e.key === "ArrowRight" || e.key === "ArrowDown") {
     e.preventDefault();
     switchTerminal(1);
@@ -594,12 +688,12 @@ function onTabKeydown(e: KeyboardEvent, id: string, idx: number) {
   }
   if (e.key === "Home") {
     e.preventDefault();
-    selectTerminal(props.terminals[0].id);
+    if (tabs.length > 0) selectTerminal(tabs[0].id);
     return;
   }
   if (e.key === "End") {
     e.preventDefault();
-    selectTerminal(props.terminals[props.terminals.length - 1].id);
+    if (tabs.length > 0) selectTerminal(tabs[tabs.length - 1].id);
     return;
   }
   if (e.key === "Delete" || e.key === "Backspace") {
@@ -618,7 +712,8 @@ function onTabKeydown(e: KeyboardEvent, id: string, idx: number) {
 // readline (Ctrl+W = kill-word, Ctrl+[ = esc, etc.).
 function onPanelShortcut(e: KeyboardEvent) {
   if (props.active === false) return;
-  if (props.terminals.length === 0) return;
+  const tabs = visible.value;
+  if (tabs.length === 0) return;
   if (e.type !== "keydown") return;
   // Need Ctrl (or Meta on Mac for consistency we accept both) + Shift.
   if (!e.shiftKey || !(e.ctrlKey || e.metaKey) || e.altKey) return;
@@ -654,10 +749,10 @@ function onPanelShortcut(e: KeyboardEvent) {
   // Jump to terminal 1–9
   if (key >= "1" && key <= "9") {
     const n = parseInt(key, 10) - 1;
-    if (n < props.terminals.length) {
+    if (n < tabs.length) {
       e.preventDefault();
       e.stopPropagation();
-      selectTerminal(props.terminals[n].id);
+      selectTerminal(tabs[n].id);
     }
   }
 }

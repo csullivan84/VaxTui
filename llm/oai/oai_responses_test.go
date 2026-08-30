@@ -3,7 +3,6 @@ package oai
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -483,24 +482,22 @@ func TestResponsesServiceTokenContextWindow(t *testing.T) {
 		{model: GPT55, expected: 272000},
 		{model: GPT55Pro, expected: 272000},
 		{model: Model{
-			UserName:           "gpt-5.5-2026-04-23",
-			ModelName:          "gpt-5.5-2026-04-23",
-			TextVerbosity:      "",
-			URL:                "",
-			APIKeyEnv:          "",
-			IsReasoningModel:   false,
-			UseSimplifiedPatch: false,
-			SupportsImages:     false,
+			UserName:         "gpt-5.5-2026-04-23",
+			ModelName:        "gpt-5.5-2026-04-23",
+			TextVerbosity:    "",
+			URL:              "",
+			APIKeyEnv:        "",
+			IsReasoningModel: false,
+			SupportsImages:   false,
 		}, expected: 272000},
 		{model: Model{
-			UserName:           "gpt-5.5-pro-2026-04-23",
-			ModelName:          "gpt-5.5-pro-2026-04-23",
-			TextVerbosity:      "",
-			URL:                "",
-			APIKeyEnv:          "",
-			IsReasoningModel:   false,
-			UseSimplifiedPatch: false,
-			SupportsImages:     false,
+			UserName:         "gpt-5.5-pro-2026-04-23",
+			ModelName:        "gpt-5.5-pro-2026-04-23",
+			TextVerbosity:    "",
+			URL:              "",
+			APIKeyEnv:        "",
+			IsReasoningModel: false,
+			SupportsImages:   false,
 		}, expected: 272000},
 		{model: GPT53Codex, expected: 288000},
 		{model: GPT41, expected: 200000},
@@ -1466,7 +1463,7 @@ func TestResponsesServiceRequestLevelThinking(t *testing.T) {
 
 // TestResponsesServiceStallTimeout verifies that when the upstream stream
 // stalls mid-response (headers + a delta sent, then silence), the idle-timeout
-// client aborts the request with an ErrIdleTimeout-wrapped error rather than
+// client aborts the request with retryable idle-stall metadata rather than
 // hanging or capping on a fixed total deadline.
 func TestResponsesServiceStallTimeout(t *testing.T) {
 	release := make(chan struct{})
@@ -1505,7 +1502,76 @@ func TestResponsesServiceStallTimeout(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected stall error, got nil")
 	}
-	if !errors.Is(err, llmhttp.ErrIdleTimeout) {
-		t.Fatalf("error = %v, want errors.Is(err, llmhttp.ErrIdleTimeout)", err)
+	info, ok := llm.RequestErrorInfoFromError(err)
+	if !ok || info.IdleStallDuration != 150*time.Millisecond || !info.Retryable {
+		t.Fatalf("error metadata = %+v, %v; want retryable 150ms idle stall (error: %v)", info, ok, err)
+	}
+	if wantURL := "url=" + server.URL + "/responses"; !strings.Contains(err.Error(), wantURL) {
+		t.Fatalf("error = %v, want request URL diagnostic %q", err, wantURL)
+	}
+}
+
+func TestResponsesServicePatchProfile(t *testing.T) {
+	if got := (&ResponsesService{ProviderName: "openai", Model: Model{SupportsApplyPatch: true}}).PatchProfile(); got != "codex_apply_patch" {
+		t.Fatalf("capable OpenAI Responses profile = %q", got)
+	}
+	if got := (&ResponsesService{ProviderName: "openai"}).PatchProfile(); got != "flat" {
+		t.Fatalf("uncatalogued OpenAI Responses profile = %q", got)
+	}
+	if got := (&ResponsesService{ProviderName: "xai", Model: Model{SupportsApplyPatch: true}}).PatchProfile(); got != "flat" {
+		t.Fatalf("non-OpenAI Responses profile = %q", got)
+	}
+}
+
+func TestResponsesCustomGrammarToolWireFormat(t *testing.T) {
+	tool := fromLLMToolResponses(&llm.Tool{Name: "apply_patch", Description: "patch", CustomGrammar: "start: /.+/s"})
+	got, err := json.Marshal(tool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"type":"custom","name":"apply_patch","description":"patch","format":{"type":"grammar","syntax":"lark","definition":"start: /.+/s"}}`
+	if string(got) != want {
+		t.Fatalf("custom tool = %s, want %s", got, want)
+	}
+}
+
+func TestResponsesCustomToolCallConversion(t *testing.T) {
+	service := &ResponsesService{}
+	response := service.toLLMResponseFromResponses(&responsesResponse{Output: []responsesOutputItem{{Type: "custom_tool_call", CallID: "call_1", Name: "apply_patch", Input: "*** Begin Patch\n*** End Patch"}}}, nil)
+	if len(response.Content) != 1 || response.Content[0].ToolName != "apply_patch" {
+		t.Fatalf("content = %+v", response.Content)
+	}
+	if got := string(response.Content[0].ToolInput); got != `{"input":"*** Begin Patch\n*** End Patch"}` {
+		t.Fatalf("tool input = %s", got)
+	}
+
+	items := fromLLMMessageResponses(llm.Message{Role: llm.MessageRoleAssistant, Content: response.Content})
+	if len(items) != 1 || items[0].Type != "custom_tool_call" || items[0].Input == "" {
+		t.Fatalf("replayed items = %+v", items)
+	}
+}
+
+func TestResponsesCustomToolResultUsesCustomOutput(t *testing.T) {
+	items := fromLLMMessageResponses(llm.Message{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeToolResult, ToolName: "apply_patch", ToolUseID: "call_1", ToolResult: llm.TextContent("done")}}})
+	if len(items) != 1 || items[0].Type != "custom_tool_call_output" {
+		t.Fatalf("items = %+v", items)
+	}
+}
+
+func TestParseResponsesSSECustomToolCall(t *testing.T) {
+	stream := strings.Join([]string{
+		`event: response.output_item.done`,
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"custom_tool_call","call_id":"call_1","name":"apply_patch","input":"*** Begin Patch\n*** End Patch"}}`,
+		``,
+		`event: response.completed`,
+		`data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`,
+		``,
+	}, "\n")
+	response, err := parseResponsesSSEStream(strings.NewReader(stream), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Output) != 1 || response.Output[0].Type != "custom_tool_call" || response.Output[0].Input == "" {
+		t.Fatalf("output = %+v", response.Output)
 	}
 }

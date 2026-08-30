@@ -10,7 +10,7 @@ import (
 	"shelley.exe.dev/db"
 	"shelley.exe.dev/db/generated"
 	"shelley.exe.dev/llm"
-	"shelley.exe.dev/loop"
+	"shelley.exe.dev/llm/predictable"
 )
 
 // subagentDoneFixture sets up a parent conversation with an active manager and
@@ -22,7 +22,7 @@ type subagentDoneFixture struct {
 	t        *testing.T
 	server   *Server
 	database *db.DB
-	llmSvc   *loop.PredictableService
+	llmSvc   *predictable.Service
 
 	parentID    string
 	parentMgr   *ConversationManager
@@ -906,7 +906,10 @@ func testSubagentDone_InjectionSkippedWhileDistilling(t *testing.T) {
 		return countPendingSubagentDone(f.parentMgr, f.subagentID) == 1
 	})
 
-	if msgs := f.parentMgr.takeInjectableSubagentDone(ctx); len(msgs) != 0 {
+	f.parentMgr.mu.Lock()
+	generation := f.parentMgr.loopGeneration
+	f.parentMgr.mu.Unlock()
+	if msgs := f.parentMgr.takeInjectableSubagentDone(ctx, generation); len(msgs) != 0 {
 		t.Fatalf("expected no injectable messages while distilling, got %d", len(msgs))
 	}
 	if n := countPendingSubagentDone(f.parentMgr, f.subagentID); n != 1 {

@@ -11,30 +11,26 @@ import (
 	"time"
 
 	"shelley.exe.dev/llm"
-	"shelley.exe.dev/llm/llmhttp"
 	"shelley.exe.dev/platformpath"
 )
-
-// LLMServiceProvider defines the interface for getting LLM services
-type LLMServiceProvider interface {
-	GetService(modelID string) (llm.Service, error)
-	GetAvailableModels() []string
-}
 
 // KeywordTool provides keyword search functionality
 type KeywordTool struct {
 	llmProvider LLMServiceProvider
+	modelID     string
 	workingDir  *MutableWorkingDir
 }
 
-// NewKeywordTool creates a new keyword tool with the given LLM provider
-func NewKeywordTool(provider LLMServiceProvider) *KeywordTool {
-	return &KeywordTool{llmProvider: provider}
+// NewKeywordTool creates a new keyword tool with the given LLM provider.
+// modelID is the conversation's model, used to pick a workhorse model for
+// relevance filtering.
+func NewKeywordTool(provider LLMServiceProvider, modelID string) *KeywordTool {
+	return &KeywordTool{llmProvider: provider, modelID: modelID}
 }
 
 // NewKeywordToolWithWorkingDir creates a new keyword tool with the given LLM provider and shared working directory
-func NewKeywordToolWithWorkingDir(provider LLMServiceProvider, wd *MutableWorkingDir) *KeywordTool {
-	return &KeywordTool{llmProvider: provider, workingDir: wd}
+func NewKeywordToolWithWorkingDir(provider LLMServiceProvider, modelID string, wd *MutableWorkingDir) *KeywordTool {
+	return &KeywordTool{llmProvider: provider, modelID: modelID, workingDir: wd}
 }
 
 // Tool returns the LLM tool definition
@@ -170,12 +166,6 @@ func (k *KeywordTool) keywordRun(ctx context.Context, input keywordInput) llm.To
 		keep = keep[:len(keep)-1]
 	}
 
-	// Select the best available LLM service
-	llmService, err := k.selectBestLLM(k.llmProvider)
-	if err != nil {
-		return llm.ErrorfToolOut("failed to get LLM service: %w", err)
-	}
-
 	// Create the filtering request
 	system := []llm.SystemContent{
 		{Type: "text", Text: strings.TrimSpace(keywordSystemPrompt)},
@@ -195,7 +185,11 @@ func (k *KeywordTool) keywordRun(ctx context.Context, input keywordInput) llm.To
 		System:   system,
 	}
 
-	resp, err := llmService.Do(llmhttp.WithPurpose(ctx, "keyword_search"), req)
+	svc, err := k.llmProvider.GetWorkhorseService(k.modelID)
+	if err != nil {
+		return llm.ErrorfToolOut("failed to send relevance filtering message: %w", err)
+	}
+	resp, err := svc.Do(llm.WithPurpose(ctx, "keyword_search"), req)
 	if err != nil {
 		return llm.ErrorfToolOut("failed to send relevance filtering message: %w", err)
 	}
@@ -261,22 +255,4 @@ func ripgrep(ctx context.Context, wd string, terms []string) (string, error) {
 	}
 	outStr := string(out)
 	return outStr, nil
-}
-
-// selectBestLLM selects the best available LLM service for keyword search
-func (k *KeywordTool) selectBestLLM(provider LLMServiceProvider) (llm.Service, error) {
-	for _, model := range PreferredToolModels {
-		svc, err := provider.GetService(model)
-		if err == nil {
-			return svc, nil
-		}
-	}
-
-	// If no preferred model is available, try any available model
-	available := provider.GetAvailableModels()
-	if len(available) > 0 {
-		return provider.GetService(available[0])
-	}
-
-	return nil, fmt.Errorf("no LLM services available")
 }

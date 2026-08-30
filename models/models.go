@@ -16,7 +16,7 @@ import (
 	"shelley.exe.dev/llm/gem"
 	"shelley.exe.dev/llm/llmhttp"
 	"shelley.exe.dev/llm/oai"
-	"shelley.exe.dev/loop"
+	"shelley.exe.dev/llm/predictable"
 	"shelley.exe.dev/models/modelsdev"
 )
 
@@ -104,6 +104,7 @@ type Built struct {
 	Provider    Provider
 	Source      string // human-readable origin ("exe.dev gateway", "$ANTHROPIC_API_KEY", "custom", ...)
 	Tags        string
+	ReleaseDate string // ISO date from models.dev; empty when unknown
 	Service     llm.Service
 
 	// APIType is the wire protocol used to talk to this model.
@@ -292,7 +293,7 @@ func All() []Model {
 		},
 		{
 			ID: "deepseek-v4-pro-fireworks", Provider: ProviderFireworks,
-			Description: "DeepSeek V4 Pro on Fireworks — 1M-token context, reasoning and tool use; text-only, no images", APIModelName: oai.DeepseekV4ProFireworks.ModelName,
+			Description: "DeepSeek V4 Pro 0813 on Fireworks — 1M-token context, reasoning and tool use; text-only, no images", APIModelName: oai.DeepseekV4ProFireworks.ModelName,
 			APIType: APITypeOpenAIChat, DefaultBaseURL: DefaultFireworksBaseURL,
 			Build: oaiChatSvc(oai.DeepseekV4ProFireworks, "fireworks"),
 		},
@@ -333,7 +334,7 @@ func All() []Model {
 			Build: antSvc(ant.Claude45Sonnet),
 		},
 		{
-			ID: "claude-haiku-4.5", Provider: ProviderAnthropic, Tags: "slug-backup",
+			ID: "claude-haiku-4.5", Provider: ProviderAnthropic,
 			Description: "Claude Haiku 4.5", APIModelName: ant.Claude45Haiku,
 			APIType: APITypeAnthropicMessages, DefaultBaseURL: DefaultAnthropicBaseURL,
 			Build: antSvc(ant.Claude45Haiku),
@@ -375,23 +376,17 @@ func All() []Model {
 			Build: gemSvc("gemini-3-flash-preview"),
 		},
 		{
-			ID: "deepseek-v4-flash-fireworks", Provider: ProviderFireworks,
-			Description: "DeepSeek V4 Flash on Fireworks — 1M-token context, reasoning and tool use; text-only, no images", APIModelName: oai.DeepseekV4FlashFireworks.ModelName,
+			ID: "deepseek-v4-flash-0731-fireworks", Provider: ProviderFireworks,
+			Description: "DeepSeek V4 Flash 0731 on Fireworks — 1M-token context, reasoning and tool use; text-only, no images", APIModelName: oai.DeepseekV4FlashFireworks.ModelName,
 			APIType: APITypeOpenAIChat, DefaultBaseURL: DefaultFireworksBaseURL,
 			Build: oaiChatSvc(oai.DeepseekV4FlashFireworks, "fireworks"),
-		},
-		{
-			ID: "gpt-oss-20b-fireworks", Provider: ProviderFireworks, Tags: "slug",
-			Description: "GPT-OSS 20B on Fireworks", APIModelName: oai.GPTOSS20B.ModelName,
-			APIType: APITypeOpenAIChat, DefaultBaseURL: DefaultFireworksBaseURL,
-			Build: oaiChatSvc(oai.GPTOSS20B, "fireworks"),
 		},
 		{
 			ID: "predictable", Provider: ProviderBuiltIn,
 			Description:    "Deterministic test model (no API key)",
 			APIType:        APITypeBuiltIn,
 			DefaultBaseURL: "-",
-			Build:          func(url, apiKey string, httpc *http.Client) llm.Service { return loop.NewPredictableService() },
+			Build:          func(url, apiKey string, httpc *http.Client) llm.Service { return predictable.NewService() },
 		},
 	}
 }
@@ -436,6 +431,12 @@ type Manager struct {
 	httpc      *http.Client
 }
 
+// GetWorkhorseService returns a service that uses a cheap model from the
+// conversation model's provider, falling back to the conversation model once.
+func (m *Manager) GetWorkhorseService(conversationModelID string) (llm.Service, error) {
+	return m.getWorkhorseService(conversationModelID)
+}
+
 type serviceEntry struct {
 	service     llm.Service
 	provider    Provider
@@ -443,6 +444,7 @@ type serviceEntry struct {
 	source      string
 	displayName string
 	tags        string
+	releaseDate string
 	baseURL     string
 	apiType     APIType
 }
@@ -495,8 +497,8 @@ func (l *loggingService) Do(ctx context.Context, request *llm.Request) (*llm.Res
 		}
 	}
 	l.logger.Info("LLM request completed", logAttrs...)
-	if purpose := llmhttp.PurposeFromContext(ctx); purpose != "" && !response.Usage.IsZero() {
-		if collect := llmhttp.UsageCollectorFromContext(ctx); collect != nil {
+	if purpose := llm.PurposeFromContext(ctx); purpose != "" && !response.Usage.IsZero() {
+		if collect := llm.UsageCollectorFromContext(ctx); collect != nil {
 			usage := response.UsageWithMeta()
 			if usage.Model == "" {
 				usage.Model = l.modelID
@@ -512,12 +514,7 @@ func (l *loggingService) TokenContextWindow() int { return l.service.TokenContex
 func (l *loggingService) MaxImageDimension() int  { return l.service.MaxImageDimension() }
 func (l *loggingService) MaxImageBytes() int      { return l.service.MaxImageBytes() }
 
-func (l *loggingService) UseSimplifiedPatch() bool {
-	if sp, ok := l.service.(llm.SimplifiedPatcher); ok {
-		return sp.UseSimplifiedPatch()
-	}
-	return false
-}
+func (l *loggingService) PatchProfile() string { return llm.PatchProfile(l.service) }
 
 func (l *loggingService) SupportsServerSideWebSearch() bool {
 	type capable interface{ SupportsServerSideWebSearch() bool }
@@ -581,6 +578,7 @@ func (m *Manager) registerBuiltModelsLocked(built []Built) {
 			source:      b.Source,
 			displayName: dn,
 			tags:        b.Tags,
+			releaseDate: b.ReleaseDate,
 			baseURL:     b.BaseURL,
 			apiType:     b.APIType,
 		}
@@ -701,11 +699,13 @@ func (m *Manager) HasModel(modelID string) bool {
 	return ok
 }
 
-// ModelInfo contains display name, tags, source, base URL, and API type for a model.
+// ModelInfo contains display name, provider metadata, and release date for a model.
 type ModelInfo struct {
 	DisplayName string
+	Provider    Provider
 	Tags        string
 	Source      string
+	ReleaseDate string
 	BaseURL     string
 	APIType     string
 }
@@ -717,7 +717,7 @@ func (m *Manager) GetModelInfo(modelID string) *ModelInfo {
 	if !ok {
 		return nil
 	}
-	return &ModelInfo{DisplayName: entry.displayName, Tags: entry.tags, Source: entry.source, BaseURL: entry.baseURL, APIType: string(entry.apiType)}
+	return &ModelInfo{DisplayName: entry.displayName, Provider: entry.provider, Tags: entry.tags, Source: entry.source, ReleaseDate: entry.releaseDate, BaseURL: entry.baseURL, APIType: string(entry.apiType)}
 }
 
 type reasoningMapping struct {
@@ -733,8 +733,8 @@ type reasoningService struct {
 	defaultSource llm.ThinkingLevel
 }
 
-func (s *reasoningService) SupportsReasoning() bool  { return s.supported }
-func (s *reasoningService) UseSimplifiedPatch() bool { return llm.UseSimplifiedPatch(s.Service) }
+func (s *reasoningService) SupportsReasoning() bool { return s.supported }
+func (s *reasoningService) PatchProfile() string    { return llm.PatchProfile(s.Service) }
 func (s *reasoningService) SupportsServerSideWebSearch() bool {
 	type capable interface{ SupportsServerSideWebSearch() bool }
 	c, ok := s.Service.(capable)
@@ -742,6 +742,9 @@ func (s *reasoningService) SupportsServerSideWebSearch() bool {
 }
 
 func (s *reasoningService) SupportedReasoningLevels() []llm.ThinkingLevel {
+	if len(s.levels) == 0 {
+		return llm.SupportedReasoningLevels(s.Service)
+	}
 	return append([]llm.ThinkingLevel(nil), s.levels...)
 }
 
@@ -800,7 +803,7 @@ func parseReasoningMap(raw string) (map[llm.ThinkingLevel]reasoningMapping, []ll
 	}
 	mapping := make(map[llm.ThinkingLevel]reasoningMapping, len(values))
 	levels := make([]llm.ThinkingLevel, 0, len(values))
-	for _, level := range []llm.ThinkingLevel{llm.ThinkingLevelOff, llm.ThinkingLevelMinimal, llm.ThinkingLevelLow, llm.ThinkingLevelMedium, llm.ThinkingLevelHigh, llm.ThinkingLevelXHigh} {
+	for _, level := range []llm.ThinkingLevel{llm.ThinkingLevelOff, llm.ThinkingLevelMinimal, llm.ThinkingLevelLow, llm.ThinkingLevelMedium, llm.ThinkingLevelHigh, llm.ThinkingLevelXHigh, llm.ThinkingLevelMax} {
 		mappedName, ok := values[level.Name()]
 		if !ok || mappedName == "" {
 			continue
@@ -837,14 +840,13 @@ func (m *Manager) createServiceFromModel(model *generated.Model) llm.Service {
 			APIKey:   model.ApiKey,
 			ModelURL: model.Endpoint,
 			Model: oai.Model{
-				UserName:           "",
-				ModelName:          model.ModelName,
-				TextVerbosity:      "",
-				URL:                model.Endpoint,
-				APIKeyEnv:          "",
-				IsReasoningModel:   false,
-				UseSimplifiedPatch: false,
-				SupportsImages:     supportsImages,
+				UserName:         "",
+				ModelName:        model.ModelName,
+				TextVerbosity:    "",
+				URL:              model.Endpoint,
+				APIKeyEnv:        "",
+				IsReasoningModel: false,
+				SupportsImages:   supportsImages,
 			},
 			MaxTokens:       int(model.MaxTokens),
 			HTTPC:           m.httpc,
@@ -856,14 +858,13 @@ func (m *Manager) createServiceFromModel(model *generated.Model) llm.Service {
 			APIKey:   model.ApiKey,
 			ModelURL: model.Endpoint,
 			Model: oai.Model{
-				UserName:           "",
-				ModelName:          model.ModelName,
-				TextVerbosity:      "",
-				URL:                model.Endpoint,
-				APIKeyEnv:          "",
-				IsReasoningModel:   false,
-				UseSimplifiedPatch: false,
-				SupportsImages:     supportsImages,
+				UserName:         "",
+				ModelName:        model.ModelName,
+				TextVerbosity:    "",
+				URL:              model.Endpoint,
+				APIKeyEnv:        "",
+				IsReasoningModel: false,
+				SupportsImages:   supportsImages,
 			},
 			MaxTokens:       int(model.MaxTokens),
 			HTTPC:           m.httpc,

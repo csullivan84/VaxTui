@@ -184,6 +184,7 @@ const TOOL_COMPONENTS: Record<string, any> = {
   bash: BashTool,
   shell: BashTool,
   patch: PatchTool,
+  apply_patch: PatchTool,
   browser: BrowserTool,
   screenshot: ScreenshotTool,
   read_image: ReadImageTool,

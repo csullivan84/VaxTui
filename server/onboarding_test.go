@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"shelley.exe.dev/loop"
+	"shelley.exe.dev/llm/predictable"
 	"shelley.exe.dev/models"
 	"shelley.exe.dev/providerauth"
 )
@@ -32,7 +32,7 @@ func TestOnboardingDiscoversImportsAndRefreshesProviders(t *testing.T) {
 		Models: []models.Built{{
 			ID:       "predictable",
 			Provider: models.ProviderBuiltIn,
-			Service:  loop.NewPredictableService(),
+			Service:  predictable.NewService(),
 		}},
 		Logger: slog.Default(),
 	})
@@ -54,7 +54,7 @@ func TestOnboardingDiscoversImportsAndRefreshesProviders(t *testing.T) {
 			return append([]models.Built{{
 				ID:       "predictable",
 				Provider: models.ProviderBuiltIn,
-				Service:  loop.NewPredictableService(),
+				Service:  predictable.NewService(),
 			}}, providerauth.BuiltModels(config, nil)...), nil
 		},
 	}

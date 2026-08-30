@@ -56,6 +56,7 @@
         :is-open="drawerOpen"
         :is-collapsed="drawerCollapsed"
         :conversations="conversations"
+        :ephemeral-terminals="ephemeralTerminals"
         :current-conversation-id="currentConversationId"
         :viewed-conversation="viewedConversation"
         :show-active-trigger="showActiveTrigger"
@@ -115,13 +116,16 @@
             :on-cwd-change="setWorkspaceDirectory"
             :on-open-models-modal="() => (modelsModalOpen = true)"
             :on-open-file-finder="openFileFinder"
+            :on-open-command-palette="() => (commandPaletteOpen = true)"
             :show-terminal-panel="false"
             :on-terminal-auto-focus="openTerminalWorkbench"
             :ephemeral-terminals="conversationTerminals"
             :set-ephemeral-terminals="setEphemeralTerminals"
             :on-terminal-attached="handleTerminalAttached"
+            :on-terminal-scope-change="handleTerminalScopeChange"
             :on-terminal-close="handleTerminalClose"
             :navigate-user-message-trigger="navigateUserMessageTrigger"
+            :scroll-to-bottom-trigger="conversationSelectionTrigger"
             :on-conversation-unarchived="handleConversationUnarchived"
             :external-comment-text="editorCommentText"
           />
@@ -290,6 +294,7 @@ import WorkspaceWorkbench from "./components/WorkspaceWorkbench.vue";
 import Button from "primevue/button";
 import type { EphemeralTerminal } from "./components/terminalTypes";
 import { focusMessageInputIfUnfocused } from "../utils/focusMessageInput";
+import { resolveAbsPath } from "../utils/absPath";
 import {
   type Conversation,
   type ConversationWithState,
@@ -309,7 +314,9 @@ import { perfCount } from "../utils/perf";
 import { useI18n } from "./composables/i18n";
 import { ConversationsListKey, CurrentConversationIdKey } from "./composables/subagentLive";
 import { WorkspaceContextKey } from "./composables/workspaceContext";
+import { provideOpenFileEditor } from "./composables/fileEditor";
 import { useFeatureFlag } from "./composables/featureFlags";
+import { useMobileDrawerSwipe } from "./composables/mobileDrawerSwipe";
 import PerfHud from "./components/PerfHud.vue";
 
 const perfHudEnabled = useFeatureFlag("performance-hud");
@@ -433,7 +440,13 @@ provide(ConversationsListKey, conversations);
 provide(CurrentConversationIdKey, currentConversationId);
 const viewedConversation = ref<Conversation | null>(null);
 const drawerOpen = ref(false);
-const drawerCollapsed = ref(false);
+useMobileDrawerSwipe(drawerOpen);
+watch(drawerOpen, (open) => {
+  if (!open || !window.matchMedia("(max-width: 767px)").matches) return;
+  document.querySelector<HTMLTextAreaElement>('[data-testid="message-input"]')?.blur();
+});
+// The drawer starts expanded unless the user collapsed it last time.
+const drawerCollapsed = ref(initialDrawerCollapsed(localStorage));
 const commandPaletteOpen = ref(false);
 const diffViewerTrigger = ref(0);
 const gitGraphTrigger = ref(0);
@@ -452,6 +465,7 @@ const editorCommentText = ref<{ text: string } | null>(null);
 const modelsRefreshTrigger = ref(0);
 const cwdSyncTrigger = ref(0);
 const navigateUserMessageTrigger = ref(0);
+const conversationSelectionTrigger = ref(0);
 const loading = ref(true);
 const error = ref<string | null>(null);
 const ephemeralTerminals = ref<EphemeralTerminal[]>([]);
@@ -468,7 +482,6 @@ const showProviderSetup = ref(false);
 
 // ---- non-reactive refs ----
 let initialSlugResolved = false;
-let startupDrawerStateApplied = false;
 let conversationListHash: string | null = null;
 let globalStreamHandle: { forceReconnect: () => void; close: () => void } | null = null;
 
@@ -482,6 +495,13 @@ function setEphemeralTerminals(
 
 function handleTerminalAttached(id: string, termId: string) {
   setEphemeralTerminals((prev) => prev.map((tm) => (tm.id === id ? { ...tm, termId } : tm)));
+}
+
+// Applied only after the server has persisted the new scope.
+function handleTerminalScopeChange(id: string, conversationId: string | null) {
+  setEphemeralTerminals((prev) =>
+    prev.map((tm) => (tm.id === id ? { ...tm, conversationId } : tm)),
+  );
 }
 
 function handleTerminalClose(id: string) {
@@ -665,10 +685,6 @@ async function loadConversations() {
       commitListState({ list: snapshot.conversations, hash: snapshot.hash });
     }
     const currentList = streamHash ? conversations.value : snapshot.conversations;
-    if (!startupDrawerStateApplied) {
-      drawerCollapsed.value = initialDrawerCollapsed(currentList, localStorage);
-      startupDrawerStateApplied = true;
-    }
     const topLevel = currentList.filter((c) => !c.parent_conversation_id);
 
     const slugConv = await resolveInitialSlug(currentList);
@@ -785,6 +801,7 @@ function setConversationCwd(cwd: string) {
 function selectConversation(conversation: Conversation) {
   herdsRouteActive.value = false;
   herdsRouteId.value = null;
+  conversationSelectionTrigger.value++;
   currentConversationId.value = conversation.conversation_id;
   viewedConversation.value = conversation;
   workspacePane.value = "chat";
@@ -849,8 +866,13 @@ async function archiveFromPalette(conversationId: string) {
   }
 }
 
-function onDraftCreated(id: string) {
-  currentConversationId.value = id;
+function onDraftCreated(conversation: Conversation) {
+  // The conversation-list patch can arrive after createDraft resolves. Keep
+  // the returned draft as the current fallback before changing ids so
+  // ChatInterface sees is_draft immediately and skips message loading without
+  // fabricating an empty complete message cache.
+  viewedConversation.value = conversation;
+  currentConversationId.value = conversation.conversation_id;
 }
 
 function onCommandPaletteClose() {
@@ -908,6 +930,16 @@ function selectWorkspaceById(id: string) {
   startNewConversation();
 }
 
+// Open any file in the editor modal, from anywhere in the tree (patch tool
+// cards, etc.). A successful patch records an absolute path, but a failed one
+// carries only the path the agent passed, which may be relative; resolve those
+// against the same directory the file finder searches (the conversation's cwd,
+// else the last-used one). /api/read-file requires a clean absolute path.
+provideOpenFileEditor((path: string) => {
+  const abs = resolveAbsPath(path, finderDir.value);
+  if (abs) openFileInEditor(abs);
+});
+
 // A comment submitted from the file editor's comment mode: hand it to
 // ChatInterface for injection into the message input.
 function onEditorComment(text: string) {
@@ -920,7 +952,7 @@ async function handleFirstMessage(
   model: string,
   cwd?: string,
   toolOverrides?: Record<string, "on" | "off">,
-  thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh",
+  thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max",
 ) {
   try {
     const hasOverrides = toolOverrides && Object.keys(toolOverrides).length > 0;
@@ -1110,6 +1142,7 @@ onMounted(() => {
           id: string;
           command: string;
           cwd: string;
+          conversation_id: string | null;
           created_at: string;
           owner_type?: "workspace" | "herd" | "unowned";
           workspace_id?: string;
@@ -1117,29 +1150,30 @@ onMounted(() => {
           herd_name?: string;
         }>,
       ) => {
-      if (cancelled || !Array.isArray(rows) || rows.length === 0) return;
-      setEphemeralTerminals((prev) => {
-        const have = new Set(prev.map((tm) => tm.termId).filter(Boolean));
-        const restored: EphemeralTerminal[] = rows
-          .filter(
-            (r) =>
-              r.owner_type === "workspace" &&
-              !!r.workspace_id &&
-              !have.has(r.id) &&
-              !closedTerminalIds.has(r.id),
-          )
-          .map((r) => ({
-            id: r.id,
-            termId: r.id,
-            command: r.command,
-            cwd: r.cwd,
-            createdAt: new Date(r.created_at || Date.now()),
-            workspaceId: r.workspace_id,
-            herdId: r.owner_type === "herd" ? r.herd_id : undefined,
-            herdName: r.owner_type === "herd" ? r.herd_name : undefined,
-          }));
-        return [...restored, ...prev];
-      });
+        if (cancelled || !Array.isArray(rows) || rows.length === 0) return;
+        setEphemeralTerminals((prev) => {
+          const have = new Set(prev.map((tm) => tm.termId).filter(Boolean));
+          const restored: EphemeralTerminal[] = rows
+            .filter(
+              (r) =>
+                r.owner_type === "workspace" &&
+                !!r.workspace_id &&
+                !have.has(r.id) &&
+                !closedTerminalIds.has(r.id),
+            )
+            .map((r) => ({
+              id: r.id,
+              termId: r.id,
+              command: r.command,
+              cwd: r.cwd,
+              conversationId: r.conversation_id ?? null,
+              createdAt: new Date(r.created_at || Date.now()),
+              workspaceId: r.workspace_id,
+              herdId: r.owner_type === "herd" ? r.herd_id : undefined,
+              herdName: r.owner_type === "herd" ? r.herd_name : undefined,
+            }));
+          return [...restored, ...prev];
+        });
       },
     )
     .catch((err) => console.warn("failed to fetch persistent terminals:", err));

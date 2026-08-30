@@ -16,12 +16,59 @@ import (
 	"shelley.exe.dev/db"
 	"shelley.exe.dev/db/generated"
 	"shelley.exe.dev/llm"
-	"shelley.exe.dev/loop"
+	"shelley.exe.dev/llm/predictable"
 	"shelley.exe.dev/models"
 )
 
+// TestRoundModelReasoningLevel covers only the server-specific policy around
+// the shared clamp; the rounding rules themselves are pinned by
+// llm.TestClampThinkingLevel.
+func TestRoundModelReasoningLevel(t *testing.T) {
+	tests := []struct {
+		name  string
+		model *ModelInfo
+		level string
+		want  string
+		moved bool
+	}{
+		{name: "supported unchanged", model: &ModelInfo{SupportsReasoning: true, ReasoningLevels: []string{"low", "high"}}, level: "high", want: "high"},
+		{name: "off-only model resets non-off", model: &ModelInfo{SupportsReasoning: true, ReasoningLevels: []string{"off"}}, level: "high", want: "", moved: true},
+		{name: "unsupported model resets", model: &ModelInfo{}, level: "high", want: "", moved: true},
+		{name: "unadvertised max resets", model: &ModelInfo{SupportsReasoning: true}, level: "max", want: "", moved: true},
+		{name: "unknown levels keep standard", model: &ModelInfo{SupportsReasoning: true}, level: "xhigh", want: "xhigh"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, moved := roundModelReasoningLevel(tt.model, tt.level)
+			if got != tt.want || moved != tt.moved {
+				t.Fatalf("roundModelReasoningLevel() = (%q, %v), want (%q, %v)", got, moved, tt.want, tt.moved)
+			}
+		})
+	}
+}
+
+func TestModelCommandStatusListsPerModelLevels(t *testing.T) {
+	status := modelCommandStatus("model-a", "", []ModelInfo{
+		{ID: "model-a", Ready: true, SupportsReasoning: true, ReasoningLevels: []string{"off", "high", "max"}},
+		{ID: "model-b", Ready: true, SupportsReasoning: true},
+		{ID: "model-c", Ready: true},
+	})
+	for _, want := range []string{
+		"/model model-a — off, high, max",
+		"/model model-c — no reasoning",
+		"accept off through xhigh",
+	} {
+		if !strings.Contains(status, want) {
+			t.Errorf("status missing %q:\n%s", want, status)
+		}
+	}
+	if strings.Contains(status, "model-b —") {
+		t.Errorf("unknown-level model should have no annotation:\n%s", status)
+	}
+}
+
 // twoModelLLMManager exposes two ready models ("model-a" and "model-b"), both
-// backed by the same PredictableService, so /model switching can be exercised
+// backed by the same predictable.Service, so /model switching can be exercised
 // end-to-end without real providers.
 type twoModelLLMManager struct {
 	service llm.Service
@@ -35,6 +82,10 @@ func (m *twoModelLLMManager) GetService(modelID string) (llm.Service, error) {
 }
 
 func (m *twoModelLLMManager) GetAvailableModels() []string { return []string{"model-a", "model-b"} }
+
+func (m *twoModelLLMManager) GetWorkhorseService(modelID string) (llm.Service, error) {
+	return m.GetService(modelID)
+}
 
 func (m *twoModelLLMManager) HasModel(modelID string) bool {
 	return modelID == "model-a" || modelID == "model-b"
@@ -69,6 +120,10 @@ func (m *levelNamedModelLLMManager) GetAvailableModels() []string {
 	return []string{"model-a", "high"}
 }
 
+func (m *levelNamedModelLLMManager) GetWorkhorseService(modelID string) (llm.Service, error) {
+	return m.GetService(modelID)
+}
+
 func (m *levelNamedModelLLMManager) HasModel(modelID string) bool {
 	return modelID == "model-a" || modelID == "high"
 }
@@ -83,7 +138,7 @@ func newTwoModelTestServer(t *testing.T) (*Server, *db.DB) {
 	t.Helper()
 	database, cleanup := setupTestDB(t)
 	t.Cleanup(cleanup)
-	ps := loop.NewPredictableService()
+	ps := predictable.NewService()
 	svr := NewServer(database, &twoModelLLMManager{service: ps},
 		claudetool.ToolSetConfig{EnableBrowser: false},
 		slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelWarn})),
@@ -343,7 +398,7 @@ func getConvReasoning(t *testing.T, database *db.DB, conversationID string) stri
 func TestModelCommandReasoningOnly(t *testing.T) {
 	t.Parallel()
 	srv, database := newTwoModelTestServer(t)
-	ps := srv.llmManager.(*twoModelLLMManager).service.(*loop.PredictableService)
+	ps := srv.llmManager.(*twoModelLLMManager).service.(*predictable.Service)
 	ctx := context.Background()
 
 	modelA := "model-a"
@@ -514,7 +569,7 @@ func TestModelCommandAmbiguous(t *testing.T) {
 	t.Parallel()
 	database, cleanup := setupTestDB(t)
 	t.Cleanup(cleanup)
-	ps := loop.NewPredictableService()
+	ps := predictable.NewService()
 	srv := NewServer(database, &levelNamedModelLLMManager{service: ps},
 		claudetool.ToolSetConfig{EnableBrowser: false},
 		slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelWarn})),
@@ -960,7 +1015,7 @@ func (s defaultReasoningService) DefaultReasoningLevel() string { return s.level
 func TestChatMessageHookMaterializesDefaultReasoningLevel(t *testing.T) {
 	srv, database := newTwoModelTestServer(t)
 	srv.llmManager = &twoModelLLMManager{service: defaultReasoningService{
-		Service: loop.NewPredictableService(),
+		Service: predictable.NewService(),
 		level:   "medium",
 	}}
 	ctx := context.Background()

@@ -2,14 +2,27 @@ package llmhttp
 
 import (
 	"context"
-	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"shelley.exe.dev/llm"
 )
+
+func requireIdleStall(t *testing.T, err error) llm.RequestErrorInfo {
+	t.Helper()
+	info, ok := llm.RequestErrorInfoFromError(err)
+	if !ok || info.IdleStallDuration <= 0 {
+		t.Fatalf("error = %v, want idle-stall request metadata", err)
+	}
+	if !info.Retryable {
+		t.Fatalf("idle-stall error metadata = %+v, want retryable", info)
+	}
+	return info
+}
 
 func TestContextFunctions(t *testing.T) {
 	ctx := context.Background()
@@ -157,8 +170,9 @@ func TestIdleTimeoutFiresOnStall(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected idle-timeout error reading body, got nil")
 	}
-	if !errors.Is(err, ErrIdleTimeout) {
-		t.Fatalf("error = %v, want errors.Is(err, ErrIdleTimeout)", err)
+	info := requireIdleStall(t, err)
+	if info.IdleStallDuration != 100*time.Millisecond {
+		t.Errorf("idle stall duration = %s, want 100ms", info.IdleStallDuration)
 	}
 	if !strings.Contains(err.Error(), "100ms") {
 		t.Errorf("error %q does not mention the idle timeout duration", err.Error())
@@ -220,15 +234,18 @@ func TestIdleTimeoutFiresBeforeFirstByte(t *testing.T) {
 	resp, err := client.Do(req)
 	if err != nil {
 		// Some stacks deliver the stall as a RoundTrip error instead of a body
-		// read error; either is acceptable as long as it's an idle timeout.
-		if !errors.Is(err, ErrIdleTimeout) {
-			t.Fatalf("Do error = %v, want ErrIdleTimeout", err)
+		// read error; either is acceptable as long as it has idle-stall metadata.
+		info := requireIdleStall(t, err)
+		if info.IdleStallDuration != 100*time.Millisecond {
+			t.Errorf("idle stall duration = %s, want 100ms", info.IdleStallDuration)
 		}
 		return
 	}
 	defer resp.Body.Close()
-	if _, err := io.ReadAll(resp.Body); !errors.Is(err, ErrIdleTimeout) {
-		t.Fatalf("ReadAll error = %v, want ErrIdleTimeout", err)
+	if _, err := io.ReadAll(resp.Body); err != nil {
+		requireIdleStall(t, err)
+	} else {
+		t.Fatal("ReadAll error = nil, want idle-stall request metadata")
 	}
 }
 
@@ -268,7 +285,7 @@ func TestRequestTraceCapturesIDs(t *testing.T) {
 	defer server.Close()
 
 	client := NewClient(nil)
-	ctx, trace := WithRequestTrace(context.Background())
+	ctx, trace := llm.WithRequestTrace(context.Background())
 	req, _ := http.NewRequestWithContext(ctx, "GET", server.URL, nil)
 	resp, err := client.Do(req)
 	if err != nil {
@@ -280,11 +297,11 @@ func TestRequestTraceCapturesIDs(t *testing.T) {
 	if gotShelleyID == "" {
 		t.Fatalf("server did not receive a Shelley-Request-Id header")
 	}
-	if trace.ShelleyRequestID() != gotShelleyID {
-		t.Errorf("trace ShelleyRequestID = %q, want %q", trace.ShelleyRequestID(), gotShelleyID)
+	if trace.Value("shelley_request_id") != gotShelleyID {
+		t.Errorf("trace ShelleyRequestID = %q, want %q", trace.Value("shelley_request_id"), gotShelleyID)
 	}
-	if trace.UpstreamRequestID() != "req_upstream_123" {
-		t.Errorf("trace UpstreamRequestID = %q, want req_upstream_123", trace.UpstreamRequestID())
+	if trace.Value("upstream_request_id") != "req_upstream_123" {
+		t.Errorf("trace UpstreamRequestID = %q, want req_upstream_123", trace.Value("upstream_request_id"))
 	}
 	if s := trace.String(); !strings.Contains(s, gotShelleyID) || !strings.Contains(s, "req_upstream_123") {
 		t.Errorf("trace String = %q, want both ids", s)
@@ -308,17 +325,15 @@ func TestRequestTraceHasShelleyIDOnStall(t *testing.T) {
 	defer close(release)
 
 	client := NewClientWithIdleTimeout(nil, 100*time.Millisecond)
-	ctx, trace := WithRequestTrace(context.Background())
+	ctx, trace := llm.WithRequestTrace(context.Background())
 	req, _ := http.NewRequestWithContext(ctx, "GET", server.URL, nil)
 	resp, err := client.Do(req)
 	if err == nil {
 		_, err = io.ReadAll(resp.Body)
 		resp.Body.Close()
 	}
-	if !errors.Is(err, ErrIdleTimeout) {
-		t.Fatalf("error = %v, want ErrIdleTimeout", err)
-	}
-	if trace.ShelleyRequestID() == "" {
+	requireIdleStall(t, err)
+	if trace.Value("shelley_request_id") == "" {
 		t.Fatalf("trace missing Shelley request id after stall")
 	}
 }
@@ -334,7 +349,7 @@ func TestRequestTraceHonorsExistingID(t *testing.T) {
 	defer server.Close()
 
 	client := NewClient(nil)
-	ctx, trace := WithRequestTrace(context.Background())
+	ctx, trace := llm.WithRequestTrace(context.Background())
 	req, _ := http.NewRequestWithContext(ctx, "GET", server.URL, nil)
 	req.Header.Set("Shelley-Request-Id", "preset-id")
 	resp, err := client.Do(req)
@@ -345,8 +360,8 @@ func TestRequestTraceHonorsExistingID(t *testing.T) {
 	if gotID != "preset-id" {
 		t.Errorf("server got Shelley-Request-Id %q, want preset-id", gotID)
 	}
-	if trace.ShelleyRequestID() != "preset-id" {
-		t.Errorf("trace ShelleyRequestID = %q, want preset-id", trace.ShelleyRequestID())
+	if trace.Value("shelley_request_id") != "preset-id" {
+		t.Errorf("trace ShelleyRequestID = %q, want preset-id", trace.Value("shelley_request_id"))
 	}
 }
 
@@ -362,7 +377,7 @@ func TestRequestTraceCapturesIDOnErrorResponse(t *testing.T) {
 	defer server.Close()
 
 	client := NewClient(nil)
-	ctx, trace := WithRequestTrace(context.Background())
+	ctx, trace := llm.WithRequestTrace(context.Background())
 	req, _ := http.NewRequestWithContext(ctx, "GET", server.URL, nil)
 	resp, err := client.Do(req)
 	if err != nil {
@@ -370,8 +385,8 @@ func TestRequestTraceCapturesIDOnErrorResponse(t *testing.T) {
 	}
 	io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if trace.UpstreamRequestID() != "req_err_500" {
-		t.Errorf("UpstreamRequestID = %q, want req_err_500", trace.UpstreamRequestID())
+	if trace.Value("upstream_request_id") != "req_err_500" {
+		t.Errorf("UpstreamRequestID = %q, want req_err_500", trace.Value("upstream_request_id"))
 	}
 }
 
@@ -386,7 +401,7 @@ func TestRequestTraceCapturesIDWhenIdleDisabled(t *testing.T) {
 	defer server.Close()
 
 	client := NewClientWithIdleTimeout(nil, 0)
-	ctx, trace := WithRequestTrace(context.Background())
+	ctx, trace := llm.WithRequestTrace(context.Background())
 	req, _ := http.NewRequestWithContext(ctx, "GET", server.URL, nil)
 	resp, err := client.Do(req)
 	if err != nil {
@@ -394,7 +409,7 @@ func TestRequestTraceCapturesIDWhenIdleDisabled(t *testing.T) {
 	}
 	io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if trace.UpstreamRequestID() != "req_nodeadline" {
-		t.Errorf("UpstreamRequestID = %q, want req_nodeadline", trace.UpstreamRequestID())
+	if trace.Value("upstream_request_id") != "req_nodeadline" {
+		t.Errorf("UpstreamRequestID = %q, want req_nodeadline", trace.Value("upstream_request_id"))
 	}
 }

@@ -286,9 +286,6 @@ WHERE conversation_id = ?;
 -- name: CountConversations :one
 SELECT COUNT(*) FROM conversations WHERE archived = FALSE AND parent_conversation_id IS NULL;
 
--- name: CountArchivedConversations :one
-SELECT COUNT(*) FROM conversations WHERE archived = TRUE;
-
 -- name: ArchiveConversation :one
 UPDATE conversations
 SET archived = TRUE
@@ -431,6 +428,14 @@ WHERE conversation_id = ?;
 UPDATE conversations
 SET agent_working = FALSE
 WHERE agent_working = TRUE;
+
+-- name: ListAgentWorkingConversationIDs :many
+-- Conversations left with agent_working = TRUE by the previous process. Used
+-- on the resume-after-upgrade path (see DB.ConsumeResumeAfterUpgrade) to find
+-- the turns that were interrupted by the upgrade restart.
+SELECT conversation_id FROM conversations
+WHERE agent_working = TRUE
+ORDER BY updated_at DESC;
 
 -- name: SearchConversationsFTSSnippets :many
 -- Best snippet per message for the given conversation IDs, ordered by

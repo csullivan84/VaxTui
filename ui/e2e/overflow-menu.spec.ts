@@ -47,6 +47,10 @@ test.describe("Overflow menu (PrimeVue)", () => {
     const popover = page.locator(".chat-overflow-popover");
     await expect(popover).toBeVisible();
 
+    // Screen reader first, then command palette (long menus used to clip SR).
+    await expect(popover.getByTestId("screen-reader-mode-section")).toBeVisible();
+    await expect(popover.getByText("Command menu")).toBeVisible();
+
     // --- Compact controls: view, theme cycle, notifications ---
     await expect(popover.locator(".overflow-quick-control")).toHaveCount(3);
     await expect(popover.getByText("Brevity", { exact: true })).toBeVisible();

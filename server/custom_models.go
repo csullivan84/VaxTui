@@ -96,10 +96,10 @@ func validReasoningMap(raw string) error {
 	if err := json.Unmarshal([]byte(raw), &values); err != nil {
 		return fmt.Errorf("reasoning_map must be a JSON object: %w", err)
 	}
-	valid := map[string]bool{"off": true, "minimal": true, "low": true, "medium": true, "high": true, "xhigh": true}
+	valid := map[string]bool{"off": true, "minimal": true, "low": true, "medium": true, "high": true, "xhigh": true, "max": true}
 	for from, to := range values {
 		if !valid[from] || strings.TrimSpace(to) == "" {
-			return fmt.Errorf("reasoning_map keys must use off, minimal, low, medium, high, or xhigh and values must be non-empty; got %q: %q", from, to)
+			return fmt.Errorf("reasoning_map keys must use off, minimal, low, medium, high, xhigh, or max and values must be non-empty; got %q: %q", from, to)
 		}
 	}
 	return nil
@@ -500,14 +500,13 @@ func (s *Server) handleTestModel(w http.ResponseWriter, r *http.Request) {
 			ModelURL:        req.Endpoint,
 			ReasoningEffort: reasoningEffort,
 			Model: oai.Model{
-				UserName:           "",
-				ModelName:          req.ModelName,
-				TextVerbosity:      "",
-				URL:                req.Endpoint,
-				APIKeyEnv:          "",
-				IsReasoningModel:   false,
-				UseSimplifiedPatch: false,
-				SupportsImages:     true,
+				UserName:         "",
+				ModelName:        req.ModelName,
+				TextVerbosity:    "",
+				URL:              req.Endpoint,
+				APIKeyEnv:        "",
+				IsReasoningModel: false,
+				SupportsImages:   true,
 			},
 		}
 	case "gemini":
@@ -521,14 +520,13 @@ func (s *Server) handleTestModel(w http.ResponseWriter, r *http.Request) {
 		service = &oai.ResponsesService{
 			APIKey: req.APIKey,
 			Model: oai.Model{
-				UserName:           "",
-				ModelName:          req.ModelName,
-				TextVerbosity:      "",
-				URL:                req.Endpoint,
-				APIKeyEnv:          "",
-				IsReasoningModel:   false,
-				UseSimplifiedPatch: false,
-				SupportsImages:     true,
+				UserName:         "",
+				ModelName:        req.ModelName,
+				TextVerbosity:    "",
+				URL:              req.Endpoint,
+				APIKeyEnv:        "",
+				IsReasoningModel: false,
+				SupportsImages:   true,
 			},
 			// Match createServiceFromModel so Test reflects real runtime behavior:
 			// medium is the default when no explicit override is given.

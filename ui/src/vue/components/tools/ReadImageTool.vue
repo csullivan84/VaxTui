@@ -26,12 +26,8 @@
           >🖼️</span
         >
         <span class="screenshot-tool-filename" :title="filename">{{ filename }}</span>
-        <span v-if="isComplete && hasError" class="screenshot-tool-error">
-          <span aria-hidden="true">✗</span><span class="sr-only">failed</span>
-        </span>
-        <span v-if="isComplete && !hasError" class="screenshot-tool-success">
-          <span aria-hidden="true">✓</span><span class="sr-only">succeeded</span>
-        </span>
+        <ToolStatusIcon v-if="isComplete && hasError" state="error" class="screenshot-tool-error" />
+        <ToolStatusIcon v-if="isComplete && !hasError" state="ok" class="screenshot-tool-success" />
       </div>
       <button
         type="button"
@@ -41,24 +37,7 @@
         :aria-expanded="isExpanded"
         @click.stop="isExpanded = !isExpanded"
       >
-        <svg
-          width="12"
-          height="12"
-          viewBox="0 0 12 12"
-          fill="none"
-          xmlns="http://www.w3.org/2000/svg"
-          class="tool-chevron"
-          :class="{ 'tool-chevron-expanded': isExpanded }"
-          aria-hidden="true"
-        >
-          <path
-            d="M4.5 3L7.5 6L4.5 9"
-            stroke="currentColor"
-            stroke-width="1.5"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-          />
-        </svg>
+        <ToolChevron :expanded="isExpanded" />
       </button>
     </div>
 
@@ -110,6 +89,8 @@ import type { LLMContent } from "../../../types";
 import ToolAccessibleBody from "./ToolAccessibleBody.vue";
 import CommentableImage from "../CommentableImage.vue";
 import { displayNeedsAutoOrient, displaySourceSize } from "../../../utils/imageComment";
+import ToolChevron from "./ToolChevron.vue";
+import ToolStatusIcon from "./ToolStatusIcon.vue";
 
 const props = defineProps<{
   toolInput?: unknown;

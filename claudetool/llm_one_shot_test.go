@@ -53,6 +53,10 @@ func (p *oneShotMockProvider) GetService(modelID string) (llm.Service, error) {
 	return svc, nil
 }
 
+func (p *oneShotMockProvider) GetWorkhorseService(modelID string) (llm.Service, error) {
+	return p.GetService(modelID)
+}
+
 func (p *oneShotMockProvider) GetAvailableModels() []string {
 	var models []string
 	for id := range p.services {

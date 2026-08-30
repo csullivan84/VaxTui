@@ -85,6 +85,9 @@ let liveOutputTimer: ReturnType<typeof setTimeout> | null = null;
 let liveOutputWindow: TerminalLiveOutputWindow | null = null;
 let liveOutputPaused = true;
 let liveOutputCapped = false;
+// settled is set once the server reported a definitive outcome (exit or
+// error) for this session, so a later socket close is not mistaken for one.
+let settled = false;
 
 function liveOutputPauseSeconds() {
   return TERMINAL_LIVE_OUTPUT_LIMIT_MS / 1000;
@@ -336,19 +339,23 @@ onMounted(() => {
   scheduleMirrorRefresh(xterm);
 
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  // Reattach and spawn are deliberately separate. Sending a command with a
-  // persistent session id would let a stale tab resurrect a terminal that the
-  // user explicitly closed.
+  // If we already have a persistent session id, reattach to it and nothing
+  // else: sending cmd as well would let the server silently rerun the command
+  // when the session has died. Otherwise spawn a new one with cmd+cwd.
+  //
+  // conversation_id comes from the terminal itself, not from whatever
+  // conversation happens to be selected right now, so navigating while this
+  // component mounts cannot record the wrong owner.
   const params = new URLSearchParams();
   if (props.term.termId) {
     params.set("term_id", props.term.termId);
   } else {
     params.set("cmd", props.term.command);
     params.set("cwd", props.term.cwd);
+    if (props.term.conversationId) params.set("conversation_id", props.term.conversationId);
+    if (props.workspaceId) params.set("workspace_id", props.workspaceId);
+    if (props.model) params.set("model", props.model);
   }
-  if (props.conversationId) params.set("conversation_id", props.conversationId);
-  if (props.workspaceId) params.set("workspace_id", props.workspaceId);
-  if (props.model) params.set("model", props.model);
   const wsUrl = `${protocol}//${window.location.host}/api/exec-ws?${params.toString()}`;
   ws = new WebSocket(wsUrl);
   const socket = ws;
@@ -374,10 +381,12 @@ onMounted(() => {
           `\r\n\x1b[2;${color}m${props.term.command} completed with exit code ${code}\x1b[0m\r\n`,
         );
         scheduleMirrorRefresh(xterm);
+        settled = true;
         emit("status-change", props.term.id, "exited", code);
       } else if (msg.type === "error") {
         xterm.write(`\r\n\x1b[31mError: ${msg.data}\x1b[0m\r\n`);
         scheduleMirrorRefresh(xterm);
+        settled = true;
         emit("status-change", props.term.id, "error", null);
       }
     } catch (err) {
@@ -387,6 +396,10 @@ onMounted(() => {
 
   socket.onerror = (event) => console.error("WebSocket error:", event);
   socket.onclose = () => {
+    // An explicit exit or error already told us how this terminal finished;
+    // the socket closing afterwards must not overwrite that with a bare
+    // "exited" and no exit code.
+    if (settled) return;
     emit("status-change", props.term.id, "exited", null);
   };
 

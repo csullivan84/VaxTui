@@ -8,7 +8,9 @@
 
     - <Popover>     the dropdown surface (dismiss-on-outside-click + Esc + focus
                     trap come for free, so we delete the manual handlers)
-    - <SelectButton> the theme / notifications / screen-reader segmented toggles
+    - <SelectButton> the screen-reader segmented toggle
+    - Native icon groups / cycle buttons for compact view, theme, notifications
+    - Command palette action
     - <Select>      the language picker
 
   The e2e DOM/ARIA contract is preserved so the shared Playwright specs keep
@@ -35,14 +37,7 @@
       :aria-expanded="open"
       @click="toggle"
     >
-      <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          :stroke-width="2"
-          d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z"
-        />
-      </svg>
+      <OverflowDotsIcon />
       <span v-if="hasUpdate" class="version-update-dot" />
     </Button>
 
@@ -69,6 +64,27 @@
         />
       </div>
 
+      <!-- Command palette (search everything / quick actions) -->
+      <button class="overflow-menu-item" @click="onCommandPalette">
+        <svg
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          viewBox="0 0 24 24"
+          class="chat-menu-icon"
+          aria-hidden="true"
+        >
+          <path
+            d="M7 9a2 2 0 1 1 2 -2v10a2 2 0 1 1 -2 -2h10a2 2 0 1 1 -2 2v-10a2 2 0 1 1 2 2h-10"
+          />
+        </svg>
+        {{ t("commandMenu") }}
+        <span class="overflow-menu-shortcut"
+          ><kbd>{{ menuShortcutLabel("commandPalette") }}</kbd></span
+        >
+      </button>
       <div class="overflow-menu-divider" />
 
       <!-- Conversation / workspace actions -->
@@ -345,6 +361,8 @@ import { computed, ref } from "vue";
 import Popover from "primevue/popover";
 import Button from "primevue/button";
 import Select from "primevue/select";
+import SelectButton from "primevue/selectbutton";
+import OverflowDotsIcon from "./OverflowDotsIcon.vue";
 import type { Link } from "../../types";
 import type { Locale } from "../../i18n/types";
 import { useI18n } from "../composables/i18n";
@@ -369,6 +387,7 @@ defineProps<{
 }>();
 
 const emit = defineEmits<{
+  (e: "open-command-palette"): void;
   (e: "open-diffs"): void;
   (e: "open-git-graph"): void;
   (e: "open-terminal"): void;
@@ -414,6 +433,7 @@ function hide() {
 // Each action emits its event, then closes the Popover. Kept as explicit
 // one-liners (rather than a union-typed helper) so defineEmits' per-event
 // overloads type-check cleanly.
+const onCommandPalette = () => (emit("open-command-palette"), hide());
 const onDiffs = () => (emit("open-diffs"), hide());
 const onGitGraph = () => (emit("open-git-graph"), hide());
 const onTerminal = () => (emit("open-terminal"), hide());

@@ -294,6 +294,7 @@
                   command: selectedMember.command || selectedMember.recipe.command || 'bash',
                   cwd: selectedMember.cwd || selectedMember.recipe.cwd || '',
                   createdAt: new Date(),
+                  conversationId: selectedMember.conversation_id ?? null,
                   termId: focusedTermId,
                 }"
                 :is-visible="true"

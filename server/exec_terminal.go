@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/coder/websocket"
@@ -15,7 +16,6 @@ import (
 
 	"shelley.exe.dev/claudetool"
 	"shelley.exe.dev/db/generated"
-	"shelley.exe.dev/dtach"
 )
 
 // ExecMessage is the message format for terminal websocket communication.
@@ -29,9 +29,9 @@ type ExecMessage struct {
 	TermID string `json:"term_id,omitempty"`
 }
 
-// handleExecWS handles websocket connections that proxy to a persistent dtach
-// session. Sessions are created on first attach with cmd= and persisted on
-// disk so they survive page reloads and shelley restarts.
+// handleExecWS handles websocket connections that proxy to a persistent
+// terminal session. New sessions use exe-scroll; legacy dtach sessions remain
+// attachable.
 //
 // Query params:
 //   - term_id: existing session id to re-attach to (preferred)
@@ -100,7 +100,7 @@ func (s *Server) handleExecWS(w http.ResponseWriter, r *http.Request) {
 			cwd = workspace.Path
 		}
 	}
-	sess, dc, err := s.attachOrSpawn(termID, cmd, cwd, cols, rows, extraEnv, workspaceID)
+	sess, dc, err := s.attachOrSpawn(termID, cmd, cwd, conversationID, cols, rows, extraEnv, workspaceID)
 	if err != nil {
 		wsjson.Write(ctx, conn, ExecMessage{Type: "error", Data: err.Error()})
 		conn.Close(websocket.StatusInternalError, "attach failed")
@@ -134,77 +134,78 @@ func buildTerminalEnv(conversationID, slug, model, userEmail, cwd string, listen
 	}.Environ(cwd)
 }
 
-func (s *Server) attachOrSpawn(termID, cmd, cwd string, cols, rows uint16, extraEnv []string, workspaceID string) (*TerminalSession, *dtach.Client, error) {
+// attachOrSpawn attaches to an existing session or spawns a new one.
+//
+// A term_id means "attach to this session and nothing else": if the record is
+// gone or the socket is dead, that is an error. Re-running the original command
+// behind the user's back would silently restart work they believe has finished.
+// Spawning is only reached when the caller supplied no term_id at all.
+//
+// conversationID is the conversation owner recorded for newly spawned sessions.
+// workspaceID is the workspace owner. Reattaching never changes ownership.
+func (s *Server) attachOrSpawn(termID, cmd, cwd, conversationID string, cols, rows uint16, extraEnv []string, workspaceID string) (*TerminalSession, terminalClient, error) {
 	unlock := s.terminals.LockAttach()
 	defer unlock()
 	if termID != "" {
-		if sess := s.terminals.Get(termID); sess != nil {
-			dc, err := dtach.Attach(sess.Socket)
-			if err == nil {
-				return sess, dc, nil
-			}
-			// Reattachment is strict. A stale terminal ID must never restart its
-			// command implicitly; callers that want a new process use the explicit
-			// spawn path without term_id.
+		sess := s.terminals.Get(termID)
+		if sess == nil {
+			return nil, nil, fmt.Errorf("unknown terminal id %s", termID)
+		}
+		client, err := s.terminals.Attach(sess, cols, rows)
+		if err != nil {
+			// Stale record: the session is gone for good.
 			s.terminals.Forget(termID)
 			return nil, nil, fmt.Errorf("terminal %s no longer running", termID)
 		}
-		return nil, nil, fmt.Errorf("unknown terminal id %s", termID)
+		return sess, client, nil
 	}
-	return s.terminals.SpawnForWorkspace(workspaceID, cmd, cwd, cols, rows, extraEnv)
+	return s.terminals.Spawn(cmd, cwd, conversationID, workspaceID, cols, rows, extraEnv)
 }
 
-// bridgeWS shuttles bytes between the browser websocket and the dtach client.
-func (s *Server) bridgeWS(ctx context.Context, conn *websocket.Conn, dc *dtach.Client, termID string) {
+// bridgeWS shuttles bytes between the browser websocket and a terminal session.
+func (s *Server) bridgeWS(ctx context.Context, conn *websocket.Conn, client terminalClient, termID string) {
 	var exited bool
 
-	// dtach -> websocket. When this goroutine returns, close the websocket so
-	// the reader unblocks.
-	dtachDone := make(chan struct{})
+	terminalDone := make(chan struct{})
 	go func() {
-		defer close(dtachDone)
+		defer close(terminalDone)
 		for {
-			t, payload, err := dc.Recv()
+			message, err := client.Recv()
 			if err != nil {
-				if !errors.Is(err, io.EOF) {
-					s.logger.Debug("dtach recv error", "error", err)
+				if !errors.Is(err, io.EOF) && !errors.Is(err, os.ErrClosed) {
+					s.logger.Debug("terminal recv error", "error", err)
 				}
 				return
 			}
-			switch t {
-			case dtach.MsgSnapshot, dtach.MsgOutput:
-				if len(payload) == 0 {
+			switch message.kind {
+			case terminalOutput:
+				if len(message.data) == 0 {
 					continue
 				}
 				if err := wsjson.Write(ctx, conn, ExecMessage{
 					Type: "output",
-					Data: base64.StdEncoding.EncodeToString(payload),
+					Data: base64.StdEncoding.EncodeToString(message.data),
 				}); err != nil {
 					return
 				}
-			case dtach.MsgExit:
-				code, _ := dtach.DecodeExit(payload)
+			case terminalExit:
 				exited = true
-				_ = wsjson.Write(ctx, conn, ExecMessage{Type: "exit", Data: fmt.Sprintf("%d", code)})
+				_ = wsjson.Write(ctx, conn, ExecMessage{Type: "exit", Data: fmt.Sprintf("%d", message.exitCode)})
 				return
 			}
 		}
 	}()
 
-	// When the dtach side ends, close the ws to unblock Read below.
 	go func() {
-		<-dtachDone
+		<-terminalDone
 		if exited {
 			s.terminals.Forget(termID)
 			conn.Close(websocket.StatusNormalClosure, "process exited")
 		} else {
-			// Detach: socket dropped but session may still be running. We don't
-			// kill it; the browser can reconnect later by term_id.
 			conn.Close(websocket.StatusGoingAway, "detached")
 		}
 	}()
 
-	// websocket -> dtach
 	for {
 		var msg ExecMessage
 		if err := wsjson.Read(ctx, conn, &msg); err != nil {
@@ -215,31 +216,15 @@ func (s *Server) bridgeWS(ctx context.Context, conn *websocket.Conn, dc *dtach.C
 			if msg.Data == "" {
 				continue
 			}
-			if err := dc.SendInput([]byte(msg.Data)); err != nil {
+			if err := client.SendInput([]byte(msg.Data)); err != nil {
 				return
 			}
 		case "resize":
 			if msg.Cols > 0 && msg.Rows > 0 {
-				_ = dc.SendResize(msg.Cols, msg.Rows)
+				_ = client.SendResize(msg.Cols, msg.Rows)
 			}
 		}
 	}
-}
-
-// handleTerminalsList responds with the current set of persistent terminals.
-func (s *Server) handleTerminalsList(w http.ResponseWriter, r *http.Request) {
-	owners, err := s.terminalOwners(r.Context())
-	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "list_terminal_owners_failed", err.Error(), nil)
-		return
-	}
-	list := s.terminals.List()
-	out := make([]terminalDTO, 0, len(list))
-	for _, t := range list {
-		out = append(out, makeTerminalDTO(t, owners[t.ID]))
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(out)
 }
 
 type terminalOwner struct {
@@ -247,15 +232,19 @@ type terminalOwner struct {
 	HerdName string
 }
 
+// terminalDTO is the wire representation of a terminal. ConversationID is a
+// pointer so a global terminal serializes as null rather than "": this is the
+// only place the on-disk empty string is turned into the API's null.
 type terminalDTO struct {
-	ID          string `json:"id"`
-	Command     string `json:"command"`
-	Cwd         string `json:"cwd"`
-	CreatedAt   string `json:"created_at"`
-	OwnerType   string `json:"owner_type"`
-	WorkspaceID string `json:"workspace_id,omitempty"`
-	HerdID      string `json:"herd_id,omitempty"`
-	HerdName    string `json:"herd_name,omitempty"`
+	ID             string  `json:"id"`
+	Command        string  `json:"command"`
+	Cwd            string  `json:"cwd"`
+	CreatedAt      string  `json:"created_at"`
+	OwnerType      string  `json:"owner_type"`
+	WorkspaceID    string  `json:"workspace_id,omitempty"`
+	HerdID         string  `json:"herd_id,omitempty"`
+	HerdName       string  `json:"herd_name,omitempty"`
+	ConversationID *string `json:"conversation_id"`
 }
 
 // terminalOwners returns the herd assignment for each live terminal. Workspace
@@ -297,16 +286,106 @@ func makeTerminalDTO(t *TerminalSession, owner terminalOwner) terminalDTO {
 	} else if t.WorkspaceID == "" {
 		ownerType = "unowned"
 	}
-	return terminalDTO{
-		ID:          t.ID,
-		Command:     t.Command,
-		Cwd:         t.Cwd,
-		CreatedAt:   t.CreatedAt.UTC().Format(time.RFC3339),
-		OwnerType:   ownerType,
-		WorkspaceID: t.WorkspaceID,
-		HerdID:      owner.HerdID,
-		HerdName:    owner.HerdName,
+	var convID *string
+	if t.ConversationID != "" {
+		id := t.ConversationID
+		convID = &id
 	}
+	return terminalDTO{
+		ID:             t.ID,
+		Command:        t.Command,
+		Cwd:            t.Cwd,
+		CreatedAt:      t.CreatedAt.UTC().Format(time.RFC3339),
+		OwnerType:      ownerType,
+		WorkspaceID:    t.WorkspaceID,
+		HerdID:         owner.HerdID,
+		HerdName:       owner.HerdName,
+		ConversationID: convID,
+	}
+}
+
+// handleTerminalsList responds with the current set of persistent terminals.
+// The list is deliberately unfiltered: the client holds one canonical terminal
+// collection and decides per conversation what to show.
+func (s *Server) handleTerminalsList(w http.ResponseWriter, r *http.Request) {
+	owners, err := s.terminalOwners(r.Context())
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "list_terminal_owners_failed", err.Error(), nil)
+		return
+	}
+	list := s.terminals.List()
+	out := make([]terminalDTO, 0, len(list))
+	for _, t := range list {
+		out = append(out, makeTerminalDTO(t, owners[t.ID]))
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(out)
+}
+
+// handleTerminalScope handles PUT /api/terminals/{id}/scope, moving a terminal
+// between conversation-local and global.
+//
+// Body is {"conversation_id": "<id>"} for local or {"conversation_id": null}
+// for global. null is the only accepted spelling of global: an absent field or
+// an empty string is rejected so a malformed client cannot quietly publish a
+// terminal to every conversation.
+func (s *Server) handleTerminalScope(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		http.Error(w, "missing id", http.StatusBadRequest)
+		return
+	}
+	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<16))
+	if err != nil {
+		http.Error(w, "cannot read body", http.StatusBadRequest)
+		return
+	}
+	// An absent conversation_id and an explicit null both decode to a nil
+	// pointer, so check for the key textually before trusting the pointer.
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		http.Error(w, "malformed JSON body", http.StatusBadRequest)
+		return
+	}
+	if _, ok := raw["conversation_id"]; !ok {
+		http.Error(w, "conversation_id is required (use null for a global terminal)", http.StatusBadRequest)
+		return
+	}
+	var body struct {
+		ConversationID *string `json:"conversation_id"`
+	}
+	if err := json.Unmarshal(data, &body); err != nil {
+		http.Error(w, "malformed JSON body", http.StatusBadRequest)
+		return
+	}
+	conversationID := ""
+	if body.ConversationID != nil {
+		conversationID = *body.ConversationID
+		if conversationID == "" {
+			http.Error(w, "conversation_id must be a conversation id or null", http.StatusBadRequest)
+			return
+		}
+		if _, err := s.db.GetConversationByID(r.Context(), conversationID); err != nil {
+			http.Error(w, "unknown conversation", http.StatusNotFound)
+			return
+		}
+	}
+	sess, err := s.terminals.SetConversationID(id, conversationID)
+	if errors.Is(err, ErrNoSuchTerminal) {
+		http.Error(w, "unknown terminal", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		s.logger.Error("failed to update terminal scope", "id", id, "error", err)
+		http.Error(w, "failed to update terminal scope", http.StatusInternalServerError)
+		return
+	}
+	owner := terminalOwner{}
+	if owners, ownerErr := s.terminalOwners(r.Context()); ownerErr == nil {
+		owner = owners[sess.ID]
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(makeTerminalDTO(sess, owner))
 }
 
 // handleTerminalDelete kills a session and removes its on-disk record.

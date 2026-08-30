@@ -9,12 +9,10 @@ import (
 	"sync"
 	"testing"
 
-	"shelley.exe.dev/claudetool"
 	"shelley.exe.dev/db"
 	"shelley.exe.dev/db/generated"
 	"shelley.exe.dev/llm"
-	"shelley.exe.dev/llm/llmhttp"
-	"shelley.exe.dev/loop"
+	"shelley.exe.dev/llm/predictable"
 )
 
 // predictableBuilt returns a Built entry for the predictable test model.
@@ -24,7 +22,7 @@ func predictableBuilt() Built {
 		ID:       "predictable",
 		Provider: ProviderBuiltIn,
 		Source:   "test",
-		Service:  loop.NewPredictableService(),
+		Service:  predictable.NewService(),
 	}
 }
 
@@ -47,7 +45,7 @@ func TestAll(t *testing.T) {
 }
 
 func TestDeepSeekV4ProviderCapabilityDescriptions(t *testing.T) {
-	for _, id := range []string{"deepseek-v4-flash-fireworks", "deepseek-v4-pro-fireworks"} {
+	for _, id := range []string{"deepseek-v4-flash-0731-fireworks", "deepseek-v4-pro-fireworks"} {
 		model := ByID(id)
 		if model == nil {
 			t.Fatalf("model %q missing", id)
@@ -74,7 +72,6 @@ func TestByID(t *testing.T) {
 		{id: "deepseek-v4-flash", wantNil: true},
 		{id: "deepseek-v4-pro", wantNil: true},
 		{id: "deepseek-v4-pro-fireworks", wantID: "deepseek-v4-pro-fireworks"},
-		{id: "gpt-oss-20b-fireworks", wantID: "gpt-oss-20b-fireworks"},
 		{id: "gpt-5.3-codex", wantID: "gpt-5.3-codex"},
 		{id: "claude-opus-5", wantID: "claude-opus-5"},
 		{id: "claude-sonnet-5", wantID: "claude-sonnet-5"},
@@ -222,7 +219,7 @@ func TestLoggingServiceUsageCollector(t *testing.T) {
 		modelID: "test-model",
 	}
 	req := &llm.Request{Messages: []llm.Message{llm.UserStringMessage("hi")}}
-	ctxWithCollector := llmhttp.WithUsageCollector(context.Background(), func(purpose string, usage llm.Usage) {
+	ctxWithCollector := llm.WithUsageCollector(context.Background(), func(purpose string, usage llm.Usage) {
 		got = append(got, collected{purpose, usage})
 	})
 
@@ -235,7 +232,7 @@ func TestLoggingServiceUsageCollector(t *testing.T) {
 	}
 
 	// Purpose tag: collected, model falls back to modelID (mock leaves Model empty).
-	ctx := llmhttp.WithPurpose(ctxWithCollector, "keyword_search")
+	ctx := llm.WithPurpose(ctxWithCollector, "keyword_search")
 	if _, err := svc.Do(ctx, req); err != nil {
 		t.Fatal(err)
 	}
@@ -261,7 +258,7 @@ func TestLoggingServiceUsageCollector(t *testing.T) {
 
 	// Purpose tag but no collector in ctx: no panic, nothing collected.
 	svc.service = &mockLLMService{}
-	if _, err := svc.Do(llmhttp.WithPurpose(context.Background(), "keyword_search"), req); err != nil {
+	if _, err := svc.Do(llm.WithPurpose(context.Background(), "keyword_search"), req); err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 1 {
@@ -280,7 +277,6 @@ func (z *zeroUsageLLMService) Do(ctx context.Context, request *llm.Request) (*ll
 type mockLLMService struct {
 	tokenContextWindow int
 	maxImageDimension  int
-	useSimplifiedPatch bool
 }
 
 func (m *mockLLMService) Do(ctx context.Context, request *llm.Request) (*llm.Response, error) {
@@ -306,8 +302,7 @@ func (m *mockLLMService) MaxImageDimension() int {
 	return m.maxImageDimension
 }
 
-func (m *mockLLMService) MaxImageBytes() int       { return 5 * 1024 * 1024 }
-func (m *mockLLMService) UseSimplifiedPatch() bool { return m.useSimplifiedPatch }
+func (m *mockLLMService) MaxImageBytes() int { return 5 * 1024 * 1024 }
 
 func TestManagerGetService(t *testing.T) {
 	mgr, err := NewManager(&Config{Models: []Built{predictableBuilt()}})
@@ -349,25 +344,6 @@ func TestModelBuildSignature(t *testing.T) {
 		}
 	}
 }
-
-func TestUseSimplifiedPatch(t *testing.T) {
-	logger := slog.Default()
-	plain := &loggingService{service: &mockLLMService{}, logger: logger, modelID: "t1", provider: ProviderBuiltIn}
-	if plain.UseSimplifiedPatch() {
-		t.Error("plain mock should not implement SimplifiedPatcher")
-	}
-	with := &loggingService{service: &mockSimplifiedLLMService{useSimplified: true}, logger: logger, modelID: "t2", provider: ProviderBuiltIn}
-	if !with.UseSimplifiedPatch() {
-		t.Error("simplified mock should return true")
-	}
-}
-
-type mockSimplifiedLLMService struct {
-	mockLLMService
-	useSimplified bool
-}
-
-func (m *mockSimplifiedLLMService) UseSimplifiedPatch() bool { return m.useSimplified }
 
 func TestRefreshCustomModelsConcurrent(t *testing.T) {
 	testDB, err := db.New(db.Config{DSN: t.TempDir() + "/test.db"})
@@ -489,26 +465,14 @@ func TestRefreshBuiltModelsReplacesBuiltModelsAndPreservesCustomModels(t *testin
 	}
 }
 
-func TestPreferredToolModelsAreRegistered(t *testing.T) {
-	known := map[string]bool{}
-	for _, m := range All() {
-		known[m.ID] = true
-	}
-	for _, id := range claudetool.PreferredToolModels {
-		if !known[id] {
-			t.Errorf("PreferredToolModels contains %q which is not registered in models.All()", id)
-		}
-	}
-}
-
 func (m *mockLLMService) SupportsImages() bool { return true }
 
 func TestReasoningServiceMapping(t *testing.T) {
 	inner := &captureThinkingService{}
-	svc := WrapReasoningConfig(inner, "", "unknown", "yes", `{"off":"off","minimal":"low","medium":"high"}`)
+	svc := WrapReasoningConfig(inner, "", "unknown", "yes", `{"off":"off","minimal":"low","medium":"high","max":"max"}`)
 
 	levels := llm.SupportedReasoningLevels(svc)
-	if got := []string{levels[0].Name(), levels[1].Name(), levels[2].Name()}; !reflect.DeepEqual(got, []string{"off", "minimal", "medium"}) {
+	if got := []string{levels[0].Name(), levels[1].Name(), levels[2].Name(), levels[3].Name()}; !reflect.DeepEqual(got, []string{"off", "minimal", "medium", "max"}) {
 		t.Fatalf("levels = %v", got)
 	}
 	if _, err := svc.Do(context.Background(), &llm.Request{ThinkingLevel: llm.ThinkingLevelMinimal}); err != nil {
@@ -516,6 +480,20 @@ func TestReasoningServiceMapping(t *testing.T) {
 	}
 	if inner.got != llm.ThinkingLevelLow {
 		t.Fatalf("mapped level = %s, want low", inner.got.Name())
+	}
+	if _, err := svc.Do(context.Background(), &llm.Request{ThinkingLevel: llm.ThinkingLevelMax}); err != nil {
+		t.Fatal(err)
+	}
+	if inner.got != llm.ThinkingLevelMax {
+		t.Fatalf("mapped level = %s, want max", inner.got.Name())
+	}
+}
+
+func TestReasoningServiceDelegatesLevelsWithoutMap(t *testing.T) {
+	inner := &advertisedReasoningService{levels: []llm.ThinkingLevel{llm.ThinkingLevelOff, llm.ThinkingLevelHigh, llm.ThinkingLevelMax}}
+	svc := WrapReasoningConfig(inner, "", "unknown", "yes", "")
+	if got := llm.SupportedReasoningLevels(svc); !reflect.DeepEqual(got, inner.levels) {
+		t.Fatalf("levels = %v, want %v", got, inner.levels)
 	}
 }
 
@@ -531,6 +509,16 @@ func TestReasoningServiceDisabled(t *testing.T) {
 	if inner.got != llm.ThinkingLevelOff {
 		t.Fatalf("level = %s, want off", inner.got.Name())
 	}
+}
+
+type advertisedReasoningService struct {
+	captureThinkingService
+	levels []llm.ThinkingLevel
+}
+
+func (s *advertisedReasoningService) SupportsReasoning() bool { return true }
+func (s *advertisedReasoningService) SupportedReasoningLevels() []llm.ThinkingLevel {
+	return s.levels
 }
 
 type captureThinkingService struct {
