@@ -22,6 +22,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { highlightCode, normalizeCodeLanguage } from "../../services/markdownHighlight";
 import { applyHighlightTokens } from "../../utils/codeHighlight";
 import { COMMENT_ICON } from "../../utils/icons";
+import { localhostLinkOptionsFromInit } from "../../utils/linkify";
 import { renderMarkdownToSafeHTML } from "../../utils/markdownRender";
 import { announceA11y } from "../../services/a11yAnnouncer";
 import { perfWrap } from "../../utils/perf";
@@ -48,6 +49,8 @@ const props = defineProps<{
   // message with several text blocks split by tool calls). Required
   // whenever cacheOwner is set.
   runKey?: string;
+  // Rewrite VM-local links for user-clickable assistant content only.
+  rewriteLocalhostLinks?: boolean;
 }>();
 
 const containerRef = ref<HTMLDivElement | null>(null);
@@ -69,8 +72,14 @@ const html = computed(
       props.text,
       props.messageId,
       props.cacheOwner && props.runKey !== undefined
-        ? { owner: props.cacheOwner, runKey: props.runKey }
+        ? {
+            owner: props.cacheOwner,
+            runKey: props.rewriteLocalhostLinks
+              ? `${props.runKey}:rewrite-localhost-links`
+              : props.runKey,
+          }
         : undefined,
+      props.rewriteLocalhostLinks ? localhostLinkOptionsFromInit() : undefined,
     ),
   ),
 );

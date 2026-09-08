@@ -12,6 +12,10 @@ import {
 export interface CoalescedItem {
   type: "message" | "tool";
   generation: number;
+  /** Sequence position represented by this visible transcript item. */
+  sourceSequenceID: number;
+  /** Stable identity for inserting transcript-adjacent UI. */
+  anchorKey: string;
   // carried marks an item copied verbatim from the previous generation by a
   // compaction. The UI collapses these behind a single band.
   carried?: boolean;
@@ -110,12 +114,12 @@ export function coalesceMessages(messages: Message[]): CoalescedItem[] {
     if (message.type === "slug") return;
     if (message.type === "system") {
       if (!isDistillStatusMessage(message)) return;
-      items.push({ type: "message", generation: message.generation, carried, message });
+      items.push(messageItem(message, carried));
       return;
     }
 
     if (message.type === "error" || message.type === "warning" || message.type === "modelchange") {
-      items.push({ type: "message", generation: message.generation, carried, message });
+      items.push(messageItem(message, carried));
       return;
     }
 
@@ -133,7 +137,7 @@ export function coalesceMessages(messages: Message[]): CoalescedItem[] {
     }
 
     if (message.type === "user" && !hasToolResult) {
-      items.push({ type: "message", generation: message.generation, carried, message });
+      items.push(messageItem(message, carried));
       return;
     }
     if (message.type === "user" && hasToolResult) {
@@ -149,10 +153,19 @@ export function coalesceMessages(messages: Message[]): CoalescedItem[] {
           const toolUses: LLMContent[] = [];
           const serverToolResults: Record<string, LLMContent[]> = {};
           let hasThinking = false;
+          // Block positions, used to decide whether this message's text was
+          // spoken before or after its tool calls. Providers that run
+          // server-side tools (web_search) return a single assistant message
+          // whose blocks interleave reasoning, tool calls, and the final
+          // answer; that answer is written last and must not be rendered above
+          // the searches that produced it.
+          let lastToolIndex = -1;
+          let firstTextIndex = -1;
 
-          llmData.Content.forEach((content: LLMContent) => {
+          llmData.Content.forEach((content: LLMContent, index: number) => {
             if (content.Type === 2) {
               textContents.push(content);
+              if (firstTextIndex < 0 && (content.Text || "").trim()) firstTextIndex = index;
             } else if (content.Type === 3 && (content.Thinking || content.Text)) {
               // Non-empty thinking block. Adaptive-thinking models may emit a
               // signature-only block (empty Thinking/Text); that one is not
@@ -160,6 +173,7 @@ export function coalesceMessages(messages: Message[]): CoalescedItem[] {
               hasThinking = true;
             } else if (content.Type === 5 || content.Type === 7) {
               toolUses.push(content);
+              lastToolIndex = index;
             } else if (content.Type === 8 && content.ToolUseID && content.ToolResult) {
               serverToolResults[content.ToolUseID] = content.ToolResult;
             }
@@ -171,8 +185,15 @@ export function coalesceMessages(messages: Message[]): CoalescedItem[] {
             .trim();
           // A turn with only thinking + tool calls (no text) still needs a
           // message item, or the thinking block would never render.
-          if (textString || hasThinking) {
-            items.push({ type: "message", generation: message.generation, carried, message });
+          const needsMessageItem = !!textString || hasThinking;
+          // Text written after every tool call is a reply to those calls, so
+          // its message item follows them. Everything else (preamble text,
+          // thinking-only turns) keeps its historical position ahead of the
+          // tools.
+          const textFollowsTools =
+            !!textString && lastToolIndex >= 0 && firstTextIndex > lastToolIndex;
+          if (needsMessageItem && !textFollowsTools) {
+            items.push(messageItem(message, carried));
           }
 
           const wasTruncated = llmData.ExcludedFromContext === true;
@@ -186,6 +207,10 @@ export function coalesceMessages(messages: Message[]): CoalescedItem[] {
               type: "tool",
               generation: message.generation,
               carried,
+              // Keep anchor placement stable when the later tool-result row
+              // arrives; the tool begins at its assistant invocation.
+              sourceSequenceID: message.sequence_id,
+              anchorKey: `tool:${toolUse.ID || `${message.message_id}-${toolUse.ToolName || "unknown"}`}`,
               toolUseId: toolUse.ID,
               toolName: toolUse.ToolName,
               toolInput: toolUse.ToolInput,
@@ -197,15 +222,30 @@ export function coalesceMessages(messages: Message[]): CoalescedItem[] {
               display: displayData,
             });
           });
+
+          if (needsMessageItem && textFollowsTools) {
+            items.push(messageItem(message, carried));
+          }
         }
       } catch (err) {
         console.error("Failed to parse message LLM data:", err);
-        items.push({ type: "message", generation: message.generation, carried, message });
+        items.push(messageItem(message, carried));
       }
     } else {
-      items.push({ type: "message", generation: message.generation, carried, message });
+      items.push(messageItem(message, carried));
     }
   });
 
   return items;
+}
+
+function messageItem(message: Message, carried: boolean): CoalescedItem {
+  return {
+    type: "message",
+    generation: message.generation,
+    carried,
+    message,
+    sourceSequenceID: message.sequence_id,
+    anchorKey: `message:${message.message_id}`,
+  };
 }

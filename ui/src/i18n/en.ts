@@ -3,6 +3,10 @@ import type { TranslationKeys } from "./types";
 export const en: TranslationKeys = {
   // App-level
   loading: "Loading...",
+  diskSpaceLow: "Disk space is low",
+  diskSpaceCritical: "Disk space is critically low",
+  diskSpaceRemaining: "remaining",
+  dismiss: "Dismiss",
   retry: "Retry",
   failedToLoadConversations: "Failed to load conversations. Please refresh the page.",
 
@@ -116,6 +120,8 @@ export const en: TranslationKeys = {
   clearTagFilter: "Clear all",
   searchOrTagPlaceholder: "Search, or tag: to filter",
   untagged: "Untagged",
+  participants: "Participants",
+  unattributed: "Unattributed",
   noMatchingTags: "No matching tags",
   noTagsToNarrow: "Nothing left to narrow by",
   noConversationsMatchTags: "No conversations match these tags",

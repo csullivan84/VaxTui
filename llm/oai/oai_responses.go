@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"shelley.exe.dev/llm"
+	"shelley.exe.dev/llm/imageutil"
 	"shelley.exe.dev/llm/llmhttp"
 )
 
@@ -47,6 +49,60 @@ type ResponsesService struct {
 }
 
 var _ llm.Service = (*ResponsesService)(nil)
+
+const (
+	responsesImagePatchSize     = 32
+	responsesMaxImagePatchCount = 30000
+)
+
+// fitResponsesImagesToPatchLimit copies messages and downsizes image content
+// that the Responses API would reject. This runs at request time, rather than
+// only when a tool first creates an image, so old conversations containing a
+// now-oversized image recover on their next turn instead of staying wedged.
+func fitResponsesImagesToPatchLimit(messages []llm.Message, patchSize, maxPatches int) ([]llm.Message, error) {
+	fitted := append([]llm.Message(nil), messages...)
+	for i := range fitted {
+		contents, err := fitResponsesContentToPatchLimit(fitted[i].Content, patchSize, maxPatches)
+		if err != nil {
+			return nil, fmt.Errorf("prepare image in message %d: %w", i, err)
+		}
+		fitted[i].Content = contents
+	}
+	return fitted, nil
+}
+
+func fitResponsesContentToPatchLimit(contents []llm.Content, patchSize, maxPatches int) ([]llm.Content, error) {
+	fitted := append([]llm.Content(nil), contents...)
+	for i := range fitted {
+		if len(fitted[i].ToolResult) > 0 {
+			toolResult, err := fitResponsesContentToPatchLimit(fitted[i].ToolResult, patchSize, maxPatches)
+			if err != nil {
+				return nil, fmt.Errorf("tool result %d: %w", i, err)
+			}
+			fitted[i].ToolResult = toolResult
+		}
+		if !isImageContent(fitted[i]) || fitted[i].Data == "" {
+			continue
+		}
+
+		data, err := base64.StdEncoding.DecodeString(fitted[i].Data)
+		if err != nil {
+			return nil, fmt.Errorf("decode image %d: %w", i, err)
+		}
+		data, format, width, height, resized, err := imageutil.ResizeImageToPatchLimit(data, patchSize, maxPatches)
+		if err != nil {
+			return nil, fmt.Errorf("resize image %d: %w", i, err)
+		}
+		if !resized {
+			continue
+		}
+		fitted[i].Data = base64.StdEncoding.EncodeToString(data)
+		fitted[i].MediaType = "image/" + format
+		fitted[i].DisplayWidth = width
+		fitted[i].DisplayHeight = height
+	}
+	return fitted, nil
+}
 
 // Responses API request/response types
 
@@ -128,7 +184,7 @@ type responsesToolGrammar struct {
 type responsesResponse struct {
 	ID        string                `json:"id"`
 	Object    string                `json:"object"` // "response"
-	CreatedAt int64                 `json:"created_at"`
+	CreatedAt float64               `json:"created_at"`
 	Status    string                `json:"status"` // "completed", "incomplete", etc.
 	Model     string                `json:"model"`
 	Output    []responsesOutputItem `json:"output"`
@@ -535,8 +591,8 @@ func (s *ResponsesService) TokenContextWindow() int {
 
 	// Use the same context window logic as the regular service
 	switch model.ModelName {
-	case "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna":
-		return 272000 // 272k for the GPT-5.6 variants in Shelley
+	case "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna":
+		return 272000 // keep Astra and GPT-5.6 requests below long-context pricing
 	case "gpt-5.5", "gpt-5.5-2026-04-23", "gpt-5.5-pro", "gpt-5.5-pro-2026-04-23":
 		return 272000 // 272k for the GPT-5.5 family in Shelley
 	case "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano":
@@ -577,6 +633,13 @@ func (s *ResponsesService) Do(ctx context.Context, ir *llm.Request) (*llm.Respon
 	messages := ir.Messages
 	if !openAIResponses {
 		messages = withoutOpenAIResponsesReasoning(messages)
+	}
+	if openAIResponses {
+		fittedMessages, err := fitResponsesImagesToPatchLimit(messages, responsesImagePatchSize, responsesMaxImagePatchCount)
+		if err != nil {
+			return nil, fmt.Errorf("prepare Responses API images: %w", err)
+		}
+		messages = fittedMessages
 	}
 	for _, msg := range messages {
 		items := fromLLMMessageResponses(msg)

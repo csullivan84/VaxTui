@@ -5,6 +5,7 @@ import {
   ApiMessageForTS,
   StreamResponseForTS,
   NotificationEventForTS,
+  DiskSpaceStatus,
   Usage as GeneratedUsage,
   MessageType as GeneratedMessageType,
 } from "./generated-types";
@@ -12,8 +13,54 @@ import {
 // Re-export generated types
 export type Conversation = GeneratedConversation;
 export type ConversationWithState = ConversationWithStateForTS;
+export type { ConversationParticipant } from "./generated-types";
+export type ConversationWithParticipants = Conversation & {
+  participants?: import("./generated-types").ConversationParticipant[] | null;
+};
 export type Usage = GeneratedUsage;
 export type MessageType = GeneratedMessageType;
+export type { DiskSpaceStatus };
+
+export interface BtwReaderDescriptor {
+  readonly conversation_id: string;
+  readonly parent_conversation_id: string;
+  readonly parent_pointer: {
+    readonly generation: number;
+    readonly sequence_id: number;
+  };
+}
+
+export type BtwTurnKind = "question" | "summary";
+export type BtwTurnStatus = "pending" | "active" | "completed" | "cancelled" | "failed";
+
+// Presentation-only view model projected from an ordinary child conversation.
+export interface BtwTurn {
+  id: string;
+  question: string;
+  answer: string;
+  status: BtwTurnStatus;
+  error?: string | null;
+  kind: BtwTurnKind;
+  tool_call_count?: number;
+  tool_calls?: BtwToolCall[];
+  unresolved_tool_call_count?: number;
+}
+
+export interface BtwToolCall {
+  name: string;
+  command?: string;
+}
+
+export interface BtwExchange {
+  exchange_id: string;
+  reader_slug?: string;
+  parent_conversation_id: string;
+  status: BtwTurnStatus;
+  retryable: boolean;
+  parent_pointer: BtwReaderDescriptor["parent_pointer"];
+  created_at: string;
+  turns: BtwTurn[];
+}
 
 // Extend the generated Message type with parsed data
 export interface Message extends Omit<ApiMessageForTS, "type"> {
@@ -25,6 +72,7 @@ export interface LLMMessage {
   Role: number; // 0 = user, 1 = assistant
   Content: LLMContent[];
   ToolUse?: unknown;
+  EndOfTurn?: boolean;
 }
 
 export interface LLMContent {
@@ -124,6 +172,7 @@ export interface StreamResponse extends Omit<StreamResponseForTS, "messages"> {
   conversation_list_patch?: ConversationListPatchEvent;
   heartbeat?: boolean;
   notification_event?: NotificationEvent;
+  disk_space_status?: DiskSpaceStatus;
   tool_progress?: ToolProgress;
   stream_delta?: StreamDelta;
 }
@@ -154,6 +203,7 @@ export interface InitData {
   // is_exe_dev picks exe.dev-specific setup advice when model_setup_hint is
   // absent because the catalog emptied after page load.
   is_exe_dev?: boolean;
+  user_email?: string;
   banner?: string; // If set, shown as a top-of-page banner (e.g. to mark demo instances)
 }
 
@@ -173,6 +223,8 @@ export interface GitDiffInfo {
   filesCount: number;
   additions: number;
   deletions: number;
+  // True when this commit has a guided tour git note.
+  hasTour?: boolean;
   // Decorating refs (branches, tags, HEAD), like git log --decorate.
   refs?: string[];
   // True if this commit is the merge-base with @{upstream}.

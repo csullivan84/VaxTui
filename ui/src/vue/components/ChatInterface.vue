@@ -224,10 +224,13 @@
                 v-if="showStreamingPreview && markdownMode === 'off'"
                 class="whitespace-pre-wrap break-words"
               >
-                {{ streamingText }}<span class="streaming-cursor">▊</span>
+                <InlineText :text="streamingText" rewrite-localhost-links /><span
+                  class="streaming-cursor"
+                  >▊</span
+                >
               </div>
               <div v-else-if="showStreamingPreview" class="streaming-markdown">
-                <MarkdownContent :text="streamingText" />
+                <MarkdownContent :text="streamingText" rewrite-localhost-links />
                 <span class="streaming-cursor">▊</span>
               </div>
             </div>
@@ -293,7 +296,7 @@
           :messages="visibleMessages"
           :container-ref="messagesContainerRef"
           :near-bottom="!showScrollToBottom"
-          :conversation-slug="currentConversation?.slug"
+          :conversation-id="conversationId"
           @scroll-bottom="scrollToBottom"
           @scroll-away="markUserScrolledUp"
         />
@@ -334,6 +337,33 @@
       @active-terminal-exited="focusMessageInputIfUnfocused"
     />
 
+    <!-- Low disk space notice: server-wide, shown once per episode until dismissed. -->
+    <div
+      v-if="diskSpaceStatus?.active && !diskSpaceStatus.dismissed"
+      class="disk-space-notice"
+      :class="{ 'disk-space-notice-critical': diskSpaceStatus.critical }"
+      :role="diskSpaceStatus.critical ? 'alert' : 'status'"
+      data-testid="disk-space-notice"
+    >
+      <span class="disk-space-notice-icon" aria-hidden="true">!</span>
+      <span class="disk-space-notice-text">
+        <strong>{{ t(diskSpaceStatus.critical ? "diskSpaceCritical" : "diskSpaceLow") }}</strong>
+        <span class="disk-space-notice-detail"
+          >{{ formatDiskBytes(diskSpaceStatus.available_bytes) }}
+          {{ t("diskSpaceRemaining") }}</span
+        >
+      </span>
+      <button
+        type="button"
+        class="btn-icon disk-space-notice-dismiss"
+        :aria-label="t('dismiss')"
+        data-testid="disk-space-notice-dismiss"
+        @click="dismissDiskSpaceNotice"
+      >
+        ×
+      </button>
+    </div>
+
     <!-- Status bar -->
     <div :class="statusBarClass" role="region" aria-label="Conversation status">
       <div class="status-bar-content">
@@ -367,6 +397,7 @@
       :lazy-draft-id="lazyDraftId"
       :model-options="readyModels"
       :current-model-id="selectedModel"
+      :is-child-conversation="!!currentConversation?.parent_conversation_id"
       @clear-injected-text="
         diffCommentText = '';
         terminalInjectedText = null;
@@ -410,8 +441,9 @@
         focusMessageInputIfUnfocused();
       "
       @open-diff="
-        (commit, cwd) => {
+        (commit, cwd, file) => {
           diffViewerInitialCommit = commit;
+          diffViewerInitialFile = file;
           diffViewerCwd = cwd;
           showDiffViewer = true;
         }
@@ -434,6 +466,7 @@
       :cwd="(diffViewerCwd || currentConversation?.cwd || selectedCwd) as string"
       :is-open="showDiffViewer"
       :initial-commit="diffViewerInitialCommit"
+      :initial-file="diffViewerInitialFile"
       @close="onDiffViewerClose"
       @comment-text-change="(text) => (diffCommentText = text)"
       @cwd-change="(cwd) => (diffViewerCwd = cwd)"
@@ -460,9 +493,11 @@ import {
   type Message,
   type Conversation,
   type ChatRequest,
+  type BtwExchange,
   type ToolProgress,
   type Usage,
   type LLMContent,
+  type DiskSpaceStatus,
   isDistillStatusMessage,
   distillStatus,
   parseQueuedMessages,
@@ -470,6 +505,7 @@ import {
 } from "../../types";
 import { api } from "../../services/api";
 import { announceA11y } from "../../services/a11yAnnouncer";
+import { btwStore } from "../../services/btwStore";
 import { messageStore } from "../../services/messageStore";
 import { plainTextCache } from "../../services/plainTextCache";
 import { cacheDiag } from "../../services/cacheDiag";
@@ -518,6 +554,15 @@ import {
 } from "../../utils/conversationView";
 import { SLASH_COMMANDS } from "../../utils/slashCommands";
 import {
+  btwAnchor,
+  btwExchangesByAnchor,
+  btwGenerationStartAnchorKey,
+  focusBtwFollowUp,
+  latestBtwExchange,
+  scrollToBtwExchange,
+} from "./btwAnchors";
+import { composerDispatch } from "./composerDispatch";
+import {
   perfCount,
   perfRecordConversationLoad,
   perfWrap,
@@ -562,6 +607,7 @@ import ChatStatusContent from "./ChatStatusContent.vue";
 import StatusAnnouncer from "./StatusAnnouncer.vue";
 import KeyboardHelpDialog from "./KeyboardHelpDialog.vue";
 import MarkdownContent from "./MarkdownContent.vue";
+import InlineText from "./InlineText.vue";
 import ThinkingContent from "./tools/ThinkingContent.vue";
 
 // Props mirror ChatInterfaceProps in the React source. Callbacks that
@@ -573,6 +619,8 @@ const props = withDefaults(
     workspaceId?: string;
     streamStatus?: "connected" | "reconnecting" | "disconnected";
     reconnectNonce?: number;
+    diskSpaceStatus?: DiskSpaceStatus | null;
+    onDiskSpaceStatus?: (status: DiskSpaceStatus) => void;
     onOpenDrawer: () => void;
     onNewConversation: () => void;
     onSelectConversation?: (conversation: Conversation) => void;
@@ -656,6 +704,7 @@ const {
 
 // ---- core state ----
 const messages = ref<Message[]>([]);
+const btwExchanges = ref<BtwExchange[]>([]);
 
 // The id of the bottom-most message in the conversation. Provided to
 // descendant Message components (through the recursive MessageRenderNode) so
@@ -698,6 +747,21 @@ const loadingProgress = ref<{
 } | null>(null);
 const sending = ref(false);
 const error = ref<string | null>(null);
+
+function formatDiskBytes(bytes: number): string {
+  if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(1)} GB`;
+  return `${Math.round(bytes / 1e6)} MB`;
+}
+
+async function dismissDiskSpaceNotice() {
+  const status = props.diskSpaceStatus;
+  if (!status) return;
+  try {
+    props.onDiskSpaceStatus?.(await api.dismissDiskSpaceNotice(status.episode_id));
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+  }
+}
 const models = ref<
   Array<{
     id: string;
@@ -921,6 +985,7 @@ const showGitGraph = ref(false);
 const showAgentsMdEditor = ref(false);
 const diffViewerInitialCommit = ref<string | undefined>(undefined);
 const diffViewerCwd = ref<string | undefined>(undefined);
+const diffViewerInitialFile = ref<string | undefined>(undefined);
 const diffCommentText = ref("");
 // The image being annotated, if any (module state so any image in the message
 // tree can open the view without prop drilling).
@@ -1077,7 +1142,11 @@ function tailFirstTestOverrides(): { tailChunks?: number; sweep?: boolean; chunk
   try {
     const raw = localStorage.getItem("shelley.tailFirstTest");
     if (!raw) return {};
-    const parsed = JSON.parse(raw) as { tailChunks?: unknown; sweep?: unknown; chunkSize?: unknown };
+    const parsed = JSON.parse(raw) as {
+      tailChunks?: unknown;
+      sweep?: unknown;
+      chunkSize?: unknown;
+    };
     const posInt = (v: unknown): number | undefined =>
       typeof v === "number" && Number.isInteger(v) && v >= 1 ? v : undefined;
     return {
@@ -1678,6 +1747,52 @@ const visibleMessages = computed(() =>
   ),
 );
 
+function syncBtwFromStore(conversationId: string) {
+  if (conversationId !== currentConversationId) return;
+  btwExchanges.value = btwStore.list(conversationId);
+}
+
+watch(
+  btwExchanges,
+  (exchanges) => {
+    for (const exchange of exchanges) {
+      if (exchange.parent_conversation_id !== currentConversationId) continue;
+      const summary = btwStore.claimSummary(exchange);
+      if (summary) appendBtwSummaryToComposer(summary.answer);
+    }
+  },
+  { flush: "post" },
+);
+
+async function scrollToBtw(exchange: BtwExchange) {
+  const anchor = btwAnchor(exchange.parent_pointer, coalescedItems.value);
+  if (anchor.item?.message?.message_id) {
+    revealChunkTarget({ messageId: anchor.item.message.message_id });
+  } else if (anchor.item?.toolUseId) {
+    revealChunkTarget({ toolUseId: anchor.item.toolUseId });
+  }
+  await nextTick();
+  // A newly-created inline already in the visible tail does not need a
+  // smooth scroll (which otherwise yanks the reader away from its position).
+  const target = Array.from(document.querySelectorAll<HTMLElement>("[data-btw-exchange-id]")).find(
+    (element) => element.dataset.btwExchangeId === exchange.exchange_id,
+  );
+  const scroller = messagesContainerRef.value;
+  const alreadyAtTail =
+    !!target &&
+    !!scroller &&
+    target.getBoundingClientRect().bottom <= scroller.getBoundingClientRect().bottom &&
+    target.getBoundingClientRect().top >= scroller.getBoundingClientRect().top;
+  if (!alreadyAtTail) scrollToBtwExchange(exchange.exchange_id);
+}
+
+function scrollToLatestBtw(): boolean {
+  const latest = latestBtwExchange(btwExchanges.value);
+  if (!latest) return false;
+  void scrollToBtw(latest).then(() => focusBtwFollowUp(latest.exchange_id));
+  return true;
+}
+
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -1758,6 +1873,7 @@ function buildRenderModel(): GenerationBlock[] {
   const modelsUsedByGeneration = new Map<number, string[]>();
   const itemsByGeneration = new Map<number, CoalescedItem[]>();
   const generationSet = new Set<number>();
+  const btwsByAnchor = btwExchangesByAnchor(btwExchanges.value, coalescedItems.value);
 
   msgs.forEach((message) => {
     generationSet.add(message.generation);
@@ -1790,6 +1906,9 @@ function buildRenderModel(): GenerationBlock[] {
         /* ignore */
       }
     }
+  });
+  btwExchanges.value.forEach((exchange) => {
+    generationSet.add(exchange.parent_pointer.generation);
   });
 
   coalescedItems.value.forEach((item) => {
@@ -1872,6 +1991,14 @@ function buildRenderModel(): GenerationBlock[] {
     tokenState.lastBucket = 0;
 
     const sectionNodes: RenderNode[] = [];
+    const generationStartBtws = btwsByAnchor.get(btwGenerationStartAnchorKey(generation));
+    if (generationStartBtws?.length) {
+      sectionNodes.push({
+        kind: "btw",
+        key: `btw-${btwGenerationStartAnchorKey(generation)}`,
+        exchanges: generationStartBtws,
+      });
+    }
     let pillBuf: CoalescedItem[] = [];
     let pillSink: RenderNode[] = sectionNodes;
 
@@ -1884,6 +2011,16 @@ function buildRenderModel(): GenerationBlock[] {
         key: `tool-pills-${generation}-${buf[0].toolUseId || keySuffix}`,
         items: buf,
       });
+    };
+    const appendBtws = (sink: RenderNode[], item: CoalescedItem) => {
+      const exchanges = btwsByAnchor.get(item.anchorKey);
+      if (exchanges?.length) {
+        sink.push({
+          kind: "btw",
+          key: `btw-${item.anchorKey}`,
+          exchanges,
+        });
+      }
     };
 
     const renderItemInto = (sink: RenderNode[], item: CoalescedItem, index: number) => {
@@ -1903,7 +2040,12 @@ function buildRenderModel(): GenerationBlock[] {
       }
       if (item.type === "message" && item.message) {
         flushPills(index);
-        sink.push({ kind: "message", key: item.message.message_id, item });
+        sink.push({
+          kind: "message",
+          key: item.message.message_id,
+          item,
+        });
+        appendBtws(sink, item);
         const tokNode = maybeTokenMarker(
           item,
           item.message.message_id || `g${generation}-i${index}`,
@@ -1912,6 +2054,13 @@ function buildRenderModel(): GenerationBlock[] {
       } else if (item.type === "tool") {
         if (isPillable) {
           pillBuf.push(item);
+          // A pill row is normally one group, but an inline BTW is a real
+          // transcript boundary. Flush through its anchored tool before
+          // inserting it, then begin a new pill group for later tools.
+          if (btwsByAnchor.has(item.anchorKey)) {
+            flushPills(index);
+            appendBtws(sink, item);
+          }
         } else {
           flushPills(index);
           sink.push({
@@ -1919,6 +2068,7 @@ function buildRenderModel(): GenerationBlock[] {
             key: item.toolUseId || `tool-${generation}-${item.toolName || "unknown"}-${index}`,
             item,
           });
+          appendBtws(sink, item);
         }
       }
     };
@@ -2062,6 +2212,7 @@ const CLAMP_MISREAD_UNDO_WINDOW_MS = 250;
 let followExplicitSelectionToBottom = false;
 let suppressExplicitSelectionClamp = false;
 let scrollPointerActive = false;
+let touchScrolling = false;
 let bottomPinFrame: number | null = null;
 let bottomPinActive = false;
 
@@ -2093,9 +2244,11 @@ function handleBottomPinWheel(e: WheelEvent) {
 }
 
 function handleBottomPinTouch() {
-  lastScrollGestureAt = performance.now();
-  scrollPointerActive = true;
-  stopBottomPin();
+  touchScrolling = true;
+  handleScrollPointerDown();
+  // Start from the actual offset, not a rounded/clamped auto-follow target.
+  const container = messagesContainerRef.value;
+  if (container) lastObservedScrollTop = container.scrollTop;
 }
 
 function handleScrollPointerDown() {
@@ -2108,9 +2261,28 @@ function handleScrollPointerUp() {
   scrollPointerActive = false;
 }
 
+// Native touch panning fires pointercancel before the gesture's scroll events.
+// Keep touch state until touchend/touchcancel, not just until pointercancel.
+function userScrollGestureActive() {
+  return touchScrolling || scrollPointerActive;
+}
+
+function handleScrollTouchEnd() {
+  if (!touchScrolling) return;
+  // Account for a final movement even if its scroll event is still queued.
+  handleScroll();
+  touchScrolling = false;
+  scrollPointerActive = false;
+  if (!userScrolled && !loadingFlag && !catchingUp && pendingScroll === undefined) {
+    scrollToBottom();
+  }
+}
+
 function scrollToBottom() {
   const container = messagesContainerRef.value;
   if (!container) return;
+  // Returning to bottom supersedes even a touch whose end event was lost.
+  touchScrolling = false;
   stopBottomPin();
   userScrolled = false;
   showScrollToBottom.value = false;
@@ -2570,9 +2742,12 @@ async function cancelQueuedMessages() {
 
 async function cancelQueuedMessage(queuedId: string) {
   if (!props.conversationId) return;
+  const queued = queuedGhosts.value.find(({ id }) => id === queuedId);
+  const text = queued ? queuedMessageText(queued) : "";
   try {
     await api.cancelQueuedMessage(props.conversationId, queuedId);
     announceA11y("Queued message cancelled.");
+    if (!draftText && text) seedComposer(text);
   } catch (err) {
     console.error("Failed to cancel queued message:", err);
   }
@@ -2642,6 +2817,18 @@ const forkHandler = (messageId: string) => {
 async function sendMessage(message: string) {
   if (!message.trim() || sending.value) return;
   const trimmedMessage = message.trim();
+  const dispatch = composerDispatch(message, {
+    isChildConversation: !!props.currentConversation?.parent_conversation_id,
+  });
+  if (dispatch.route === "queue") {
+    await queueMessage(trimmedMessage);
+    return;
+  }
+  if (dispatch.route === "btw-blocked") {
+    const err = new Error("/btw is unavailable in child conversations.");
+    error.value = err.message;
+    throw err;
+  }
 
   // Guard every send path on actually having a model. Shelley used to fall
   // back to a hardcoded "claude-sonnet-4.6" here, which the server then
@@ -2658,6 +2845,38 @@ async function sendMessage(message: string) {
     const err = new Error(noModelErrorMessage());
     error.value = err.message;
     throw err;
+  }
+
+  if (dispatch.route === "btw") {
+    if (!props.conversationId || props.currentConversation?.is_draft) {
+      const err = new Error("Start a conversation before asking BTW.");
+      error.value = err.message;
+      throw err;
+    }
+    if (!dispatch.question) {
+      if (!scrollToLatestBtw()) {
+        const err = new Error("Ask a BTW question first.");
+        error.value = err.message;
+        throw err;
+      }
+      return;
+    }
+    try {
+      error.value = null;
+      const originID = props.conversationId;
+      const accepted = await api.sendMessage(originID, {
+        message,
+        model: selectedModel.value,
+      });
+      if (accepted.btw) {
+        btwStore.upsert(accepted.btw);
+        await btwStore.refreshChild(accepted.btw.conversation_id);
+      }
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : "Failed to start BTW";
+      throw err;
+    }
+    return;
   }
 
   if (trimmedMessage === SLASH_COMMANDS.FORK.command) {
@@ -2852,10 +3071,9 @@ async function handleCancel() {
     ({ conversationId }) => conversationId === props.conversationId,
   );
   const pendingText = pending.map(({ text }) => text).join("\n");
-  const queuedText = [
-    ...queued.map(queuedMessageText),
-    ...pending.map(({ text }) => text),
-  ].join("\n");
+  const queuedText = [...queued.map(queuedMessageText), ...pending.map(({ text }) => text)].join(
+    "\n",
+  );
   pending.forEach(({ controller }) => controller.abort());
   try {
     cancelling.value = true;
@@ -3053,6 +3271,11 @@ function seedComposer(value: string) {
   draftText = value;
   draftSeed.value = { value };
 }
+function appendBtwSummaryToComposer(answer: string) {
+  const value = draftText ? `${draftText}\n\n${answer}` : answer;
+  handleDraftChange(value);
+  draftSeed.value = { value };
+}
 const lazyDraftId = ref<string | null>(null);
 let draftConvId: string | null = props.conversationId;
 let inflightCreate: Promise<string> | null = null;
@@ -3214,6 +3437,7 @@ function onTerminalCloseHandler(id: string) {
 function onDiffViewerClose() {
   showDiffViewer.value = false;
   diffViewerInitialCommit.value = undefined;
+  diffViewerInitialFile.value = undefined;
   diffViewerCwd.value = undefined;
   if (!showGitGraph.value) focusMessageInputIfUnfocused();
 }
@@ -3552,17 +3776,21 @@ watch(agentWorking, (working, wasWorking) => {
     }
     activeModelHealth = null;
   }
+  setFaviconStatus("ready");
 });
 
 // ---- conversation switch: hydrate + subscribe ----
 let unsubStore: (() => void) | null = null;
 let unsubTransient: (() => void) | null = null;
+let unsubBtw: (() => void) | null = null;
 
 function teardownSubscriptions() {
   unsubStore?.();
   unsubTransient?.();
+  unsubBtw?.();
   unsubStore = null;
   unsubTransient = null;
+  unsubBtw = null;
 }
 
 watch(
@@ -3622,6 +3850,7 @@ watch(
     resetTailFirst();
     if (!id) {
       messages.value = [];
+      btwExchanges.value = [];
       contextWindowSize.value = 0;
       toolProgress.value = {};
       streamingText.value = "";
@@ -3638,6 +3867,11 @@ watch(
       return;
     }
     const focusedId = id;
+    unsubBtw = btwStore.subscribe(focusedId, () => syncBtwFromStore(focusedId));
+    syncBtwFromStore(focusedId);
+    void btwStore.hydrate(focusedId).catch((err) => {
+      console.error("Failed to load BTW exchanges:", err);
+    });
     messageStore.resetTransient(focusedId);
     const initialTransient = messageStore.getTransient(focusedId);
     agentWorking.value = initialTransient.agentWorking;
@@ -3775,6 +4009,9 @@ watch(
     if (nonce === 0) return;
     if (!props.conversationId) return;
     void loadMessages(props.conversationId);
+    void btwStore.hydrate(props.conversationId).catch((err) => {
+      console.error("Failed to refresh BTW exchanges:", err);
+    });
   },
 );
 
@@ -3885,7 +4122,8 @@ watch(
         }
         return;
       }
-      if (!userScrolled && !wasCatchingUp) scrollToBottom();
+      // A streaming update must not re-pin before the touch's scroll event.
+      if (!userScrolled && !wasCatchingUp && !touchScrolling) scrollToBottom();
     });
   },
   { flush: "post" },
@@ -3927,7 +4165,7 @@ function handleScroll() {
   }
   const switchingConversation = pendingScroll !== undefined;
   const guardedLayoutShift =
-    upwardDelta > 0 && suppressExplicitSelectionClamp && !scrollPointerActive;
+    upwardDelta > 0 && suppressExplicitSelectionClamp && !userScrollGestureActive();
   if (switchingConversation || guardedLayoutShift) {
     // Replacing one transcript with another clamps the shared scroll container
     // before the pending destination is applied. Likewise, lazy renderers can
@@ -3937,7 +4175,12 @@ function handleScroll() {
     if (guardedLayoutShift) scrollToBottom();
     return;
   }
-  if (bottomPinActive && upwardDelta >= BOTTOM_PIN_SCROLL_RELEASE_DELTA) {
+  // Even a small upward touch movement releases a pin re-armed mid-gesture.
+  if (
+    bottomPinActive &&
+    upwardDelta > 0 &&
+    (upwardDelta >= BOTTOM_PIN_SCROLL_RELEASE_DELTA || touchScrolling)
+  ) {
     stopBottomPin();
   }
   // An upward delta this large, after clamp accounting, is unambiguously a
@@ -3950,7 +4193,7 @@ function handleScroll() {
   // while sentinelAtBottom is still stale-true and yanks the reader back down
   // (measured: scrollTop 0 -> 1607). The wheel/touch handlers only cover this
   // while the bottom pin is active, so they are not a substitute.
-  const definitelyGesture = scrollPointerActive || upwardDelta > BOTTOM_SENTINEL_MARGIN_PX;
+  const definitelyGesture = userScrollGestureActive() || upwardDelta > BOTTOM_SENTINEL_MARGIN_PX;
   if (!bottomPinActive && upwardDelta > 0 && (!sentinelAtBottom || definitelyGesture)) {
     // Below the gesture threshold, only act when the bottom sentinel has
     // actually left the near-bottom zone. While it still intersects we are
@@ -3996,8 +4239,8 @@ function setupScrollObservers() {
   container.addEventListener("scroll", handleScroll);
   container.addEventListener("wheel", handleBottomPinWheel, { passive: true });
   container.addEventListener("touchstart", handleBottomPinTouch, { passive: true });
-  container.addEventListener("touchend", handleScrollPointerUp, { passive: true });
-  container.addEventListener("touchcancel", handleScrollPointerUp, { passive: true });
+  container.addEventListener("touchend", handleScrollTouchEnd, { passive: true });
+  container.addEventListener("touchcancel", handleScrollTouchEnd, { passive: true });
   container.addEventListener("pointerdown", handleScrollPointerDown, { passive: true });
   window.addEventListener("pointerup", handleScrollPointerUp, { passive: true });
   window.addEventListener("pointercancel", handleScrollPointerUp, { passive: true });
@@ -4008,13 +4251,17 @@ function setupScrollObservers() {
       atBottom = nearBottom;
       showScrollToBottom.value = !nearBottom;
       if (nearBottom) {
+        // Manual return resumes follow even when touchend was lost or delayed.
+        touchScrolling = false;
         userScrolled = false;
         suppressExplicitSelectionClamp = false;
         stopBottomPin();
         if (!loadingFlag && followExplicitSelectionToBottom) {
           saveScroll(container.scrollTop);
         }
-      } else if (!bottomPinActive) {
+      } else if (!bottomPinActive && !touchScrolling) {
+        // Growth can move the sentinel while follow is paused. Only handleScroll
+        // may disarm an active touch; neither infer scroll-up nor re-pin here.
         if (!userScrolled && followExplicitSelectionToBottom) {
           // An explicitly selected conversation may grow after its first
           // bottom paint as lazy renderers hydrate. Keep the selection at its
@@ -4125,7 +4372,8 @@ function setupScrollObservers() {
     // Keep following pinned to the bottom as content streams in. User scroll-up
     // detection lives solely in handleScroll (with clamp discounting); inferring
     // it from resize events is what misfired on layout clamps.
-    if (!userScrolled && !catchingUp) {
+    // List growth must not move the viewport before the touch can disarm follow.
+    if (!userScrolled && !catchingUp && !touchScrolling) {
       // Avoid reading scrollTop after this write. In WebKit that read resolves
       // the clamped offset by synchronously laying out content-visibility
       // chunks. The observer already gives us both dimensions for free, and
@@ -4452,10 +4700,12 @@ onMounted(() => {
   if (commit) {
     const cwdParam = params.get("cwd") || undefined;
     diffViewerInitialCommit.value = commit;
+    diffViewerInitialFile.value = params.get("file") || undefined;
     diffViewerCwd.value = cwdParam;
     showDiffViewer.value = true;
     params.delete("diff");
     params.delete("cwd");
+    params.delete("file");
     const qs = params.toString();
     window.history.replaceState(
       {},
@@ -4481,8 +4731,8 @@ onUnmounted(() => {
   container?.removeEventListener("scroll", handleScroll);
   container?.removeEventListener("wheel", handleBottomPinWheel);
   container?.removeEventListener("touchstart", handleBottomPinTouch);
-  container?.removeEventListener("touchend", handleScrollPointerUp);
-  container?.removeEventListener("touchcancel", handleScrollPointerUp);
+  container?.removeEventListener("touchend", handleScrollTouchEnd);
+  container?.removeEventListener("touchcancel", handleScrollTouchEnd);
   container?.removeEventListener("pointerdown", handleScrollPointerDown);
   window.removeEventListener("pointerup", handleScrollPointerUp);
   window.removeEventListener("pointercancel", handleScrollPointerUp);

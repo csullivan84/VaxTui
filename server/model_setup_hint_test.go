@@ -27,14 +27,14 @@ func withReflectionStatus(t *testing.T, status int, body string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	old := exeReflectionHTTPClient
-	t.Cleanup(func() { exeReflectionHTTPClient = old; resetReflectionStateCache() })
+	old := reflectionHTTPClient()
+	t.Cleanup(func() { setReflectionHTTPClient(old); resetReflectionStateCache() })
 	resetReflectionStateCache()
 	// A reflection 403 now triggers a direct llm.int probe (discovery falls
 	// back to it), so answer that too. Default: also absent, i.e. the real
 	// production shape where both integrations are detached.
 	llmURL := env.IntegrationURL("llm", false) + "/models.json"
-	exeReflectionHTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+	setReflectionHTTPClient(&http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		if req.URL.String() == llmURL {
 			return &http.Response{
 				StatusCode: http.StatusForbidden,
@@ -50,7 +50,7 @@ func withReflectionStatus(t *testing.T, status int, body string) {
 			Body:       io.NopCloser(strings.NewReader(body)),
 			Header:     make(http.Header),
 		}, nil
-	})}
+	})})
 }
 
 // TestModelSetupHintNotOnExeDev: off exe.dev there are no integrations to
@@ -192,6 +192,14 @@ func TestIndexInitDataCarriesExeDevFlag(t *testing.T) {
 	}
 }
 
+func TestIndexInitDataCarriesUserEmail(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	init := indexInitDataWithEmail(t, srv, " alice@example.com ")
+	if got := init["user_email"]; got != "alice@example.com" {
+		t.Fatalf("user_email = %#v, want alice@example.com", got)
+	}
+}
+
 // TestIndexInitDataOmitsHintWithModels: a healthy server must not ship setup
 // advice (and must not pay for a reflection probe on every page load).
 func TestIndexInitDataOmitsHintWithModels(t *testing.T) {
@@ -207,10 +215,15 @@ func TestIndexInitDataOmitsHintWithModels(t *testing.T) {
 
 // indexInitData fetches "/" and parses the injected window.__SHELLEY_INIT__.
 func indexInitData(t *testing.T, srv *Server) map[string]any {
+	return indexInitDataWithEmail(t, srv, "")
+}
+
+func indexInitDataWithEmail(t *testing.T, srv *Server, email string) map[string]any {
 	t.Helper()
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("X-ExeDev-Email", email)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
@@ -296,11 +309,11 @@ func TestReflectionProbeCachedAndCollapsed(t *testing.T) {
 	// fallback), so the reflection hit is what identifies a fresh probe.
 	var probes atomic.Int64
 	release := make(chan struct{})
-	old := exeReflectionHTTPClient
-	t.Cleanup(func() { exeReflectionHTTPClient = old; resetReflectionStateCache() })
+	old := reflectionHTTPClient()
+	t.Cleanup(func() { setReflectionHTTPClient(old); resetReflectionStateCache() })
 	resetReflectionStateCache()
 	reflectionURL := env.ReflectionURL() + "/integrations"
-	exeReflectionHTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+	setReflectionHTTPClient(&http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		if req.URL.String() == reflectionURL {
 			probes.Add(1)
 			<-release // hold the probe open so the racers must coalesce
@@ -310,7 +323,7 @@ func TestReflectionProbeCachedAndCollapsed(t *testing.T) {
 			Body:       io.NopCloser(strings.NewReader("nope")),
 			Header:     make(http.Header),
 		}, nil
-	})}
+	})})
 
 	const racers = 8
 	var wg sync.WaitGroup
@@ -397,12 +410,12 @@ func TestCreateDraftWithNoModels(t *testing.T) {
 // describe the real production shapes (e.g. reflection 403 + llm.int 200).
 func withReflectionAndLLM(t *testing.T, env exeenv.Environment, reflectionStatus int, reflectionBody string, llmStatus int, llmBody string) {
 	t.Helper()
-	old := exeReflectionHTTPClient
-	t.Cleanup(func() { exeReflectionHTTPClient = old; resetReflectionStateCache() })
+	old := reflectionHTTPClient()
+	t.Cleanup(func() { setReflectionHTTPClient(old); resetReflectionStateCache() })
 	resetReflectionStateCache()
 	reflectionURL := env.ReflectionURL() + "/integrations"
 	llmURL := env.IntegrationURL("llm", false) + "/models.json"
-	exeReflectionHTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+	setReflectionHTTPClient(&http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		status, body := 0, ""
 		switch req.URL.String() {
 		case reflectionURL:
@@ -418,7 +431,7 @@ func withReflectionAndLLM(t *testing.T, env exeenv.Environment, reflectionStatus
 			Body:       io.NopCloser(strings.NewReader(body)),
 			Header:     make(http.Header),
 		}, nil
-	})}
+	})})
 }
 
 const llmCatalogWithModels = `{"schema_version":1,"models":[{"id":"openai/gpt-5.6-sol","provider":"openai","native_id":"gpt-5.6-sol","apis":["openai_responses"]}]}`

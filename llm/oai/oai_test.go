@@ -1390,6 +1390,11 @@ func TestTokenContextWindowAdditionalCases(t *testing.T) {
 			expected: 256000,
 		},
 		{
+			name:     "GPT-6 Astra model",
+			model:    GPT6Astra,
+			expected: 272000,
+		},
+		{
 			name:     "GPT-5.6 Sol model",
 			model:    GPT56Sol,
 			expected: 272000,
@@ -1713,7 +1718,7 @@ func TestServiceDoSendsMaxCompletionTokens(t *testing.T) {
 	if gotReq["max_completion_tokens"] != float64(DefaultMaxTokens) {
 		t.Fatalf("max_completion_tokens = %#v, want %d; body = %#v", gotReq["max_completion_tokens"], DefaultMaxTokens, gotReq)
 	}
-	if _, ok := gotReq["stream"]; ok {
+	if stream, _ := gotReq["stream"].(bool); stream {
 		t.Fatalf("non-Fireworks request unexpectedly enabled streaming: %#v", gotReq)
 	}
 }
@@ -2117,6 +2122,7 @@ func TestServiceSupportedReasoningLevels(t *testing.T) {
 		model Model
 		want  string
 	}{
+		{name: "GPT-6 Astra", model: GPT6Astra, want: "low,medium,high,xhigh,max"},
 		{name: "GPT 5.6", model: GPT56Sol, want: "off,low,medium,high,xhigh,max"},
 		{name: "unknown", model: Model{ModelName: "totally-unknown-model"}, want: ""},
 	}

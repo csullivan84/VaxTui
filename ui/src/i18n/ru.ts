@@ -3,6 +3,10 @@ import type { TranslationKeys } from "./types";
 export const ru: TranslationKeys = {
   // App-level
   loading: "Загрузка...",
+  diskSpaceLow: "Мало места на диске",
+  diskSpaceCritical: "Критически мало места на диске",
+  diskSpaceRemaining: "осталось",
+  dismiss: "Скрыть",
   retry: "Повторить",
   failedToLoadConversations: "Не удалось загрузить диалоги. Пожалуйста, обновите страницу.",
 
@@ -116,6 +120,8 @@ export const ru: TranslationKeys = {
   clearTagFilter: "Очистить всё",
   searchOrTagPlaceholder: "Поиск или tag: для фильтра",
   untagged: "Без тегов",
+  participants: "Участники",
+  unattributed: "Без участников",
   noMatchingTags: "Нет подходящих тегов",
   noTagsToNarrow: "Больше нечем сужать",
   noConversationsMatchTags: "Нет диалогов с этими тегами",

@@ -27,10 +27,10 @@ import (
 	"shelley.exe.dev/db/generated"
 	"shelley.exe.dev/llm"
 	"shelley.exe.dev/models"
+	"shelley.exe.dev/server/diskspace"
 	"shelley.exe.dev/server/notifications"
 	"shelley.exe.dev/subpub"
 	"shelley.exe.dev/ui"
-	"shelley.exe.dev/unixsocket"
 )
 
 // APIMessage is the message format sent to clients
@@ -98,7 +98,7 @@ type ConversationWithState struct {
 	// it to filter the list down to their own conversations. Empty for
 	// conversations whose messages all arrived without the header (direct or
 	// local access) or predate the user_email column.
-	Participants []string `json:"participants,omitempty"`
+	Participants []db.ConversationParticipant `json:"participants,omitempty"`
 	// SearchSnippet is set on hits from /api/conversations/search. Matched
 	// terms are wrapped in \x02..\x03 sentinels (see db.SnippetMarkStart /
 	// SnippetMarkEnd) so the UI can substitute spans without HTML injection.
@@ -125,6 +125,8 @@ type StreamResponse struct {
 	Heartbeat bool `json:"heartbeat,omitempty"`
 	// NotificationEvent is set when a notification-worthy event occurs (e.g. agent finished).
 	NotificationEvent *notifications.Event `json:"notification_event,omitempty"`
+	// DiskSpaceStatus is global, including an immediate snapshot on reconnect.
+	DiskSpaceStatus *diskspace.DiskSpaceStatus `json:"disk_space_status,omitempty"`
 	// ToolProgress is set when a running tool reports partial output.
 	ToolProgress *llm.ToolProgress `json:"tool_progress,omitempty"`
 	// StreamDelta is set when the LLM streams partial text content.
@@ -353,6 +355,7 @@ type Server struct {
 	toolSetConfig            claudetool.ToolSetConfig
 	activeConversations      map[string]*ConversationManager
 	mu                       sync.Mutex
+	deletingConversations    map[string]bool
 	logger                   *slog.Logger
 	predictableOnly          bool
 	defaultModelMu           sync.RWMutex
@@ -377,6 +380,7 @@ type Server struct {
 	// events to every /api/stream2 subscriber. Events are tagged with their
 	// ConversationID so clients can route them.
 	streamPub   *subpub.SubPub[StreamResponse]
+	diskSpace   *diskSpaceMonitor
 	shutdownCh  chan struct{} // Signals background routines to stop
 	listenPort  int           // TCP port the server is listening on
 	terminals   *TerminalSessions
@@ -410,20 +414,21 @@ type Server struct {
 // NewServer creates a new server instance
 func NewServer(database *db.DB, llmManager LLMProvider, toolSetConfig claudetool.ToolSetConfig, logger *slog.Logger, predictableOnly bool, defaultModel, requireHeader string) *Server {
 	s := &Server{
-		db:                  database,
-		llmManager:          llmManager,
-		toolSetConfig:       toolSetConfig,
-		activeConversations: make(map[string]*ConversationManager),
-		logger:              logger,
-		predictableOnly:     predictableOnly,
-		defaultModel:        defaultModel,
-		requireHeader:       requireHeader,
-		versionChecker:      NewVersionChecker(),
-		notifDispatcher:     notifications.NewDispatcher(logger),
-		shutdownCh:          make(chan struct{}),
-		hooksDir:            defaultHooksDir(),
-		exitDelay:           500 * time.Millisecond,
-		exitProcess:         os.Exit,
+		db:                    database,
+		llmManager:            llmManager,
+		toolSetConfig:         toolSetConfig,
+		activeConversations:   make(map[string]*ConversationManager),
+		deletingConversations: make(map[string]bool),
+		logger:                logger,
+		predictableOnly:       predictableOnly,
+		defaultModel:          defaultModel,
+		requireHeader:         requireHeader,
+		versionChecker:        NewVersionChecker(),
+		notifDispatcher:       notifications.NewDispatcher(logger),
+		shutdownCh:            make(chan struct{}),
+		hooksDir:              defaultHooksDir(),
+		exitDelay:             500 * time.Millisecond,
+		exitProcess:           os.Exit,
 	}
 
 	s.conversationListStream = newConversationListStream(s)
@@ -489,6 +494,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /api/conversations/snapshot", compressionHandler(http.HandlerFunc(s.handleConversationsSnapshot)))
 	mux.Handle("GET /api/conversations/search", compressionHandler(http.HandlerFunc(s.handleSearchConversations)))
 	mux.Handle("GET /api/stream2", http.HandlerFunc(s.handleStream))
+	mux.HandleFunc("POST /api/disk-space/dismiss", s.handleDismissDiskSpace)
 	mux.Handle("/api/conversations/archived", compressionHandler(http.HandlerFunc(s.handleArchivedConversations)))
 	mux.Handle("/api/conversations/new", http.HandlerFunc(s.handleNewConversation))                         // Small response
 	mux.Handle("POST /api/conversations/draft", http.HandlerFunc(s.handleCreateDraft))                      // Small response
@@ -502,6 +508,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("/api/create-directory", http.HandlerFunc(s.handleCreateDirectory))
 	mux.Handle("/api/git/repos", compressionHandler(http.HandlerFunc(s.handleGitRepos)))
 	mux.Handle("/api/git/diffs", compressionHandler(http.HandlerFunc(s.handleGitDiffs)))
+	mux.Handle("/api/git/tour", compressionHandler(http.HandlerFunc(s.handleGitTour)))
 	mux.Handle("/api/git/graph", compressionHandler(http.HandlerFunc(s.handleGitGraph)))
 	mux.Handle("/api/git/commit-detail", compressionHandler(http.HandlerFunc(s.handleGitCommitDetail)))
 	mux.Handle("/api/git/diffs/", compressionHandler(http.HandlerFunc(s.handleGitDiffFiles)))
@@ -960,6 +967,10 @@ func (s *Server) handleCreateDirectory(w http.ResponseWriter, r *http.Request) {
 func (s *Server) getOrCreateConversationManager(ctx context.Context, conversationID, userEmail string) (*ConversationManager, error) {
 	manager, err, _ := s.conversationGroup.Do(conversationID, func() (*ConversationManager, error) {
 		s.mu.Lock()
+		if s.deletingConversations[conversationID] {
+			s.mu.Unlock()
+			return nil, errConversationDeleting
+		}
 		if manager, exists := s.activeConversations[conversationID]; exists {
 			s.mu.Unlock()
 			manager.Touch()
@@ -967,23 +978,46 @@ func (s *Server) getOrCreateConversationManager(ctx context.Context, conversatio
 		}
 		s.mu.Unlock()
 
+		// BTW readers use the ordinary conversation entry point but need their
+		// restricted tool depth and request decorator before hydration.
+		conversation, err := s.db.GetConversationByID(ctx, conversationID)
+		if err != nil {
+			return nil, err
+		}
+
 		recordMessage := func(ctx context.Context, message llm.Message, usage llm.Usage, otherUsage []llm.PurposedUsage) error {
 			return s.recordMessage(ctx, conversationID, message, usage, otherUsage)
 		}
-		recordTurnStart := func(ctx context.Context, message llm.Message, usage llm.Usage, otherUsage []llm.PurposedUsage) error {
+		recordTurnStart := func(ctx context.Context, message llm.Message, usage llm.Usage, otherUsage []llm.PurposedUsage) (*generated.Message, error) {
 			return s.recordTurnStartMessage(ctx, conversationID, message, usage, otherUsage)
 		}
 		recordBatch := func(ctx context.Context, msgs []recordMessageInput) error {
 			return s.recordMessages(ctx, conversationID, msgs)
 		}
 
-		onStateChange := func(state ConversationState) {
-			s.publishConversationState(state)
+		btwIdentity, btwReader := db.ManagedBtwReaderIdentity(*conversation)
+		s.mu.Lock()
+		parentDeleting := btwReader && s.deletingConversations[btwIdentity.ParentConversationID]
+		s.mu.Unlock()
+		if parentDeleting {
+			return nil, errConversationDeleting
 		}
+		onStateChange := func(state ConversationState) { s.publishConversationState(state) }
 
-		manager := NewConversationManager(conversationID, s.db, s.logger, s.toolSetConfig, recordMessage, recordTurnStart, recordBatch, onStateChange, s.streamPub)
+		managerConfig := s.toolSetConfig
+		if btwReader {
+			managerConfig.SubagentDepth++
+		}
+		manager := NewConversationManager(conversationID, s.db, s.logger, managerConfig, recordMessage, recordTurnStart, recordBatch, onStateChange, s.streamPub)
+		manager.onTurnStartRejected = func() { go manager.drainPendingMessages(s) }
 		manager.userEmail = userEmail
 		manager.serverPort = s.listenPort
+		manager.btwReader = btwReader
+		if btwReader {
+			manager.decorateService = func(service llm.Service) (llm.Service, error) {
+				return newBtwService(context.Background(), s.db, btwIdentity.ParentConversationID, btwIdentity.ParentPointer, btwReaderParentHistoryLimit, service)
+			}
+		}
 		// Hydrate runs DB transactions, which fire OnCommit hooks. Those hooks
 		// (e.g. notify on the conversation list patch stream) acquire s.mu, so
 		// we must not hold it here.
@@ -992,6 +1026,12 @@ func (s *Server) getOrCreateConversationManager(ctx context.Context, conversatio
 		}
 
 		s.mu.Lock()
+		if s.deletingConversations[conversationID] ||
+			(btwReader && s.deletingConversations[btwIdentity.ParentConversationID]) {
+			s.mu.Unlock()
+			manager.stopLoop()
+			return nil, errConversationDeleting
+		}
 		if existing, ok := s.activeConversations[conversationID]; ok {
 			s.mu.Unlock()
 			existing.Touch()
@@ -1009,10 +1049,15 @@ func (s *Server) getOrCreateConversationManager(ctx context.Context, conversatio
 
 // getOrCreateSubagentConversationManager is like getOrCreateConversationManager but
 // uses a toolSetConfig with SubagentDepth incremented by 1, preventing subagents
-// from spawning their own subagents (when MaxSubagentDepth is 1).
+// from spawning their own subagents (when MaxSubagentDepth is 1). Only this
+// subagent-tool entry point wires parent completion notification.
 func (s *Server) getOrCreateSubagentConversationManager(ctx context.Context, conversationID string) (*ConversationManager, error) {
 	manager, err, _ := s.conversationGroup.Do(conversationID, func() (*ConversationManager, error) {
 		s.mu.Lock()
+		if s.deletingConversations[conversationID] {
+			s.mu.Unlock()
+			return nil, errConversationDeleting
+		}
 		if manager, exists := s.activeConversations[conversationID]; exists {
 			s.mu.Unlock()
 			manager.Touch()
@@ -1023,37 +1068,32 @@ func (s *Server) getOrCreateSubagentConversationManager(ctx context.Context, con
 		recordMessage := func(ctx context.Context, message llm.Message, usage llm.Usage, otherUsage []llm.PurposedUsage) error {
 			return s.recordMessage(ctx, conversationID, message, usage, otherUsage)
 		}
-		recordTurnStart := func(ctx context.Context, message llm.Message, usage llm.Usage, otherUsage []llm.PurposedUsage) error {
+		recordTurnStart := func(ctx context.Context, message llm.Message, usage llm.Usage, otherUsage []llm.PurposedUsage) (*generated.Message, error) {
 			return s.recordTurnStartMessage(ctx, conversationID, message, usage, otherUsage)
 		}
 		recordBatch := func(ctx context.Context, msgs []recordMessageInput) error {
 			return s.recordMessages(ctx, conversationID, msgs)
 		}
 
-		onStateChange := func(state ConversationState) {
-			s.publishConversationState(state)
-		}
+		onStateChange := func(state ConversationState) { s.publishConversationState(state) }
 
-		// Use a modified toolSetConfig with incremented depth for subagents
 		subagentConfig := s.toolSetConfig
-		subagentConfig.SubagentDepth = s.toolSetConfig.SubagentDepth + 1
-
+		subagentConfig.SubagentDepth++
 		manager := NewConversationManager(conversationID, s.db, s.logger, subagentConfig, recordMessage, recordTurnStart, recordBatch, onStateChange, s.streamPub)
+		manager.onTurnStartRejected = func() { go manager.drainPendingMessages(s) }
 		manager.serverPort = s.listenPort
-		// Wire up done notification: when this subagent finishes, notify the
-		// parent by splicing a synthetic tool_use/result pair into the
-		// parent's conversation. dispatchSubagentDone captures the completed
-		// turn's response synchronously (fixing what is announced) and then
-		// notifies asynchronously.
-		manager.onDone = func() {
-			s.dispatchSubagentDone(conversationID)
-		}
+		manager.onDone = func() { s.dispatchSubagentDone(conversationID) }
 		// See getOrCreateConversationManager for why we don't hold s.mu here.
 		if err := manager.Hydrate(ctx); err != nil {
 			return nil, err
 		}
 
 		s.mu.Lock()
+		if s.deletingConversations[conversationID] {
+			s.mu.Unlock()
+			manager.stopLoop()
+			return nil, errConversationDeleting
+		}
 		if existing, ok := s.activeConversations[conversationID]; ok {
 			s.mu.Unlock()
 			existing.Touch()
@@ -1250,7 +1290,10 @@ func (s *Server) recordDrainedQueuedMessage(ctx context.Context, conversationID,
 // the message recorder, so a user turn's row can be attributed to its author.
 // Only the immediate-send path uses this; queued messages persist the email in
 // their QueuedMessage entry instead (drain runs on a background context).
-type userEmailContextKey struct{}
+type (
+	userEmailContextKey    struct{}
+	turnUserDataContextKey struct{}
+)
 
 // contextWithUserEmail returns a child context carrying userEmail. An empty
 // string is threaded unchanged so a missing header stores NULL.
@@ -1265,6 +1308,14 @@ func userEmailFromContext(ctx context.Context) string {
 	return email
 }
 
+func contextWithTurnUserData(ctx context.Context, userData any) context.Context {
+	return context.WithValue(ctx, turnUserDataContextKey{}, userData)
+}
+
+func turnUserDataFromContext(ctx context.Context) any {
+	return ctx.Value(turnUserDataContextKey{})
+}
+
 // recordTurnStartMessage records the user message that starts an agent turn,
 // folding the agent_working=true flip and the updated_at bump into the same Tx
 // as the message INSERT. This replaces a separate SetAgentWorking(true) commit
@@ -1272,10 +1323,14 @@ func userEmailFromContext(ctx context.Context) string {
 // AND working=true, so the conversation-list patch can't briefly snapshot a
 // stale working=false row (the flicker the old ordering guarded against), and
 // we drop two commits (the working flip and the timestamp bump) per turn.
-func (s *Server) recordTurnStartMessage(ctx context.Context, conversationID string, message llm.Message, usage llm.Usage, otherUsage []llm.PurposedUsage) error {
-	params, err := s.buildCreateMessageParams(conversationID, message, usage, otherUsage)
+func (s *Server) recordTurnStartMessage(ctx context.Context, conversationID string, message llm.Message, usage llm.Usage, otherUsage []llm.PurposedUsage) (*generated.Message, error) {
+	var userData []interface{}
+	if turn := turnUserDataFromContext(ctx); turn != nil {
+		userData = append(userData, turn)
+	}
+	params, err := s.buildCreateMessageParams(conversationID, message, usage, otherUsage, userData...)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	params.MarkAgentStart = true
 	params.BumpTimestamp = true
@@ -1287,7 +1342,7 @@ func (s *Server) recordTurnStartMessage(ctx context.Context, conversationID stri
 	params.UserEmail = userEmailFromContext(ctx)
 	createdMsg, err := s.db.CreateMessage(ctx, params)
 	if err != nil {
-		return fmt.Errorf("failed to create turn-start message: %w", err)
+		return nil, fmt.Errorf("failed to create turn-start message: %w", err)
 	}
 
 	s.mu.Lock()
@@ -1298,7 +1353,7 @@ func (s *Server) recordTurnStartMessage(ctx context.Context, conversationID stri
 	}
 
 	go s.notifySubscribersNewMessage(context.WithoutCancel(ctx), conversationID, createdMsg)
-	return nil
+	return createdMsg, nil
 }
 
 // recordMessages records several messages for one conversation in a SINGLE DB
@@ -1643,7 +1698,7 @@ func (s *Server) publishConversationState(state ConversationState) {
 	var notifEvent *notifications.Event
 	if !state.Working {
 		conv, convErr := s.db.GetConversationByID(context.Background(), state.ConversationID)
-		isSubagent := convErr == nil && conv.ParentConversationID != nil
+		isSubagent := convErr == nil && isManagedChild(*conv)
 		// Honor an explicit per-conversation opt-out: conversations created
 		// with disable_notifications suppress all end-of-turn notifications
 		// (push, email, discord, ntfy) and hooks, same as subagents.
@@ -1696,6 +1751,7 @@ func (s *Server) publishConversationState(state ConversationState) {
 			Timestamp:      time.Now(),
 			Payload:        payload,
 		}
+		s.refreshDiskSpace(context.Background())
 		if !suppressNotify {
 			s.notifDispatcher.Dispatch(context.Background(), event)
 			for _, hook := range hooks {
@@ -1858,6 +1914,10 @@ func (s *Server) StartWithListener(listener net.Listener) error {
 // The Unix socket listener gets only the logger middleware (no CSRF, no requireHeader)
 // since it is local and trusted.
 func (s *Server) StartWithListeners(tcpListener net.Listener, socketPath string) error {
+	if err := s.initDiskSpace(context.Background(), diskAvailableBytes); err != nil {
+		return fmt.Errorf("initialize disk space monitor: %w", err)
+	}
+
 	// agent_working is runtime-only state. Decide what to do with the values the
 	// previous process left behind BEFORE serving: an ordinary restart or crash
 	// clears them, while an upgrade-with-restart hands back the conversations
@@ -1913,12 +1973,7 @@ func (s *Server) StartWithListeners(tcpListener net.Listener, socketPath string)
 	var socketServer *http.Server
 	var actualSocketPath string
 	if socketPath != "" {
-		var socketErr error
-		actualSocketPath, socketErr = unixsocket.Path(socketPath)
-		if socketErr != nil {
-			return socketErr
-		}
-		actualSocketPath = resolveSocketPath(actualSocketPath, s.logger)
+		actualSocketPath = resolveSocketPath(socketPath, s.logger)
 
 		// Ensure the directory exists
 		if err := os.MkdirAll(filepath.Dir(actualSocketPath), 0o700); err != nil {

@@ -3,6 +3,10 @@ import type { TranslationKeys } from "./types";
 export const ja: TranslationKeys = {
   // App-level
   loading: "読み込み中...",
+  diskSpaceLow: "ディスク容量が少なくなっています",
+  diskSpaceCritical: "ディスク容量が極めて少なくなっています",
+  diskSpaceRemaining: "残り",
+  dismiss: "閉じる",
   retry: "再試行",
   failedToLoadConversations: "会話の読み込みに失敗しました。ページを更新してください。",
 
@@ -116,6 +120,8 @@ export const ja: TranslationKeys = {
   clearTagFilter: "すべて解除",
   searchOrTagPlaceholder: "検索、または tag: で絞り込み",
   untagged: "タグなし",
+  participants: "参加者",
+  unattributed: "参加者なし",
   noMatchingTags: "一致するタグがありません",
   noTagsToNarrow: "これ以上絞り込めません",
   noConversationsMatchTags: "このタグに一致する会話はありません",

@@ -3,6 +3,10 @@ import type { TranslationKeys } from "./types";
 export const vi: TranslationKeys = {
   // App-level
   loading: "Đang tải ...",
+  diskSpaceLow: "Dung lượng đĩa còn ít",
+  diskSpaceCritical: "Dung lượng đĩa cực kỳ thấp",
+  diskSpaceRemaining: "còn lại",
+  dismiss: "Bỏ qua",
   retry: "Thử lại",
   failedToLoadConversations: "Tải trò chuyện thất bại. Vui lòng tải lại trang.",
 
@@ -116,6 +120,8 @@ export const vi: TranslationKeys = {
   clearTagFilter: "Xóa tất cả",
   searchOrTagPlaceholder: "Tìm kiếm, hoặc tag: để lọc",
   untagged: "Chưa gắn thẻ",
+  participants: "Người tham gia",
+  unattributed: "Chưa gán người",
   noMatchingTags: "Không có thẻ khớp",
   noTagsToNarrow: "Không còn gì để thu hẹp",
   noConversationsMatchTags: "Không có hội thoại nào khớp các thẻ này",

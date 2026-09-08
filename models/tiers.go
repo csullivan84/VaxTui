@@ -37,12 +37,14 @@ type shadowPair struct {
 // available model.
 var shadowPairs = []shadowPair{
 	// Clear supersessions within a family.
+	{Better: "claude-fable-5.1", Worse: "claude-fable-5"},
 	{Better: "claude-opus-5", Worse: "claude-opus-4.8"},
 	{Better: "claude-opus-5", Worse: "claude-opus-4.7"},
 	{Better: "claude-opus-4.8", Worse: "claude-opus-4.7"},
 	{Better: "claude-opus-4.6", Worse: "claude-opus-4.5"},
 	{Better: "claude-sonnet-5", Worse: "claude-sonnet-4.6"},
 	{Better: "claude-sonnet-5", Worse: "claude-sonnet-4.5"},
+	{Better: "gpt-6-astra", Worse: "gpt-5.6-sol"},
 	{Better: "gpt-5.6-sol", Worse: "gpt-5.5"},
 	{Better: "gpt-5.6-sol", Worse: "gpt-5.4"},
 	{Better: "gpt-5.6-terra", Worse: "gpt-5.4-mini"},

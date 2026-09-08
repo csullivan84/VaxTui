@@ -15,7 +15,7 @@ import { MessageStore } from "./messageStore";
 import type { ConversationCacheRecord } from "./messageStore";
 import type { Conversation, Message, StreamResponse } from "../types";
 import { CacheKeyHolder, type CacheKeyFetcher, type CacheKeyMaterial } from "./cryptoKey";
-import { cacheDiagStats } from "./cacheDiag";
+import { cacheDiagReset, cacheDiagStats } from "./cacheDiag";
 
 // Node 20 lacks a global `crypto.subtle`; expose webcrypto so messageStore's
 // AES-GCM helpers work in tests.
@@ -26,11 +26,13 @@ if (typeof globalThis.crypto === "undefined" || !globalThis.crypto.subtle) {
 /** Static fetcher that returns the same key every call. */
 class StaticFetcher implements CacheKeyFetcher {
   private cleared = false;
+  private fetchCount = 0;
   constructor(
     private keyId: string,
     private rawKey: Uint8Array,
   ) {}
   async fetch(): Promise<CacheKeyMaterial> {
+    this.fetchCount++;
     const buf = new ArrayBuffer(this.rawKey.byteLength);
     new Uint8Array(buf).set(this.rawKey);
     const key = await crypto.subtle.importKey("raw", buf, { name: "AES-GCM" }, false, [
@@ -41,6 +43,9 @@ class StaticFetcher implements CacheKeyFetcher {
   }
   async clear(): Promise<void> {
     this.cleared = true;
+  }
+  fetches(): number {
+    return this.fetchCount;
   }
   wasCleared(): boolean {
     return this.cleared;
@@ -238,6 +243,31 @@ async function main(): Promise<void> {
     );
   });
 
+  await run("concurrent hydrate calls share one IndexedDB read", async () => {
+    const { factory, dbName, keyId, rawKey } = freshFactory();
+    const id = "c-concurrent-hydrate";
+    const s = storeFor({ factory, dbName, keyId, rawKey });
+    s.applyFullHistory(id, {
+      conversation_id: id,
+      messages: [msg(id, 1), msg(id, 2), msg(id, 3)],
+      context_window_size: 42,
+      max_sequence_id: 3,
+    });
+    await s.settle();
+    await s.close();
+
+    cacheDiagReset();
+    const reloaded = storeFor({ factory, dbName, keyId, rawKey });
+    const [first, second] = await Promise.all([reloaded.hydrate(id), reloaded.hydrate(id)]);
+    assert(first !== null && second !== null, "both callers hydrated");
+    assert(first === second, "concurrent callers share the hydrated record");
+    assert(
+      cacheDiagStats()["hydrate.loaded"] === 1,
+      `expected one disk hydrate, got ${JSON.stringify(cacheDiagStats())}`,
+    );
+    await reloaded.close();
+  });
+
   await run("monotonic head: older seq does not lower max_sequence_id_local", async () => {
     const { factory, dbName, keyId, rawKey } = freshFactory();
     const s = storeFor({ factory, dbName, keyId, rawKey });
@@ -311,11 +341,37 @@ async function main(): Promise<void> {
   // ── Poisoned-hydration regressions ────────────────────────────────────────
   //
   // Bookkeeping/metadata mutators used to mark a conversation `hydrated`
-  // even though nothing had been read from IDB. On a page load App calls
+  // even though nothing had been read from IDB. Historically App called
   // setMaxSequenceIdKnown() for EVERY conversation in the list before any
   // of them is focused, so the disk cache was never read and every focus
   // did a full REST reload — the cache only ever worked for in-session
   // conversation switches.
+
+  await run("conversation-list max seeding stays memory-only", async () => {
+    const { factory, dbName, keyId, rawKey } = freshFactory();
+    const fetcher = new StaticFetcher(keyId, rawKey);
+    const s = new MessageStore({
+      factory,
+      dbName,
+      keyHolder: new CacheKeyHolder(fetcher),
+    });
+
+    s.seedMaxSequenceIdsKnown(
+      Array.from({ length: 500 }, (_, i) => ({
+        conversation_id: `c-list-${i + 1}`,
+        max_sequence_id: i + 1,
+      })),
+    );
+
+    assert(fetcher.fetches() === 0, "list seeding must not write IndexedDB");
+    assert(s.peek("c-list-500")!.maxSequenceIdKnown === 500, "known max seeded locally");
+
+    s.markAllStale();
+    await s.settle();
+    const reloaded = storeFor({ factory, dbName, keyId, rawKey });
+    assert((await reloaded.hydrate("c-list-500")) === null, "reconnect created no list-only row");
+    await Promise.all([s.close(), reloaded.close()]);
+  });
 
   await run("setMaxSequenceIdKnown before hydrate must not poison the cache", async () => {
     const { factory, dbName, keyId, rawKey } = freshFactory();
@@ -524,6 +580,32 @@ async function main(): Promise<void> {
     await s.settle();
   });
 
+  await run("markAllStale covers a disk-only conversation in the current tab", async () => {
+    const { factory, dbName, keyId, rawKey } = freshFactory();
+    const id = "c-stale-disk-only";
+    const sA = storeFor({ factory, dbName, keyId, rawKey });
+    sA.applyFullHistory(id, {
+      conversation_id: id,
+      messages: [msg(id, 1), msg(id, 2)],
+      context_window_size: 0,
+      max_sequence_id: 2,
+    });
+    await sA.settle();
+    await sA.close();
+
+    const sB = storeFor({ factory, dbName, keyId, rawKey });
+    sB.markAllStale();
+    const hyd = await sB.hydrate(id);
+    assert(hyd !== null, "disk-only conversation preserved");
+    assert(hyd!.needsRefresh, "this tab re-checks caches first opened after reconnect");
+    await sB.close();
+
+    const sC = storeFor({ factory, dbName, keyId, rawKey });
+    const freshTab = await sC.hydrate(id);
+    assert(!freshTab!.needsRefresh, "a fresh tab does not inherit an old tab's disconnect");
+    await sC.close();
+  });
+
   await run("markAllStale flags a refresh without discarding the cache", async () => {
     // After a stream reconnect we must re-check with the server, but the
     // cached history is still complete and renderable: keep hasFullHistory
@@ -548,16 +630,9 @@ async function main(): Promise<void> {
     const s2 = storeFor({ factory, dbName, keyId, rawKey });
     const hyd = await s2.hydrate(id);
     assert(hyd !== null && hyd.messages.length === 3, "messages preserved on disk");
-    assert(hyd!.needsRefresh === true, "needs_refresh persisted");
+    assert(hyd!.needsRefresh === false, "fresh tab starts with a fresh stream");
     assert(hyd!.hasFullHistory === true, "has_full_history persisted");
-    // And clearing it (after a successful tail fetch) sticks.
-    s2.clearNeedsRefresh(id);
-    await s2.settle();
     await s2.close();
-    const s3 = storeFor({ factory, dbName, keyId, rawKey });
-    const hyd3 = await s3.hydrate(id);
-    assert(hyd3!.needsRefresh === false, "needs_refresh cleared on disk");
-    await s3.close();
   });
 
   await run("applyIncrementalTail appends only the tail and clears needsRefresh", async () => {
@@ -929,10 +1004,6 @@ async function main(): Promise<void> {
     assert(needsBackfill(hyd), "still re-checks with the server");
     await s2.settle();
     await s2.close();
-    // And it was persisted, so a later tab also re-checks.
-    const s3 = storeFor({ factory, dbName, keyId, rawKey });
-    assert((await s3.hydrate(id))!.needsRefresh === true, "needs_refresh persisted");
-    await s3.close();
   });
 
   await run("applyIncrementalTail on a vanished record does not claim full history", async () => {
@@ -1301,8 +1372,8 @@ async function main(): Promise<void> {
     const s2 = storeFor({ factory, dbName, keyId, rawKey });
     const hyd = (await s2.hydrate(id))!;
     assert(hyd.messages.length === 3, "persisted messages preserved");
-    assert(needsBackfill(hyd), "persisted stale => still re-checks");
-    assert(!needsFullReload(hyd), "persisted stale => tail fetch suffices");
+    assert(!needsBackfill(hyd), "fresh tab has a current stream");
+    await s2.close();
   });
 
   await run("per-conversation isolation: A's known does not bleed into B", async () => {

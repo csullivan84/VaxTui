@@ -85,6 +85,8 @@ type pendingBatch struct {
 type ConversationManager struct {
 	conversationID      string
 	conversationOptions db.ConversationOptions
+	decorateService     func(llm.Service) (llm.Service, error)
+	btwReader           bool
 	db                  *db.DB
 	loop                *loop.Loop
 	loopCancel          context.CancelFunc
@@ -113,8 +115,10 @@ type ConversationManager struct {
 	recordMessageBatch messageBatchRecordFunc
 	// recordTurnStartMessage records the user message that begins a turn,
 	// folding the agent_working=true flip and timestamp bump into the INSERT Tx
-	// (see Server.recordTurnStartMessage). Falls back to recordMessage when nil.
-	recordTurnStartMessage loop.MessageRecordFunc
+	// (see Server.recordTurnStartMessage). The turn must not run unless this
+	// succeeds: otherwise the model sees a user message the transcript never
+	// records.
+	recordTurnStartMessage turnStartRecordFunc
 	logger                 *slog.Logger
 	toolSetConfig          claudetool.ToolSetConfig
 	toolSet                *claudetool.ToolSet // created per-conversation when loop starts
@@ -204,6 +208,10 @@ type ConversationManager struct {
 	// Used by subagents to notify their parent conversation.
 	onDone func()
 
+	// onTurnStartRejected restarts pending-batch draining after a failed
+	// turn-start write rolls the manager back to idle.
+	onTurnStartRejected func()
+
 	// subagentWaitOwners counts in-flight synchronous (wait=true) subagent
 	// tool calls targeting THIS (subagent) conversation. While it is >0, a
 	// caller is blocked inside the subagent tool and is expected to deliver
@@ -280,7 +288,9 @@ type ConversationManager struct {
 type messageBatchRecordFunc func(ctx context.Context, msgs []recordMessageInput) error
 
 // NewConversationManager constructs a manager with dependencies but defers hydration until needed.
-func NewConversationManager(conversationID string, database *db.DB, baseLogger *slog.Logger, toolSetConfig claudetool.ToolSetConfig, recordMessage, recordTurnStartMessage loop.MessageRecordFunc, recordMessageBatch messageBatchRecordFunc, onStateChange func(ConversationState), streamPub *subpub.SubPub[StreamResponse]) *ConversationManager {
+type turnStartRecordFunc func(context.Context, llm.Message, llm.Usage, []llm.PurposedUsage) (*generated.Message, error)
+
+func NewConversationManager(conversationID string, database *db.DB, baseLogger *slog.Logger, toolSetConfig claudetool.ToolSetConfig, recordMessage loop.MessageRecordFunc, recordTurnStartMessage turnStartRecordFunc, recordMessageBatch messageBatchRecordFunc, onStateChange func(ConversationState), streamPub *subpub.SubPub[StreamResponse]) *ConversationManager {
 	logger := baseLogger
 	if logger == nil {
 		logger = slog.Default()
@@ -680,6 +690,7 @@ func (cm *ConversationManager) Hydrate(ctx context.Context) error {
 
 	// Load conversation options
 	cm.conversationOptions = db.ParseConversationOptions(conversation.ConversationOptions)
+	managedChild := isManagedChild(*conversation)
 
 	// Set ParentConversationID on toolSetConfig so that subagent tool is included
 	// in the display_data tools list when generating system prompt.
@@ -702,7 +713,9 @@ func (cm *ConversationManager) Hydrate(ctx context.Context) error {
 	if !hasSystemMessage(messages) {
 		var systemMsg *generated.Message
 		var err error
-		if conversation.ParentConversationID != nil {
+		if cm.btwReader {
+			systemMsg, err = cm.recreateBtwReaderSystemPrompt(ctx)
+		} else if managedChild {
 			systemMsg, err = cm.createSubagentSystemPrompt(ctx, *conversation.ParentConversationID)
 		} else if conversation.UserInitiated {
 			systemMsg, err = cm.createSystemPrompt(ctx)
@@ -785,8 +798,19 @@ func (cm *ConversationManager) Hydrate(ctx context.Context) error {
 // The message is recorded to the database immediately so it appears in the UI,
 // even if the loop is busy processing a previous request.
 func (cm *ConversationManager) AcceptUserMessage(ctx context.Context, service llm.Service, modelID string, message llm.Message) (bool, error) {
+	first, _, err := cm.acceptUserMessage(ctx, service, modelID, message)
+	return first, err
+}
+
+// AcceptUserMessageWithID returns the exact turn-start row ID while preserving
+// AcceptUserMessage's behavior for ordinary callers.
+func (cm *ConversationManager) AcceptUserMessageWithID(ctx context.Context, service llm.Service, modelID string, message llm.Message) (bool, string, error) {
+	return cm.acceptUserMessage(ctx, service, modelID, message)
+}
+
+func (cm *ConversationManager) acceptUserMessage(ctx context.Context, service llm.Service, modelID string, message llm.Message) (bool, string, error) {
 	if service == nil {
-		return false, fmt.Errorf("llm service is required")
+		return false, "", fmt.Errorf("llm service is required")
 	}
 
 	cm.loopLifecycleMu.Lock()
@@ -794,57 +818,125 @@ func (cm *ConversationManager) AcceptUserMessage(ctx context.Context, service ll
 	cm.waitForLoopTeardownLocked()
 
 	if err := cm.Hydrate(ctx); err != nil {
-		return false, err
+		return false, "", err
 	}
 
+	cm.mu.Lock()
+	hadLoop := cm.loop != nil
+	cm.mu.Unlock()
 	if err := cm.ensureLoopLocked(service, modelID); err != nil {
-		return false, err
+		return false, "", err
 	}
 
 	cm.mu.Lock()
 	isFirst := !cm.hasConversationEvents
-	cm.hasConversationEvents = true
+	wasWorking := cm.agentWorking
 	loopInstance := cm.loop
-	cm.lastActivity = time.Now()
-	recordMessage := cm.recordMessage
 	recordTurnStart := cm.recordTurnStartMessage
 	cm.mu.Unlock()
 
 	if loopInstance == nil {
-		return false, fmt.Errorf("conversation loop not initialized")
+		return false, "", fmt.Errorf("conversation loop not initialized")
+	}
+	if recordTurnStart == nil {
+		if !hadLoop {
+			cm.discardUnstartedLoopLocked(loopInstance)
+		}
+		return false, "", fmt.Errorf("turn-start recorder not configured")
 	}
 
-	// Flip the in-memory working flag and notify subscribers up front so the
-	// thinking indicator shows immediately. The PERSISTED agent_working=true is
-	// written in the same Tx as the user-message INSERT below (via
-	// recordTurnStartMessage / MarkAgentStart), so the user-message commit's
-	// list-patch already carries working=true — no stale working=false snapshot,
-	// and no separate working-flip commit. syncAgentWorking does the in-memory
-	// flip + broadcast without its own DB write.
-	if recordTurnStart != nil {
-		cm.syncAgentWorking(true)
-		if err := recordTurnStart(ctx, message, llm.Usage{}, nil); err != nil {
-			cm.logger.Error("failed to record user message immediately", "error", err)
-			// Continue anyway - the loop will also try to record it.
+	// Reserve the working state before the fallible write. Other request paths
+	// use it to decide whether they can start immediately, so leaving it false
+	// here lets a concurrent user/subagent send overtake this turn in the DB.
+	cm.syncAgentWorking(true)
+
+	// The loop must never receive a user message that was not committed to the
+	// transcript. In particular, an HTTP disconnect can cancel this insert while
+	// the conversation loop's independent context remains alive. Treat that as
+	// a rejected send instead of running an invisible turn from memory.
+	created, err := recordTurnStart(ctx, message, llm.Usage{}, nil)
+	if err != nil {
+		cm.rejectTurnStart(wasWorking && hadLoop)
+		if !hadLoop {
+			cm.discardUnstartedLoopLocked(loopInstance)
 		}
-	} else {
-		// No turn-start recorder wired (e.g. a manager built without one):
-		// fall back to the two-Tx ordering — persist working=true first, then
-		// the message — to preserve the no-flicker guarantee. Note recordMessage
-		// does not stamp user_email (it also serves tool_result rows), so this
-		// fallback drops author attribution; it's unreachable in production —
-		// getOrCreate*ConversationManager always wire a non-nil recordTurnStart.
-		cm.SetAgentWorking(true)
-		if recordMessage != nil {
-			if err := recordMessage(ctx, message, llm.Usage{}, nil); err != nil {
-				cm.logger.Error("failed to record user message immediately", "error", err)
-			}
+		return false, "", fmt.Errorf("record user message: %w", err)
+	}
+	if created == nil {
+		cm.rejectTurnStart(wasWorking && hadLoop)
+		if !hadLoop {
+			cm.discardUnstartedLoopLocked(loopInstance)
 		}
+		return false, "", fmt.Errorf("turn-start recorder returned no message")
 	}
 
+	cm.mu.Lock()
+	cm.hasConversationEvents = true
+	cm.lastActivity = time.Now()
+	cm.mu.Unlock()
 	loopInstance.QueueUserMessage(message)
 
-	return isFirst, nil
+	return isFirst, created.MessageID, nil
+}
+
+// rejectTurnStart restores an idle manager after a turn-start write fails.
+// SetAgentWorking(false) repairs the persisted bit too, covering a recorder
+// that failed after an ambiguous commit. Marking the transition as cancelling
+// suppresses subagent onDone: a rejected turn is not a completed turn.
+func (cm *ConversationManager) rejectTurnStart(keepWorking bool) {
+	if keepWorking {
+		return
+	}
+	cm.mu.Lock()
+	cm.cancelling = true
+	cm.mu.Unlock()
+	cm.SetAgentWorking(false)
+	cm.mu.Lock()
+	cm.cancelling = false
+	needsDrain := len(cm.pendingBatches) > 0 && !cm.distilling
+	onRejected := cm.onTurnStartRejected
+	cm.mu.Unlock()
+	if needsDrain && onRejected != nil {
+		onRejected()
+	}
+}
+
+// discardUnstartedLoopLocked removes a loop created for a turn whose user row
+// could not be persisted. Leaving it installed makes CancelConversation treat
+// the rejected turn as active and append a bogus cancellation marker. The
+// caller holds loopLifecycleMu; this returns with it held again.
+func (cm *ConversationManager) discardUnstartedLoopLocked(expected *loop.Loop) {
+	cm.mu.Lock()
+	if cm.loop != expected {
+		cm.mu.Unlock()
+		return
+	}
+	cancel := cm.loopCancel
+	loopDone := cm.loopDone
+	toolSet := cm.toolSet
+	cm.loopGeneration++
+	teardownGeneration := cm.loopGeneration
+	cm.loopTearingDown = true
+	cm.loopLifecycleDone = make(chan struct{})
+	cm.loopCancel = nil
+	cm.loopCtx = nil
+	cm.loopDone = nil
+	cm.loop = nil
+	cm.toolSet = nil
+	cm.mu.Unlock()
+
+	cm.loopLifecycleMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if loopDone != nil {
+		<-loopDone
+	}
+	if toolSet != nil {
+		toolSet.Cleanup()
+	}
+	cm.loopLifecycleMu.Lock()
+	cm.finishLoopTeardownLocked(teardownGeneration)
 }
 
 // errRetryNotApplicable is returned by RetryLastLLMRequest when the latest
@@ -1662,6 +1754,36 @@ func hasNonSystemMessages(messages []generated.Message) bool {
 	return false
 }
 
+func (cm *ConversationManager) recreateBtwReaderSystemPrompt(ctx context.Context) (*generated.Message, error) {
+	messages, err := cm.db.ListMessages(ctx, cm.conversationID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load prior BTW reader system prompt: %w", err)
+	}
+
+	systemMessage := llm.UserStringMessage(btwReaderRestrictionPrompt + "\n")
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Type != string(db.MessageTypeSystem) {
+			continue
+		}
+		systemMessage, err = convertToLLMMessage(messages[i])
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode prior BTW reader system prompt: %w", err)
+		}
+		break
+	}
+
+	created, err := cm.db.CreateMessage(ctx, db.CreateMessageParams{
+		ConversationID: cm.conversationID,
+		Type:           db.MessageTypeSystem,
+		LLMData:        systemMessage,
+		UsageData:      llm.Usage{},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to recreate BTW reader system prompt: %w", err)
+	}
+	return created, nil
+}
+
 func (cm *ConversationManager) createSystemPrompt(ctx context.Context) (*generated.Message, error) {
 	var opts []SystemPromptOption
 	if cm.userEmail != "" {
@@ -1903,6 +2025,13 @@ func (cm *ConversationManager) ensureLoop(service llm.Service, modelID string) e
 	return cm.ensureLoopLocked(service, modelID)
 }
 
+func (cm *ConversationManager) serviceForLoop(service llm.Service) (llm.Service, error) {
+	if cm.decorateService == nil {
+		return service, nil
+	}
+	return cm.decorateService(service)
+}
+
 func (cm *ConversationManager) ensureLoopLocked(service llm.Service, modelID string) error {
 	cm.mu.Lock()
 	if cm.loop != nil {
@@ -1990,6 +2119,16 @@ func (cm *ConversationManager) ensureLoopLocked(service llm.Service, modelID str
 	toolSetConfig.ToolOverrides = conversationOpts.ToolOverrides
 	toolSetConfig.DisableAllTools = conversationOpts.DisableAllTools
 	toolSetConfig.ReasoningLevel = conversationOpts.ThinkingLevel
+	if cm.btwReader {
+		toolSetConfig.EnableJITInstall = false
+		toolSetConfig.EnableBrowser = true
+		toolSetConfig.DisableAllTools = true
+		toolSetConfig.ToolOverrides = map[string]string{
+			"bash":           "on",
+			"keyword_search": "on",
+			"read_image":     "on",
+		}
+	}
 	toolSet := claudetool.NewToolSet(processCtx, toolSetConfig)
 
 	// streamFlusher batches LLM stream deltas and flushes them periodically
@@ -1999,6 +2138,12 @@ func (cm *ConversationManager) ensureLoopLocked(service llm.Service, modelID str
 		return cm.isCurrentLoopGeneration(generation)
 	})
 
+	service, err = cm.serviceForLoop(service)
+	if err != nil {
+		cancel()
+		toolSet.Cleanup()
+		return fmt.Errorf("decorate LLM service: %w", err)
+	}
 	loopInstance := loop.NewLoop(loop.Config{
 		LLM:           service,
 		History:       history,

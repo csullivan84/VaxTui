@@ -64,6 +64,7 @@ func TestByID(t *testing.T) {
 		wantID  string
 		wantNil bool
 	}{
+		{id: "gpt-6-astra", wantID: "gpt-6-astra"},
 		{id: "gpt-5.6-sol", wantID: "gpt-5.6-sol"},
 		{id: "gpt-5.6-terra", wantID: "gpt-5.6-terra"},
 		{id: "gpt-5.6-luna", wantID: "gpt-5.6-luna"},
@@ -78,6 +79,7 @@ func TestByID(t *testing.T) {
 		{id: "claude-sonnet-4.5", wantID: "claude-sonnet-4.5"},
 		{id: "claude-haiku-4.5", wantID: "claude-haiku-4.5"},
 		{id: "claude-opus-4.5", wantID: "claude-opus-4.5"},
+		{id: "claude-fable-5.1", wantID: "claude-fable-5.1"},
 		{id: "claude-fable-5", wantID: "claude-fable-5"},
 		{id: "claude-opus-4.8", wantID: "claude-opus-4.8"},
 		{id: "claude-opus-4.7", wantID: "claude-opus-4.7"},
@@ -101,6 +103,44 @@ func TestByID(t *testing.T) {
 				t.Errorf("ByID(%q).ID = %q, want %q", tt.id, m.ID, tt.wantID)
 			}
 		})
+	}
+}
+
+func TestGPT6AstraCatalogEntry(t *testing.T) {
+	m := ByID("gpt-6-astra")
+	if m == nil {
+		t.Fatal("ByID(gpt-6-astra) = nil, want non-nil")
+	}
+	if m.Provider != ProviderOpenAI {
+		t.Errorf("Provider = %q, want %q", m.Provider, ProviderOpenAI)
+	}
+	if m.APIType != APITypeOpenAIResponses {
+		t.Errorf("APIType = %q, want %q", m.APIType, APITypeOpenAIResponses)
+	}
+	if m.APIModelName != "gpt-6-astra" {
+		t.Errorf("APIModelName = %q, want gpt-6-astra", m.APIModelName)
+	}
+	if m.DefaultBaseURL != DefaultOpenAIBaseURL {
+		t.Errorf("DefaultBaseURL = %q, want %q", m.DefaultBaseURL, DefaultOpenAIBaseURL)
+	}
+}
+
+func TestFable51CatalogEntry(t *testing.T) {
+	m := ByID("claude-fable-5.1")
+	if m == nil {
+		t.Fatal("ByID(claude-fable-5.1) = nil, want non-nil")
+	}
+	if m.Provider != ProviderAnthropic {
+		t.Errorf("Provider = %q, want %q", m.Provider, ProviderAnthropic)
+	}
+	if m.APIType != APITypeAnthropicMessages {
+		t.Errorf("APIType = %q, want %q", m.APIType, APITypeAnthropicMessages)
+	}
+	if m.APIModelName != "claude-fable-5-1" {
+		t.Errorf("APIModelName = %q, want claude-fable-5-1", m.APIModelName)
+	}
+	if m.DefaultBaseURL != DefaultAnthropicBaseURL {
+		t.Errorf("DefaultBaseURL = %q, want %q", m.DefaultBaseURL, DefaultAnthropicBaseURL)
 	}
 }
 

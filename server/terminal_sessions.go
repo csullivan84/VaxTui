@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,7 +18,7 @@ import (
 
 	"shelley.exe.dev/dtach"
 	"shelley.exe.dev/exescroll"
-	"shelley.exe.dev/unixsocket"
+	"shelley.exe.dev/sockdial"
 )
 
 const (
@@ -128,14 +127,14 @@ func (t *TerminalSessions) scan() {
 }
 
 func (t *TerminalSessions) socketAlive(path string) bool {
-	path, err := unixsocket.Path(path)
-	if err != nil {
-		return false
-	}
 	if _, err := os.Stat(path); err != nil {
 		return false
 	}
-	conn, err := net.DialTimeout("unix", path, 500*time.Millisecond)
+	// sockdial.Dial (not net.DialTimeout) so a session whose absolute socket
+	// path exceeds sun_path -- routine on macOS, where the sessions dir lives
+	// under a deep Application Support / var/folders path -- is still detected
+	// as alive on restart instead of being reaped as dead.
+	conn, err := sockdial.Dial(path, 500*time.Millisecond)
 	if err != nil {
 		return false
 	}
@@ -150,10 +149,7 @@ func (t *TerminalSessions) removeFiles(id string) {
 
 func (t *TerminalSessions) removeFilesExceptExit(id string) {
 	os.Remove(filepath.Join(t.dir, id+".json"))
-	socket := filepath.Join(t.dir, id+".sock")
-	if resolved, err := unixsocket.Path(socket); err == nil {
-		os.Remove(resolved)
-	}
+	os.Remove(filepath.Join(t.dir, id+".sock"))
 	os.Remove(filepath.Join(t.dir, id+".log"))
 	os.Remove(t.serverPIDFile(id))
 }
@@ -524,9 +520,7 @@ func (t *TerminalSessions) KillMode(id string, force bool) error {
 		} else {
 			// No real process group (or in-process serve): drop the socket so
 			// listeners exit, then wait briefly for death.
-			if socket, err := unixsocket.Path(s.Socket); err == nil {
-				_ = os.Remove(socket)
-			}
+			_ = os.Remove(s.Socket)
 			_ = t.waitSocketDead(s.Socket, 2*time.Second)
 		}
 		if t.socketAlive(s.Socket) {
@@ -740,12 +734,13 @@ func (t *TerminalSessions) spawnSubprocess(socket, logFile, cwd, command string,
 // until the listener is ready.
 func InProcessSpawner(socket, logFile, cwd, command string, cols, rows uint16, extraEnv []string) (int, error) {
 	ready := make(chan struct{})
+	served := make(chan error, 1)
 	var env []string
 	if len(extraEnv) > 0 {
 		env = append(os.Environ(), extraEnv...)
 	}
 	go func() {
-		_ = dtach.Serve(dtach.ServerOptions{
+		served <- dtach.Serve(dtach.ServerOptions{
 			SocketPath: socket,
 			Command:    "bash",
 			Args:       []string{"--login", "-c", command},
@@ -756,7 +751,22 @@ func InProcessSpawner(socket, logFile, cwd, command string, cols, rows uint16, e
 			Ready:      ready,
 		})
 	}()
-	<-ready
+	// Watch the serve result as well as the ready signal: a Serve that fails
+	// before it listens -- a socket path too long for sun_path, say -- never
+	// signals ready, and waiting on ready alone hangs until the test binary's
+	// timeout.
+	select {
+	case <-ready:
+	case err := <-served:
+		select {
+		case <-ready: // raced past ready on its way out; the session did start
+		default:
+			if err == nil {
+				err = errors.New("server exited before listening")
+			}
+			return 0, fmt.Errorf("terminals: in-process dtach: %w", err)
+		}
+	}
 	return os.Getpid(), nil
 }
 

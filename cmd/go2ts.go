@@ -16,6 +16,7 @@ import (
 	"shelley.exe.dev/db"
 	"shelley.exe.dev/db/generated"
 	"shelley.exe.dev/llm"
+	"shelley.exe.dev/server/diskspace"
 	"shelley.exe.dev/server/notifications"
 )
 
@@ -72,6 +73,7 @@ func TS() *go2ts.Go2TS {
 		streamResponseForTS{},
 		conversationWithStateForTS{},
 		notificationEventForTS{},
+		diskspace.DiskSpaceStatus{},
 	)
 
 	// Generate clean nominal types
@@ -107,43 +109,44 @@ type conversationStateForTS struct {
 }
 
 type conversationWithStateForTS struct {
-	ConversationID       string   `json:"conversation_id"`
-	Slug                 *string  `json:"slug"`
-	UserInitiated        bool     `json:"user_initiated"`
-	CreatedAt            string   `json:"created_at"`
-	UpdatedAt            string   `json:"updated_at"`
-	Cwd                  *string  `json:"cwd"`
-	Archived             bool     `json:"archived"`
-	ParentConversationID *string  `json:"parent_conversation_id"`
-	Model                *string  `json:"model"`
-	ConversationOptions  string   `json:"conversation_options"`
-	CurrentGeneration    int64    `json:"current_generation"`
-	AgentWorking         bool     `json:"agent_working"`
-	Tags                 string   `json:"tags"`
-	IsDraft              bool     `json:"is_draft"`
-	Draft                string   `json:"draft"`
-	QueuedMessages       string   `json:"queued_messages"`
-	Working              bool     `json:"working"`
-	GitRepoRoot          string   `json:"git_repo_root,omitempty"`
-	GitWorktreeRoot      string   `json:"git_worktree_root,omitempty"`
-	GitCommit            string   `json:"git_commit,omitempty"`
-	GitSubject           string   `json:"git_subject,omitempty"`
-	SubagentCount        int64    `json:"subagent_count"`
-	Preview              string   `json:"preview,omitempty"`
-	PreviewUpdatedAt     string   `json:"preview_updated_at,omitempty"`
-	SearchSnippet        string   `json:"search_snippet,omitempty"`
-	MaxSequenceID        int64    `json:"max_sequence_id"`
-	Participants         []string `json:"participants,omitempty"`
+	ConversationID       string                       `json:"conversation_id"`
+	Slug                 *string                      `json:"slug"`
+	UserInitiated        bool                         `json:"user_initiated"`
+	CreatedAt            string                       `json:"created_at"`
+	UpdatedAt            string                       `json:"updated_at"`
+	Cwd                  *string                      `json:"cwd"`
+	Archived             bool                         `json:"archived"`
+	ParentConversationID *string                      `json:"parent_conversation_id"`
+	Model                *string                      `json:"model"`
+	ConversationOptions  string                       `json:"conversation_options"`
+	CurrentGeneration    int64                        `json:"current_generation"`
+	AgentWorking         bool                         `json:"agent_working"`
+	Tags                 string                       `json:"tags"`
+	IsDraft              bool                         `json:"is_draft"`
+	Draft                string                       `json:"draft"`
+	QueuedMessages       string                       `json:"queued_messages"`
+	Working              bool                         `json:"working"`
+	GitRepoRoot          string                       `json:"git_repo_root,omitempty"`
+	GitWorktreeRoot      string                       `json:"git_worktree_root,omitempty"`
+	GitCommit            string                       `json:"git_commit,omitempty"`
+	GitSubject           string                       `json:"git_subject,omitempty"`
+	SubagentCount        int64                        `json:"subagent_count"`
+	Preview              string                       `json:"preview,omitempty"`
+	PreviewUpdatedAt     string                       `json:"preview_updated_at,omitempty"`
+	SearchSnippet        string                       `json:"search_snippet,omitempty"`
+	MaxSequenceID        int64                        `json:"max_sequence_id"`
+	Participants         []db.ConversationParticipant `json:"participants,omitempty"`
 }
 
 type streamResponseForTS struct {
-	ConversationID    string                  `json:"conversation_id,omitempty"`
-	Messages          []apiMessageForTS       `json:"messages,omitempty"`
-	Conversation      *generated.Conversation `json:"conversation,omitempty"`
-	ConversationState *conversationStateForTS `json:"conversation_state,omitempty"`
-	Heartbeat         bool                    `json:"heartbeat,omitempty"`
-	NotificationEvent *notificationEventForTS `json:"notification_event,omitempty"`
-	MaxSequenceID     int64                   `json:"max_sequence_id,omitempty"`
+	ConversationID    string                     `json:"conversation_id,omitempty"`
+	Messages          []apiMessageForTS          `json:"messages,omitempty"`
+	Conversation      *generated.Conversation    `json:"conversation,omitempty"`
+	ConversationState *conversationStateForTS    `json:"conversation_state,omitempty"`
+	Heartbeat         bool                       `json:"heartbeat,omitempty"`
+	NotificationEvent *notificationEventForTS    `json:"notification_event,omitempty"`
+	DiskSpaceStatus   *diskspace.DiskSpaceStatus `json:"disk_space_status,omitempty"`
+	MaxSequenceID     int64                      `json:"max_sequence_id,omitempty"`
 }
 
 type notificationEventForTS struct {

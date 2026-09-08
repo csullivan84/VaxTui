@@ -95,6 +95,8 @@
             :conversation-id="currentConversationId"
             :workspace-id="currentWorkspace?.id"
             :stream-status="streamStatus"
+            :disk-space-status="diskSpaceStatus"
+            :on-disk-space-status="applyDiskSpaceStatus"
             :reconnect-nonce="reconnectNonce"
             :on-open-drawer="() => (drawerOpen = true)"
             :on-new-conversation="startNewConversation"
@@ -299,8 +301,10 @@ import {
   type Conversation,
   type ConversationWithState,
   type ConversationListPatchEvent,
+  type DiskSpaceStatus,
 } from "../types";
 import { api, type OnboardingStatus, type Workspace } from "../services/api";
+import { btwStore } from "../services/btwStore";
 import { messageStore } from "../services/messageStore";
 import {
   reduceConversationListPatch,
@@ -470,6 +474,12 @@ const loading = ref(true);
 const error = ref<string | null>(null);
 const ephemeralTerminals = ref<EphemeralTerminal[]>([]);
 const streamStatus = ref<StreamStatus>("connected");
+// Server-wide low-disk notice; the server sends a snapshot on every (re)connect.
+const diskSpaceStatus = ref<DiskSpaceStatus | null>(null);
+function applyDiskSpaceStatus(status: DiskSpaceStatus) {
+  if (diskSpaceStatus.value && status.revision < diskSpaceStatus.value.revision) return;
+  diskSpaceStatus.value = status;
+}
 const reconnectNonce = ref(0);
 const showActiveTrigger = ref(0);
 const workspaces = ref<Workspace[]>([]);
@@ -640,10 +650,12 @@ function handleConversationListPatch(event: ConversationListPatchEvent) {
     return;
   }
   for (const removedId of result.removedIds) {
+    const removed = prev.find((conversation) => conversation.conversation_id === removedId);
     void messageStore.delete(removedId);
+    btwStore.clear(removedId, removed?.parent_conversation_id ?? undefined);
   }
+  messageStore.seedMaxSequenceIdsKnown(result.state.list);
   for (const conv of result.state.list) {
-    messageStore.setMaxSequenceIdKnown(conv.conversation_id, conv.max_sequence_id);
     // Seed from `working` — the list's authoritative working flag, which the
     // drawer indicator also renders — so the status bar and the conversation
     // list (the source of truth) never disagree.
@@ -675,9 +687,7 @@ async function loadConversations() {
     loading.value = true;
     error.value = null;
     const snapshot = await api.getConversationsSnapshot();
-    for (const conv of snapshot.conversations) {
-      messageStore.setMaxSequenceIdKnown(conv.conversation_id, conv.max_sequence_id);
-    }
+    messageStore.seedMaxSequenceIdsKnown(snapshot.conversations);
     const activeIds = snapshot.conversations.map((c) => c.conversation_id);
     void messageStore.pruneStale(activeIds, 7 * 24 * 60 * 60 * 1000);
     const streamHash = conversationListHash;
@@ -825,6 +835,7 @@ function handleConversationArchived(
   nextConversation?: Conversation | null,
 ) {
   void messageStore.delete(conversationId);
+  btwStore.clear(conversationId);
   if (currentConversationId.value === conversationId) {
     if (nextConversation && nextConversation.conversation_id !== conversationId) {
       currentConversationId.value = nextConversation.conversation_id;
@@ -1188,6 +1199,7 @@ onMounted(() => {
     onListPatch: handleConversationListPatch,
     onNotificationEvent: handleNotificationEvent,
     onStatusChange: (status) => (streamStatus.value = status),
+    onDiskSpaceStatus: applyDiskSpaceStatus,
     onReconnect: () => {
       reconnectNonce.value++;
     },

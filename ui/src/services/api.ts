@@ -1,8 +1,11 @@
 import {
   Conversation,
+  ConversationWithParticipants,
   ConversationWithState,
+  DiskSpaceStatus,
   StreamResponse,
   ChatRequest,
+  BtwReaderDescriptor,
   GitDiffInfo,
   GitFileInfo,
   GitFileDiff,
@@ -13,7 +16,16 @@ import {
 // Extract a useful error message from a failed fetch response. Prefers the
 // response body (which may contain a server-side detail like a hook error),
 // falls back to statusText, then to the numeric status.
-async function responseError(response: Response, prefix: string): Promise<Error> {
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
+}
+
+async function responseError(response: Response, prefix: string): Promise<ApiError> {
   let detail = "";
   try {
     detail = (await response.text()).trim();
@@ -23,7 +35,7 @@ async function responseError(response: Response, prefix: string): Promise<Error>
   if (!detail) {
     detail = response.statusText || `HTTP ${response.status}`;
   }
-  return new Error(`${prefix}: ${detail}`);
+  return new ApiError(`${prefix}: ${detail}`, response.status);
 }
 
 export interface AvailableModel {
@@ -61,6 +73,41 @@ export interface Workspace {
   path: string;
   created_at: string;
   updated_at: string;
+}
+
+export interface GitTourHeaderEntry {
+  header: string;
+}
+
+export interface GitTourPatchEntry {
+  patch: string;
+  comment?: string;
+  trivial?: boolean;
+}
+
+export type GitTourEntry = GitTourHeaderEntry | GitTourPatchEntry;
+
+export interface GitTour {
+  version: 1;
+  title?: string;
+  intro?: string;
+  chunks: GitTourEntry[];
+}
+
+export interface GitTourResponse {
+  hash: string;
+  tour: GitTour;
+}
+
+export interface ChatAcceptedResponse {
+  status?: string;
+  btw?: BtwReaderDescriptor;
+}
+
+export interface BtwSummaryReceipt {
+  status?: string;
+  message_id: string;
+  btw: BtwReaderDescriptor;
 }
 
 class ApiService {
@@ -295,7 +342,7 @@ class ApiService {
   ): Promise<StreamResponse> {
     const response = await fetch(`${this.baseUrl}/conversation/${conversationId}`);
     if (!response.ok) {
-      throw new Error(`Failed to get messages: ${response.statusText}`);
+      throw await responseError(response, "Failed to get messages");
     }
 
     const contentLengthHeader = response.headers.get("Content-Length");
@@ -367,7 +414,7 @@ class ApiService {
     conversationId: string,
     request: ChatRequest,
     signal?: AbortSignal,
-  ): Promise<void> {
+  ): Promise<ChatAcceptedResponse> {
     const response = await fetch(`${this.baseUrl}/conversation/${conversationId}/chat`, {
       method: "POST",
       headers: this.postHeaders,
@@ -377,6 +424,27 @@ class ApiService {
     if (!response.ok) {
       throw await responseError(response, "Failed to send message");
     }
+    const body = await response.text();
+    return body ? (JSON.parse(body) as ChatAcceptedResponse) : {};
+  }
+
+  async listBtwReaders(conversationId: string): Promise<BtwReaderDescriptor[]> {
+    const response = await fetch(`${this.baseUrl}/conversation/${conversationId}/btw`);
+    if (!response.ok) throw await responseError(response, "Failed to load BTW readers");
+    const data = (await response.json()) as { readers?: BtwReaderDescriptor[] };
+    return data.readers ?? [];
+  }
+
+  async summarizeBtwExchange(
+    conversationId: string,
+    exchangeId: string,
+  ): Promise<BtwSummaryReceipt> {
+    const response = await fetch(
+      `${this.baseUrl}/conversation/${conversationId}/btw/${exchangeId}/summarize`,
+      { method: "POST", headers: this.postHeaders },
+    );
+    if (!response.ok) throw await responseError(response, "Failed to summarize BTW");
+    return response.json();
   }
 
   // createStream opens the unified SSE stream. It delivers per-conversation
@@ -538,7 +606,7 @@ class ApiService {
     return response.json();
   }
 
-  async getArchivedConversations(): Promise<Conversation[]> {
+  async getArchivedConversations(): Promise<ConversationWithParticipants[]> {
     const response = await fetch(`${this.baseUrl}/conversations/archived`);
     if (!response.ok) {
       throw new Error(`Failed to get archived conversations: ${response.statusText}`);
@@ -594,6 +662,15 @@ class ApiService {
     if (!response.ok) {
       const text = await response.text();
       throw new Error(text || response.statusText);
+    }
+    return response.json();
+  }
+
+  async getGitTour(cwd: string, hash: string): Promise<GitTourResponse> {
+    const params = new URLSearchParams({ cwd, hash });
+    const response = await fetch(`${this.baseUrl}/git/tour?${params}`);
+    if (!response.ok) {
+      throw await responseError(response, "Failed to get commit tour");
     }
     return response.json();
   }
@@ -697,25 +774,39 @@ class ApiService {
   // vm-storage-s3-design.md. A query that announces itself as a path (a
   // leading /, ~, ./ or ../) re-roots the search at the directory it names:
   // `search_dir` is then the directory matches are relative to, and
-  // `match_query` the part of the query matched within it. `signal` lets
+  // `match_query` the part of the query matched within it. Content search is
+  // a second phase: pass `opts.content` "skip" for the fast name-only pass
+  // (no snippets), then "only" for git-grep hits alone — each match then
+  // carries `line`/`snippet`/`snippet_matched_indexes` and no path highlights
+  // — so name matches render immediately while grep catches up. `signal` lets
   // callers abort superseded requests while the user types.
   async findFiles(
     dir: string,
     query: string,
     signal?: AbortSignal,
-    limit?: number,
+    limitOrOpts?: number | { content?: "skip" | "only" },
   ): Promise<{
     dir: string;
     search_dir: string;
     query: string;
     match_query: string;
-    matches: Array<{ path: string; matched_indexes?: number[] }>;
+    matches: Array<{
+      path: string;
+      matched_indexes?: number[];
+      line?: number;
+      snippet?: string;
+      snippet_matched_indexes?: number[];
+    }>;
     total: number;
     truncated: boolean;
   }> {
     const params = new URLSearchParams({ dir });
     if (query) params.set("q", query);
-    if (limit) params.set("limit", String(limit));
+    if (typeof limitOrOpts === "number") {
+      if (limitOrOpts) params.set("limit", String(limitOrOpts));
+    } else if (limitOrOpts?.content) {
+      params.set("content", limitOrOpts.content);
+    }
     const response = await fetch(`${this.baseUrl}/find-files?${params.toString()}`, { signal });
     if (!response.ok) {
       throw await responseError(response, "Failed to find files");
@@ -863,6 +954,22 @@ class ApiService {
         "X-Shelley-Request": "1",
       },
       body: JSON.stringify({ key, value }),
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(text || response.statusText);
+    }
+    return response.json();
+  }
+
+  async dismissDiskSpaceNotice(episodeId: number): Promise<DiskSpaceStatus> {
+    const response = await fetch("/api/disk-space/dismiss", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Shelley-Request": "1",
+      },
+      body: JSON.stringify({ episode_id: episodeId }),
     });
     if (!response.ok) {
       const text = await response.text();

@@ -3,6 +3,10 @@ export type Locale = "en" | "ja" | "fr" | "ru" | "es" | "zh-CN" | "zh-TW" | "upg
 export interface TranslationKeys {
   // App-level
   loading: string;
+  diskSpaceLow: string;
+  diskSpaceCritical: string;
+  diskSpaceRemaining: string;
+  dismiss: string;
   retry: string;
   failedToLoadConversations: string;
 
@@ -115,6 +119,8 @@ export interface TranslationKeys {
   other: string;
   clearTagFilter: string;
   untagged: string;
+  participants: string;
+  unattributed: string;
   searchOrTagPlaceholder: string;
   noMatchingTags: string;
   noTagsToNarrow: string;

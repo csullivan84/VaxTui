@@ -687,6 +687,7 @@ func (s *Server) serveIndexWithInit(w http.ResponseWriter, r *http.Request, fs h
 		"default_cwd":         defaultCwd,
 		"home_dir":            homeDir,
 		"user_agents_md_path": userAgentsMdPath,
+		"user_email":          strings.TrimSpace(r.Header.Get("X-ExeDev-Email")),
 		// is_exe_dev lets the UI pick exe.dev-specific setup advice even when
 		// model_setup_hint is absent (the catalog can empty AFTER page load, via
 		// a detached integration plus Refresh).
@@ -953,6 +954,12 @@ func (s *Server) conversationMux() *http.ServeMux {
 	mux.HandleFunc("POST /{id}/retry", func(w http.ResponseWriter, r *http.Request) {
 		s.handleRetryConversation(w, r, r.PathValue("id"))
 	})
+	mux.HandleFunc("GET /{id}/btw", func(w http.ResponseWriter, r *http.Request) {
+		s.handleListBtwReaders(w, r, r.PathValue("id"))
+	})
+	mux.HandleFunc("POST /{id}/btw/{childID}/summarize", func(w http.ResponseWriter, r *http.Request) {
+		s.handleSummarizeBtwReader(w, r, r.PathValue("id"), r.PathValue("childID"))
+	})
 	mux.HandleFunc("POST /{id}/continue", func(w http.ResponseWriter, r *http.Request) {
 		s.handleContinueConversation(w, r, r.PathValue("id"))
 	})
@@ -1098,6 +1105,11 @@ func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, 
 		http.Error(w, "Message is required", http.StatusBadRequest)
 		return
 	}
+	if req.ConversationOptions != nil &&
+		(req.ConversationOptions.Kind != "" || req.ConversationOptions.ParentPointer != nil) {
+		http.Error(w, "kind and parent_pointer are internal conversation options", http.StatusBadRequest)
+		return
+	}
 
 	// Load the conversation up front; we need its persisted model to
 	// resolve an omitted `model` (see below) and the draft branches need
@@ -1138,8 +1150,30 @@ func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, 
 
 	llmService, err := s.llmManager.GetService(modelID)
 	if err != nil {
+		modelList := s.getModelList()
+		// A removed persisted model must not trap an established conversation.
+		// An explicit /model switch does not need the old service, so let it
+		// replace the stale model before rejecting ordinary sends. Drafts retain
+		// their existing promotion semantics below.
+		if !existing.IsDraft && modelCommandSelectsReadyModel(req.Message, modelList) {
+			userEmail := r.Header.Get("X-ExeDev-Email")
+			recoveryCtx := contextWithUserEmail(ctx, userEmail)
+			manager, managerErr := s.getOrCreateConversationManager(recoveryCtx, conversationID, userEmail)
+			if errors.Is(managerErr, errConversationModelMismatch) {
+				http.Error(w, managerErr.Error(), http.StatusBadRequest)
+				return
+			}
+			if managerErr != nil {
+				s.logger.Error("Failed to get conversation manager", "conversationID", conversationID, "error", managerErr)
+				http.Error(w, "Internal server error", http.StatusInternalServerError)
+				return
+			}
+			if s.handleModelCommand(recoveryCtx, w, conversationID, modelID, manager, req.Message) {
+				return
+			}
+		}
 		s.logger.Error("Unsupported model requested", "model", modelID, "error", err)
-		http.Error(w, unsupportedModelMessage(modelID, s.getModelList()), http.StatusBadRequest)
+		http.Error(w, unsupportedModelMessage(modelID, modelList), http.StatusBadRequest)
 		return
 	}
 
@@ -1151,6 +1185,61 @@ func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, 
 	// carrier here. Both the immediate-send (recordTurnStartMessage) and queued
 	// (QueueMessage) paths read it off this ctx.
 	ctx = contextWithUserEmail(ctx, userEmail)
+
+	// A built-in /btw is a detached child start, not a parent turn. Give an
+	// installed slash/btw hook first refusal, then create the child before
+	// acquiring or consulting the parent manager so Queue and parent work do
+	// not delay it.
+	var btwSlashResult *SlashCommandHookResult
+	if question, ok := parseBuiltinBtw(req.Message); ok {
+		result := RunSlashCommandHook(SlashCommandHookInput{
+			RawMessage:     req.Message,
+			ConversationID: conversationID,
+			Cwd:            derefString(existing.Cwd),
+			Model:          modelID,
+			UserEmail:      userEmail,
+		})
+		if result.Err != nil {
+			s.logger.Error("slash-command hook failed", "conversationID", conversationID, "error", result.Err)
+			http.Error(w, fmt.Sprintf("slash command failed: %v", result.Err), http.StatusBadRequest)
+			return
+		}
+		if result.Handled {
+			if result.Message == "" {
+				writeBtwReaderJSON(w, http.StatusAccepted, map[string]string{"status": "handled"})
+				return
+			}
+			btwSlashResult = &result
+		}
+		if btwSlashResult == nil {
+			if question == "" {
+				http.Error(w, "/btw requires a side question", http.StatusBadRequest)
+				return
+			}
+			reasoningLevel := db.ParseConversationOptions(existing.ConversationOptions).ThinkingLevel
+			if reasoningLevel == "" {
+				reasoningLevel = llm.ServiceDefaultReasoningLevel(llmService)
+			}
+			question, err = s.runChatMessageHook(r, conversationID, modelID, reasoningLevel, false, question)
+			if err != nil {
+				s.logger.Error("chat-message hook failed", "conversationID", conversationID, "error", err)
+				http.Error(w, "chat-message hook failed", http.StatusInternalServerError)
+				return
+			}
+			descriptor, err := s.createBtwReader(ctx, conversationID, question)
+			if errors.Is(err, errNestedBtwReader) || errors.Is(err, errBtwParentDraft) {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if err != nil {
+				s.logger.Error("Failed to create BTW reader", "conversationID", conversationID, "error", err)
+				http.Error(w, "Failed to create BTW reader", http.StatusInternalServerError)
+				return
+			}
+			writeBtwReaderJSON(w, http.StatusAccepted, map[string]any{"status": "accepted", "btw": descriptor})
+			return
+		}
+	}
 
 	// Drafts can have their model/cwd retargeted right up to send. Validate
 	// send-time overrides the same way the new-conversation path does, then
@@ -1166,12 +1255,13 @@ func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, 
 		// tool overrides) only travels with the promoting
 		// chat request, so without this the selection is dropped and reasoning
 		// is silently disabled for adaptive models.
-		if req.ConversationOptions != nil {
-			if msg := validateConversationOptions(*req.ConversationOptions); msg != "" {
+		conversationOptions := req.ConversationOptions
+		if conversationOptions != nil {
+			if msg := validateConversationOptions(*conversationOptions); msg != "" {
 				http.Error(w, msg, http.StatusBadRequest)
 				return
 			}
-			if msg := validateModelReasoningLevel(findModelInfo(modelID, s.getModelList()), req.ConversationOptions.ThinkingLevel); msg != "" {
+			if msg := validateModelReasoningLevel(findModelInfo(modelID, s.getModelList()), conversationOptions.ThinkingLevel); msg != "" {
 				http.Error(w, msg, http.StatusBadRequest)
 				return
 			}
@@ -1184,7 +1274,7 @@ func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, 
 			// req.Model was already validated against the LLM manager above.
 			modelOverride = &req.Model
 		}
-		promoted, err := s.db.PromoteDraft(ctx, conversationID, cwdOverride, modelOverride, req.ConversationOptions)
+		promoted, err := s.db.PromoteDraft(ctx, conversationID, cwdOverride, modelOverride, conversationOptions)
 		switch {
 		case errors.Is(err, db.ErrConversationNotDraft):
 			// A concurrent send won the promote race; its overrides stand and
@@ -1213,7 +1303,6 @@ func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, 
 		}
 	}
 
-	// Get or create conversation manager
 	manager, err := s.getOrCreateConversationManager(ctx, conversationID, userEmail)
 	if errors.Is(err, errConversationModelMismatch) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -1264,13 +1353,18 @@ func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, 
 	// executable exists at ~/.config/shelley/hooks/slash/<name>, run it and
 	// use its stdout as the replacement message text. Empty stdout leaves
 	// the original message unchanged.
-	slashResult := RunSlashCommandHook(SlashCommandHookInput{
-		RawMessage:     req.Message,
-		ConversationID: conversationID,
-		Cwd:            manager.cwd,
-		Model:          modelID,
-		UserEmail:      userEmail,
-	})
+	slashResult := SlashCommandHookResult{}
+	if btwSlashResult != nil {
+		slashResult = *btwSlashResult
+	} else {
+		slashResult = RunSlashCommandHook(SlashCommandHookInput{
+			RawMessage:     req.Message,
+			ConversationID: conversationID,
+			Cwd:            manager.cwd,
+			Model:          modelID,
+			UserEmail:      userEmail,
+		})
+	}
 	if slashResult.Err != nil {
 		s.logger.Error("slash-command hook failed", "conversationID", conversationID, "error", slashResult.Err)
 		http.Error(w, fmt.Sprintf("slash command failed: %v", slashResult.Err), http.StatusBadRequest)
@@ -1291,16 +1385,7 @@ func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, 
 	if reasoningLevel == "" {
 		reasoningLevel = llm.ServiceDefaultReasoningLevel(llmService)
 	}
-	newMsg, err := RunChatMessageHookIn(s.hooksDir, ChatMessageHookInput{
-		Message: req.Message,
-		Readonly: ChatMessageReadonly{
-			ConversationID: conversationID,
-			Model:          modelID,
-			ReasoningLevel: reasoningLevel,
-			Queued:         willQueue,
-			Headers:        HookHeaders(r.Header),
-		},
-	})
+	newMsg, err := s.runChatMessageHook(r, conversationID, modelID, reasoningLevel, willQueue, req.Message)
 	if err != nil {
 		s.logger.Error("chat-message hook failed", "conversationID", conversationID, "error", err)
 		http.Error(w, "chat-message hook failed", http.StatusInternalServerError)
@@ -1369,6 +1454,19 @@ func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, 
 
 	w.WriteHeader(http.StatusAccepted)
 	json.NewEncoder(w).Encode(map[string]string{"status": "accepted"})
+}
+
+func (s *Server) runChatMessageHook(r *http.Request, conversationID, modelID, reasoningLevel string, queued bool, message string) (string, error) {
+	return RunChatMessageHookIn(s.hooksDir, ChatMessageHookInput{
+		Message: message,
+		Readonly: ChatMessageReadonly{
+			ConversationID: conversationID,
+			Model:          modelID,
+			ReasoningLevel: reasoningLevel,
+			Queued:         queued,
+			Headers:        HookHeaders(r.Header),
+		},
+	})
 }
 
 // handleNewConversation handles POST /api/conversations/new - creates conversation implicitly on first message
@@ -1702,7 +1800,6 @@ func (s *Server) handleRetryConversation(w http.ResponseWriter, r *http.Request,
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-
 	s.logger.Info("Retry triggered", "conversationID", conversationID)
 	w.WriteHeader(http.StatusAccepted)
 	json.NewEncoder(w).Encode(map[string]string{"status": "retrying"})
@@ -1809,7 +1906,6 @@ func (s *Server) handleContinueConversation(w http.ResponseWriter, r *http.Reque
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-
 	s.logger.Info("Continue triggered", "conversationID", conversationID, "model", newModel)
 	w.WriteHeader(http.StatusAccepted)
 	json.NewEncoder(w).Encode(map[string]string{"status": "continuing", "model": newModel})
@@ -2104,7 +2200,7 @@ func (s *Server) runStream(w http.ResponseWriter, r *http.Request, conversationI
 	}
 
 	if includeConversationListPatches && s.streamPub != nil {
-		next, status := s.streamPub.SubscribeWithStatus(ctx, -1)
+		next, status, diskSpace := s.subscribeStream(ctx)
 		watchSubscription(status, "global")
 		go func() {
 			for {
@@ -2117,6 +2213,9 @@ func (s *Server) runStream(w http.ResponseWriter, r *http.Request, conversationI
 				}
 			}
 		}()
+		if diskSpace != nil && !writeStreamData(StreamResponse{DiskSpaceStatus: diskSpace}) {
+			return
+		}
 	}
 
 	// On the unified /api/stream2 endpoint, send a bare heartbeat whenever
@@ -2603,6 +2702,21 @@ func resolveReasoningArg(arg string) (string, bool) {
 	return "", false
 }
 
+func modelCommandSelectsReadyModel(message string, modelList []ModelInfo) bool {
+	fields := strings.Fields(strings.TrimSpace(message))
+	if len(fields) < 2 || fields[0] != "/model" {
+		return false
+	}
+	for _, arg := range fields[1:] {
+		_, isLevel := resolveReasoningArg(arg)
+		modelID, _, strong := resolveModelArg(arg, modelList)
+		if modelID != "" && (!isLevel || strong) {
+			return true
+		}
+	}
+	return false
+}
+
 // resolveModelArg matches a /model argument to a ready model id, leniently. In
 // priority order: an exact id; a case/dot-insensitive exact spelling; a unique
 // id prefix; a unique substring match. It returns (id, nil, strong) on a unique
@@ -2962,8 +3076,30 @@ func (s *Server) handleArchivedConversations(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	ids := make([]string, len(conversations))
+	for i := range conversations {
+		ids[i] = conversations[i].ConversationID
+	}
+	participants, err := s.db.ConversationParticipants(ctx, ids)
+	if err != nil {
+		s.logger.Error("Failed to get archived conversation participants", "error", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	type archivedConversationResponse struct {
+		generated.Conversation
+		Participants []db.ConversationParticipant `json:"participants,omitempty"`
+	}
+	decorated := make([]archivedConversationResponse, len(conversations))
+	for i, conversation := range conversations {
+		decorated[i] = archivedConversationResponse{
+			Conversation: conversation,
+			Participants: participants[conversation.ConversationID],
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(conversations)
+	json.NewEncoder(w).Encode(decorated)
 }
 
 // handleArchiveConversation handles POST /conversation/<id>/archive
@@ -3024,15 +3160,7 @@ func (s *Server) handleDeleteConversation(w http.ResponseWriter, r *http.Request
 	}
 
 	ctx := r.Context()
-	// Terminals owned by this conversation would otherwise point at a
-	// conversation that no longer exists, so make them global first. If that
-	// fails, leave the conversation alone rather than orphaning them.
-	if err := s.terminals.GlobalizeConversation(conversationID); err != nil {
-		s.logger.Error("Failed to globalize conversation terminals", "conversationID", conversationID, "error", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-		return
-	}
-	if err := s.db.DeleteConversation(ctx, conversationID); err != nil {
+	if err := s.deleteConversation(ctx, conversationID); err != nil {
 		// The terminals are already global at this point. That is harmless and
 		// visible to the user, so no rollback is attempted.
 		s.logger.Error("Failed to delete conversation", "conversationID", conversationID, "error", err)
@@ -3760,6 +3888,10 @@ func (s *Server) handleForkConversation(w http.ResponseWriter, r *http.Request, 
 	}
 
 	forked, err := s.db.ForkConversation(ctx, conversationID, cutoff)
+	if errors.Is(err, db.ErrCannotForkBtwReader) {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	if errors.Is(err, db.ErrInvalidForkPoint) {
 		http.Error(w, "Invalid fork point: no message at or before the requested cutoff", http.StatusBadRequest)
 		return
@@ -4050,6 +4182,9 @@ func validateModelReasoningLevel(model *ModelInfo, level string) string {
 }
 
 func validateConversationOptions(opts db.ConversationOptions) string {
+	if opts.Kind != "" || opts.ParentPointer != nil {
+		return "kind and parent_pointer are internal conversation options"
+	}
 	for name, v := range opts.ToolOverrides {
 		if v != "on" && v != "off" {
 			return fmt.Sprintf("Invalid tool_overrides[%s]=%q; must be \"on\" or \"off\"", name, v)

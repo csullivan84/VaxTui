@@ -63,8 +63,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   // status-change: id, status, exitCode (React onStatusChange)
   (e: "status-change", id: string, status: TermStatus, exitCode: number | null): void;
-  // register/unregister: id, xterm instance (React onRegister/onUnregister)
-  (e: "register", id: string, xterm: Terminal): void;
+  // register/unregister: id, xterm instance, and its fit callback
+  (e: "register", id: string, xterm: Terminal, fit: () => void): void;
   (e: "unregister", id: string): void;
   // attached: id, termId (React onAttached)
   (e: "attached", id: string, termId: string): void;
@@ -107,6 +107,20 @@ function stopTerminalLiveOutput(announce: boolean) {
     liveOutputCapped = true;
     announceA11y(
       `Terminal live output paused after ${liveOutputPauseSeconds()} seconds. Press Escape to resume, or Tab to Terminal output to read.`,
+    );
+  }
+}
+
+function fitAndNotifyServer() {
+  if (!fitAddon) return;
+  fitAddon.fit();
+  if (ws?.readyState === WebSocket.OPEN && xtermInst) {
+    ws.send(
+      JSON.stringify({
+        type: "resize",
+        cols: xtermInst.cols,
+        rows: xtermInst.rows,
+      }),
     );
   }
 }
@@ -307,8 +321,8 @@ onMounted(() => {
   xterm.loadAddon(new WebLinksAddon());
 
   xterm.open(containerRef.value);
-  fitAddon.fit();
-  emit("register", props.term.id, xterm);
+  fitAndNotifyServer();
+  emit("register", props.term.id, xterm, fitAndNotifyServer);
 
   handleShellFocus = resumeTerminalLiveOutput;
   handleShellBlur = () => stopTerminalLiveOutput(false);
@@ -409,19 +423,7 @@ onMounted(() => {
     }
   });
 
-  ro = new ResizeObserver(() => {
-    if (!fitAddon) return;
-    fitAddon.fit();
-    if (socket.readyState === WebSocket.OPEN && xtermInst) {
-      socket.send(
-        JSON.stringify({
-          type: "resize",
-          cols: xtermInst.cols,
-          rows: xtermInst.rows,
-        }),
-      );
-    }
-  });
+  ro = new ResizeObserver(fitAndNotifyServer);
   ro.observe(containerRef.value);
 });
 

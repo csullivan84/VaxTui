@@ -13,7 +13,6 @@ import (
 	"unsafe"
 
 	"github.com/creack/pty"
-	"shelley.exe.dev/unixsocket"
 )
 
 // ServerOptions configures Serve.
@@ -53,10 +52,7 @@ func Serve(opts ServerOptions) error {
 	if opts.Command == "" {
 		return errors.New("dtach: empty command")
 	}
-	socketPath, err := unixsocket.Path(opts.SocketPath)
-	if err != nil {
-		return fmt.Errorf("dtach: socket path: %w", err)
-	}
+	socketPath := opts.SocketPath
 
 	if err := os.MkdirAll(filepath.Dir(socketPath), 0o700); err != nil {
 		return fmt.Errorf("dtach: mkdir socket dir: %w", err)

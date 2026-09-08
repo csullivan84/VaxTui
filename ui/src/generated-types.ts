@@ -66,6 +66,15 @@ export interface NotificationEventForTS {
   payload?: any;
 }
 
+export interface DiskSpaceStatus {
+  episode_id: number;
+  revision: number;
+  active: boolean;
+  critical: boolean;
+  dismissed: boolean;
+  available_bytes: number;
+}
+
 export interface StreamResponseForTS {
   conversation_id?: string;
   messages?: ApiMessageForTS[] | null;
@@ -73,7 +82,13 @@ export interface StreamResponseForTS {
   conversation_state?: ConversationStateForTS | null;
   heartbeat?: boolean;
   notification_event?: NotificationEventForTS | null;
+  disk_space_status?: DiskSpaceStatus | null;
   max_sequence_id?: number;
+}
+
+export interface ConversationParticipant {
+  email: string;
+  message_count: number;
 }
 
 export interface ConversationWithStateForTS {
@@ -103,7 +118,7 @@ export interface ConversationWithStateForTS {
   preview_updated_at?: string;
   search_snippet?: string;
   max_sequence_id: number;
-  participants?: string[] | null;
+  participants?: ConversationParticipant[] | null;
 }
 
 export type MessageType =

@@ -30,9 +30,9 @@ import (
 //go:embed schema/*.sql
 var schemaFS embed.FS
 
-// generateConversationID generates a conversation ID in the format "cXXXXXX"
+// GenerateConversationID generates a conversation ID in the format "cXXXXXX"
 // where X are random alphanumeric characters
-func generateConversationID() (string, error) {
+func GenerateConversationID() (string, error) {
 	text := rand.Text()
 	if len(text) < 6 {
 		return "", fmt.Errorf("rand.Text() returned insufficient characters: %d", len(text))
@@ -43,6 +43,7 @@ func generateConversationID() (string, error) {
 // DB wraps the database connection pool and provides high-level operations
 type DB struct {
 	pool *Pool
+	path string
 }
 
 // Config holds database configuration
@@ -60,9 +61,11 @@ func New(cfg Config) (*DB, error) {
 		return nil, fmt.Errorf(":memory: database not supported (requires multiple connections); use a temp file")
 	}
 
-	// Ensure directory exists for file-based SQLite databases
-	if cfg.DSN != ":memory:" {
-		dir := filepath.Dir(cfg.DSN)
+	// Plain filenames may include driver options. Leave file: URI handling
+	// (including its directory requirements) to SQLite.
+	filename, _, _ := strings.Cut(cfg.DSN, "?")
+	if !strings.HasPrefix(filename, "file:") {
+		dir := filepath.Dir(filename)
 		if dir != "." && dir != "" {
 			if err := os.MkdirAll(dir, 0o755); err != nil {
 				return nil, fmt.Errorf("failed to create database directory: %w", err)
@@ -83,10 +86,29 @@ func New(cfg Config) (*DB, error) {
 		return nil, fmt.Errorf("failed to create connection pool: %w", err)
 	}
 
+	// Ask the opened connection, not the DSN: SQLite resolves relative paths,
+	// URI escaping/options and symlinks. Keep this instance-local and stable
+	// even if the process changes working directory later.
+	var path string
+	if err := pool.Rx(context.Background(), func(ctx context.Context, rx *Rx) error {
+		return rx.QueryRow("SELECT file FROM pragma_database_list WHERE name = 'main'").Scan(&path)
+	}); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("database path: %w", err)
+	}
+	if path == "" {
+		pool.Close()
+		return nil, fmt.Errorf("database must be backed by a filesystem file")
+	}
+
 	return &DB{
 		pool: pool,
+		path: path,
 	}, nil
 }
+
+// Path returns the filesystem path of this instance's main SQLite database.
+func (db *DB) Path() string { return db.path }
 
 // Close closes the database connection pool
 func (db *DB) Close() error {
@@ -247,7 +269,15 @@ type ConversationHook struct {
 	URL string `json:"url"`
 }
 
+type BtwParentPointer struct {
+	Generation int64 `json:"generation"`
+	SequenceID int64 `json:"sequence_id"`
+}
+
 type ConversationOptions struct {
+	// Kind identifies specialized child conversations. Empty is a normal chat.
+	Kind          string            `json:"kind,omitempty"`
+	ParentPointer *BtwParentPointer `json:"parent_pointer,omitempty"`
 	// ToolOverrides maps tool name to "on" or "off". Tools not listed use their default.
 	ToolOverrides map[string]string `json:"tool_overrides,omitempty"`
 	// DisableAllTools disables every tool by default; ToolOverrides with "on" re-enable individual tools.
@@ -349,7 +379,7 @@ func (db *DB) SetConversationThinkingLevel(ctx context.Context, conversationID, 
 
 // CreateConversation creates a new conversation with an optional slug.
 func (db *DB) CreateConversation(ctx context.Context, slug *string, userInitiated bool, cwd, model *string, opts ConversationOptions) (*generated.Conversation, error) {
-	conversationID, err := generateConversationID()
+	conversationID, err := GenerateConversationID()
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate conversation ID: %w", err)
 	}
@@ -378,7 +408,7 @@ func (db *DB) CreateConversation(ctx context.Context, slug *string, userInitiate
 // the chat handler. They appear in the normal conversation list and can
 // be deleted like any other conversation.
 func (db *DB) CreateDraftConversation(ctx context.Context, cwd, model *string, opts ConversationOptions, draft string) (*generated.Conversation, error) {
-	conversationID, err := generateConversationID()
+	conversationID, err := GenerateConversationID()
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate conversation ID: %w", err)
 	}
@@ -436,13 +466,17 @@ func (db *DB) UpdateDraft(ctx context.Context, conversationID string, draft, mod
 // no longer a draft — a concurrent send won the promote race — so the
 // caller can decide whether to retry or fail.
 func (db *DB) PromoteDraft(ctx context.Context, conversationID string, cwd, model *string, opts *ConversationOptions) (*generated.Conversation, error) {
-	var optsJSON []byte
+	var requestedOptions *string
 	if opts != nil {
-		var err error
-		optsJSON, err = json.Marshal(*opts)
+		effective := *opts
+		effective.Kind = ""
+		effective.ParentPointer = nil
+		optsJSON, err := json.Marshal(effective)
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal conversation options: %w", err)
 		}
+		value := string(optsJSON)
+		requestedOptions = &value
 	}
 	var conv generated.Conversation
 	err := db.pool.Tx(ctx, func(ctx context.Context, tx *Tx) error {
@@ -460,19 +494,33 @@ func (db *DB) PromoteDraft(ctx context.Context, conversationID string, cwd, mode
 			}
 			return err
 		}
-		if opts != nil {
+		optionsJSON := requestedOptions
+		if optionsJSON == nil {
+			stored, err := q.GetConversationOptions(ctx, conversationID)
+			if err != nil {
+				return err
+			}
+			scrubbed, changed, err := scrubManagedBtwOptions(stored)
+			if err != nil {
+				return err
+			}
+			if changed {
+				optionsJSON = &scrubbed
+			}
+		}
+		if optionsJSON != nil {
 			if err := q.UpdateConversationOptions(ctx, generated.UpdateConversationOptionsParams{
 				ConversationID:      conversationID,
-				ConversationOptions: string(optsJSON),
+				ConversationOptions: *optionsJSON,
 			}); err != nil {
 				return err
 			}
 		}
-		var err error
-		conv, err = q.PromoteDraftConversation(ctx, conversationID)
+		promoted, err := q.PromoteDraftConversation(ctx, conversationID)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrConversationNotDraft
 		}
+		conv = promoted
 		return err
 	})
 	if err != nil {
@@ -687,27 +735,65 @@ type ConversationListItem struct {
 	Preview          string
 	PreviewUpdatedAt string // RFC 3339 (trailing Z), empty if there's no preview message
 	MaxSequenceID    int64
-	// Participants are the distinct exe.dev accounts that authored messages in
-	// this conversation, sorted. Nil for conversations whose messages all
-	// predate user_email or arrived without the X-ExeDev-Email header.
-	Participants []string
+	// Participants are the exe.dev accounts that authored messages in this
+	// conversation, with authored-message counts, sorted by email.
+	Participants []ConversationParticipant
 }
 
-// decodeParticipants decodes the participants_json column (a JSON array of
-// emails built by json_group_array) into a sorted slice. Sorting here rather
-// than in SQL keeps the value stable regardless of the order SQLite happens to
-// aggregate in: the conversation-list patch stream hashes the marshalled list,
-// so an unstable order would emit spurious diffs. An empty array decodes to nil
-// so callers can omit it from their JSON.
-func decodeParticipants(raw string) ([]string, error) {
-	var participants []string
+type ConversationParticipant struct {
+	Email        string `json:"email"`
+	MessageCount int64  `json:"message_count"`
+}
+
+// ConversationParticipants returns known authenticated message authors and
+// authored-message counts for the requested conversations.
+func (db *DB) ConversationParticipants(ctx context.Context, conversationIDs []string) (map[string][]ConversationParticipant, error) {
+	out := make(map[string][]ConversationParticipant)
+	if len(conversationIDs) == 0 {
+		return out, nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(conversationIDs)), ",")
+	args := make([]any, len(conversationIDs))
+	for i, id := range conversationIDs {
+		args[i] = id
+	}
+	err := db.pool.Rx(ctx, func(ctx context.Context, rx *Rx) error {
+		rows, err := rx.Conn().QueryContext(ctx, `
+			SELECT conversation_id, user_email, COUNT(*)
+			FROM messages
+			WHERE user_email IS NOT NULL AND user_email <> ''
+			  AND conversation_id IN (`+placeholders+`)
+			GROUP BY conversation_id, user_email
+			ORDER BY conversation_id, user_email`, args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id string
+			var participant ConversationParticipant
+			if err := rows.Scan(&id, &participant.Email, &participant.MessageCount); err != nil {
+				return err
+			}
+			out[id] = append(out[id], participant)
+		}
+		return rows.Err()
+	})
+	return out, err
+}
+
+// decodeParticipants decodes and stably sorts participant summaries.
+func decodeParticipants(raw string) ([]ConversationParticipant, error) {
+	var participants []ConversationParticipant
 	if err := json.Unmarshal([]byte(raw), &participants); err != nil {
 		return nil, fmt.Errorf("decoding participants %q: %w", raw, err)
 	}
 	if len(participants) == 0 {
 		return nil, nil
 	}
-	sort.Strings(participants)
+	sort.Slice(participants, func(i, j int) bool {
+		return participants[i].Email < participants[j].Email
+	})
 	return participants, nil
 }
 
@@ -1775,10 +1861,13 @@ func (db *DB) DeleteConversation(ctx context.Context, conversationID string) err
 // conversation.
 // ErrInvalidForkPoint is returned by ForkConversation when no message exists
 // at or before the requested cutoff sequence.
-var ErrInvalidForkPoint = errors.New("no message at or before fork point")
+var (
+	ErrInvalidForkPoint    = errors.New("no message at or before fork point")
+	ErrCannotForkBtwReader = errors.New("BTW readers cannot be forked")
+)
 
 func (db *DB) ForkConversation(ctx context.Context, sourceConversationID string, cutoffSequenceID int64) (*generated.Conversation, error) {
-	conversationID, err := generateConversationID()
+	conversationID, err := GenerateConversationID()
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate conversation ID: %w", err)
 	}
@@ -1789,13 +1878,20 @@ func (db *DB) ForkConversation(ctx context.Context, sourceConversationID string,
 		if err != nil {
 			return fmt.Errorf("failed to load source conversation: %w", err)
 		}
+		if _, ok := ManagedBtwReaderIdentity(source); ok {
+			return ErrCannotForkBtwReader
+		}
+		optionsJSON, _, err := scrubManagedBtwOptions(source.ConversationOptions)
+		if err != nil {
+			return fmt.Errorf("failed to scrub fork options: %w", err)
+		}
 		conversation, err = q.CreateConversation(ctx, generated.CreateConversationParams{
 			ConversationID:      conversationID,
 			Slug:                nil,
 			UserInitiated:       true,
 			Cwd:                 source.Cwd,
 			Model:               source.Model,
-			ConversationOptions: source.ConversationOptions,
+			ConversationOptions: optionsJSON,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to create forked conversation: %w", err)
@@ -1828,7 +1924,7 @@ func (db *DB) ForkConversation(ctx context.Context, sourceConversationID string,
 
 // CreateSubagentConversation creates a new subagent conversation with a parent
 func (db *DB) CreateSubagentConversation(ctx context.Context, slug, parentID string, cwd *string) (*generated.Conversation, error) {
-	conversationID, err := generateConversationID()
+	conversationID, err := GenerateConversationID()
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate conversation ID: %w", err)
 	}

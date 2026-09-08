@@ -3,6 +3,10 @@ import type { TranslationKeys } from "./types";
 export const zhTW: TranslationKeys = {
   // App-level
   loading: "載入中...",
+  diskSpaceLow: "磁碟空間不足",
+  diskSpaceCritical: "磁碟空間嚴重不足",
+  diskSpaceRemaining: "剩餘",
+  dismiss: "關閉",
   retry: "重試",
   failedToLoadConversations: "載入對話失敗，請重新整理頁面。",
 
@@ -116,6 +120,8 @@ export const zhTW: TranslationKeys = {
   clearTagFilter: "全部清除",
   searchOrTagPlaceholder: "搜尋，或用 tag: 篩選",
   untagged: "無標籤",
+  participants: "參與者",
+  unattributed: "無參與者",
   noMatchingTags: "沒有符合的標籤",
   noTagsToNarrow: "沒有可繼續縮小的標籤",
   noConversationsMatchTags: "沒有符合這些標籤的對話",

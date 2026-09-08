@@ -220,10 +220,22 @@ func All() []Model {
 			Build: antSvc(ant.Claude5Opus),
 		},
 		{
+			ID: "claude-fable-5.1", Provider: ProviderAnthropic,
+			Description: "Claude Fable 5.1", APIModelName: ant.ClaudeFable51,
+			APIType: APITypeAnthropicMessages, DefaultBaseURL: DefaultAnthropicBaseURL,
+			Build: antSvc(ant.ClaudeFable51),
+		},
+		{
 			ID: "claude-fable-5", Provider: ProviderAnthropic,
 			Description: "Claude Fable 5", APIModelName: ant.ClaudeFable5,
 			APIType: APITypeAnthropicMessages, DefaultBaseURL: DefaultAnthropicBaseURL,
 			Build: antSvc(ant.ClaudeFable5),
+		},
+		{
+			ID: "gpt-6-astra", Provider: ProviderOpenAI,
+			Description: "GPT-6 Astra", APIModelName: oai.GPT6Astra.ModelName,
+			APIType: APITypeOpenAIResponses, DefaultBaseURL: DefaultOpenAIBaseURL,
+			Build: oaiResponsesSvc(oai.GPT6Astra),
 		},
 		{
 			ID: "gpt-5.6-sol", Provider: ProviderOpenAI,
@@ -266,6 +278,12 @@ func All() []Model {
 			Description: "Gemini 3.1 Pro", APIModelName: "gemini-3.1-pro-preview",
 			APIType: APITypeGemini, DefaultBaseURL: DefaultGeminiBaseURL,
 			Build: gemSvc("gemini-3.1-pro-preview"),
+		},
+		{
+			ID: "gemini-3.8-flash", Provider: ProviderGemini,
+			Description: "Gemini 3.8 Flash", APIModelName: "gemini-3.8-flash",
+			APIType: APITypeGemini, DefaultBaseURL: DefaultGeminiBaseURL,
+			Build: gemSvc("gemini-3.8-flash"),
 		},
 		{
 			ID: "grok-4.5", Provider: ProviderXAI,
@@ -362,18 +380,6 @@ func All() []Model {
 			Description: "GPT-5.3 Codex", APIModelName: oai.GPT53Codex.ModelName,
 			APIType: APITypeOpenAIResponses, DefaultBaseURL: DefaultOpenAIBaseURL,
 			Build: oaiResponsesSvc(oai.GPT53Codex),
-		},
-		{
-			ID: "gemini-3.6-flash", Provider: ProviderGemini,
-			Description: "Gemini 3.6 Flash", APIModelName: "gemini-3.6-flash",
-			APIType: APITypeGemini, DefaultBaseURL: DefaultGeminiBaseURL,
-			Build: gemSvc("gemini-3.6-flash"),
-		},
-		{
-			ID: "gemini-3-flash", Provider: ProviderGemini,
-			Description: "Gemini 3 Flash", APIModelName: "gemini-3-flash-preview",
-			APIType: APITypeGemini, DefaultBaseURL: DefaultGeminiBaseURL,
-			Build: gemSvc("gemini-3-flash-preview"),
 		},
 		{
 			ID: "deepseek-v4-flash-0731-fireworks", Provider: ProviderFireworks,

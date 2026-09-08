@@ -3,6 +3,10 @@ import type { TranslationKeys } from "./types";
 export const zhCN: TranslationKeys = {
   // App-level
   loading: "加载中...",
+  diskSpaceLow: "磁盘空间不足",
+  diskSpaceCritical: "磁盘空间严重不足",
+  diskSpaceRemaining: "剩余",
+  dismiss: "关闭",
   retry: "重试",
   failedToLoadConversations: "加载对话失败，请刷新页面。",
 
@@ -116,6 +120,8 @@ export const zhCN: TranslationKeys = {
   clearTagFilter: "全部清除",
   searchOrTagPlaceholder: "搜索，或用 tag: 筛选",
   untagged: "无标签",
+  participants: "参与者",
+  unattributed: "无参与者",
   noMatchingTags: "没有匹配的标签",
   noTagsToNarrow: "没有可继续缩小的标签",
   noConversationsMatchTags: "没有匹配这些标签的对话",

@@ -66,7 +66,7 @@ func TestEnvSourceLabels(t *testing.T) {
 	}{
 		{"claude-opus-4.6", "$ANTHROPIC_API_KEY"},
 		{"gpt-5.5", "$OPENAI_API_KEY"},
-		{"gemini-3-flash", "$GEMINI_API_KEY"},
+		{"gemini-3.8-flash", "$GEMINI_API_KEY"},
 		{"deepseek-v4-flash-0731-fireworks", "$FIREWORKS_API_KEY"},
 	} {
 		b := findBuilt(bs, tt.id)
@@ -138,8 +138,8 @@ func TestGatewaySourceLabels(t *testing.T) {
 	if b := findBuilt(bs, "claude-opus-4.6"); b == nil || b.Source != "exe.dev gateway" {
 		t.Errorf("claude-opus-4.6 with plain gateway: %+v", b)
 	}
-	if b := findBuilt(bs, "gemini-3-flash"); b != nil {
-		t.Errorf("gemini-3-flash should not be built by gateway, got %+v", b)
+	if b := findBuilt(bs, "gemini-3.8-flash"); b != nil {
+		t.Errorf("gemini-3.8-flash should not be built by gateway, got %+v", b)
 	}
 	if b := findBuilt(bs, "grok-4.5"); b == nil || b.Source != "exe.dev gateway" {
 		t.Errorf("grok-4.5 with plain gateway: %+v", b)
@@ -159,6 +159,7 @@ func TestLLMIntegrationSourceLabelsAndFiltering(t *testing.T) {
 	integ := &LLMIntegrationConfig{
 		Name: "llm", Host: "llm.int.exe.xyz", URL: "https://llm.int.exe.xyz",
 		Models: []IntegrationModel{
+			{ID: "openai/gpt-6-astra", Provider: "openai", NativeID: "gpt-6-astra", APIs: []string{"openai_chat", "openai_responses"}},
 			{ID: "anthropic/claude-opus-4-8", Provider: "anthropic", NativeID: "claude-opus-4-8", APIs: []string{"anthropic_messages"}},
 			{ID: "anthropic/claude-opus-4-7", Provider: "anthropic", NativeID: "claude-opus-4-7", APIs: []string{"anthropic_messages"}},
 			{ID: "anthropic/claude-opus-4-6", Provider: "anthropic", NativeID: "claude-opus-4-6", APIs: []string{"anthropic_messages"}},
@@ -176,6 +177,7 @@ func TestLLMIntegrationSourceLabelsAndFiltering(t *testing.T) {
 	bs := Build(models.All(), []Source{LLMIntegration(integ, ""), Predictable()}, &http.Client{}, nil)
 	wantLabel := "llm.int.exe.xyz"
 	for _, id := range []string{
+		"gpt-6-astra",
 		"claude-opus-4.8",
 		"claude-opus-4.7",
 		"claude-opus-4.6",
@@ -198,6 +200,20 @@ func TestLLMIntegrationSourceLabelsAndFiltering(t *testing.T) {
 			t.Errorf("%s source = %q, want %q", id, b.Source, wantLabel)
 		}
 	}
+	if astra := findBuilt(bs, "gpt-6-astra"); astra == nil {
+		t.Fatal("gpt-6-astra should be built")
+	} else {
+		if astra.APIType != models.APITypeOpenAIResponses {
+			t.Errorf("gpt-6-astra APIType = %q, want %q", astra.APIType, models.APITypeOpenAIResponses)
+		}
+		svc, ok := astra.Service.(*oai.ResponsesService)
+		if !ok {
+			t.Fatalf("gpt-6-astra service = %T, want *oai.ResponsesService", astra.Service)
+		}
+		if svc.Model != oai.GPT6Astra {
+			t.Errorf("gpt-6-astra model = %+v, want built-in Astra model", svc.Model)
+		}
+	}
 	for _, id := range []string{
 		"anthropic/claude-opus-4-7",
 		"openai/gpt-5.5",
@@ -206,7 +222,7 @@ func TestLLMIntegrationSourceLabelsAndFiltering(t *testing.T) {
 		"kimi-k2p6",
 		"deepseek-v4-pro",
 		"deepseek-v4-flash-0731",
-		"gemini-3-flash",
+		"gemini-3.8-flash",
 	} {
 		if b := findBuilt(bs, id); b != nil {
 			t.Errorf("%q should NOT be built, got %+v", id, b)
@@ -1005,7 +1021,7 @@ func TestBuiltBaseURLResolution(t *testing.T) {
 		{"claude-opus-4.6", "https://api.anthropic.com"},
 		{"gpt-5.5", "https://api.openai.com"},
 		{"deepseek-v4-flash-0731-fireworks", "https://api.fireworks.ai/inference"},
-		{"gemini-3-flash", "https://generativelanguage.googleapis.com"},
+		{"gemini-3.8-flash", "https://generativelanguage.googleapis.com"},
 	} {
 		b := findBuilt(bs, tt.id)
 		if b == nil {
@@ -1043,7 +1059,7 @@ func TestBuiltAPITypePopulated(t *testing.T) {
 		{"claude-opus-4.6", models.APITypeAnthropicMessages},
 		{"gpt-5.5", models.APITypeOpenAIResponses},
 		{"deepseek-v4-flash-0731-fireworks", models.APITypeOpenAIChat},
-		{"gemini-3-flash", models.APITypeGemini},
+		{"gemini-3.8-flash", models.APITypeGemini},
 		{"predictable", models.APITypeBuiltIn},
 	} {
 		b := findBuilt(bs, tt.id)
