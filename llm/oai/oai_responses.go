@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -146,21 +147,11 @@ type responsesInputItem struct {
 }
 
 type responsesContent struct {
-	Type        string                `json:"type"` // "input_text", "output_text", "input_image"
-	Text        string                `json:"text,omitempty"`
-	ImageURL    string                `json:"image_url,omitempty"`
-	Detail      responsesImageDetail  `json:"detail,omitempty"`
-	Annotations []responsesAnnotation `json:"annotations,omitempty"`
-}
-
-// responsesAnnotation is an annotation attached to output_text content.
-// For web_search results, OpenAI emits url_citation annotations.
-type responsesAnnotation struct {
-	Type       string `json:"type"` // "url_citation"
-	StartIndex int    `json:"start_index,omitempty"`
-	EndIndex   int    `json:"end_index,omitempty"`
-	URL        string `json:"url,omitempty"`
-	Title      string `json:"title,omitempty"`
+	Type        string               `json:"type"` // "input_text", "output_text", "input_image"
+	Text        string               `json:"text,omitempty"`
+	ImageURL    string               `json:"image_url,omitempty"`
+	Detail      responsesImageDetail `json:"detail,omitempty"`
+	Annotations json.RawMessage      `json:"annotations,omitempty"` // Preserve zero/empty and unknown provider fields.
 }
 
 type responsesImageDetail string
@@ -337,12 +328,15 @@ func fromLLMMessageResponses(msg llm.Message) []responsesInputItem {
 					messageContent = append(messageContent, responsesImageContent(c))
 				} else if c.Text != "" {
 					contentType := "input_text"
+					var annotations json.RawMessage
 					if msg.Role == llm.MessageRoleAssistant {
 						contentType = "output_text"
+						annotations = c.Citations
 					}
 					messageContent = append(messageContent, responsesContent{
-						Type: contentType,
-						Text: c.Text,
+						Type:        contentType,
+						Text:        c.Text,
+						Annotations: annotations,
 					})
 				}
 			case llm.ContentTypeThinking:
@@ -437,15 +431,11 @@ func (s *ResponsesService) toLLMResponseFromResponses(resp *responsesResponse, h
 		case "message":
 			// Convert message content
 			for _, c := range item.Content {
-				if c.Text != "" {
+				if c.Text != "" || len(c.Annotations) > 0 {
 					text := llm.Content{
-						Type: llm.ContentTypeText,
-						Text: c.Text,
-					}
-					if len(c.Annotations) > 0 {
-						if b, err := json.Marshal(c.Annotations); err == nil {
-							text.Citations = b
-						}
+						Type:      llm.ContentTypeText,
+						Text:      c.Text,
+						Citations: slices.Clone(c.Annotations),
 					}
 					contents = append(contents, text)
 				}
@@ -585,31 +575,6 @@ func (s *ResponsesService) SupportedReasoningLevels() []llm.ThinkingLevel {
 // Model.SupportsImages to enable image inputs.
 func (s *ResponsesService) SupportsImages() bool { return s.Model.SupportsImages }
 
-// TokenContextWindow returns the maximum token context window size for this service
-func (s *ResponsesService) TokenContextWindow() int {
-	model := cmp.Or(s.Model, DefaultModel)
-
-	// Use the same context window logic as the regular service
-	switch model.ModelName {
-	case "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna":
-		return 272000 // keep Astra and GPT-5.6 requests below long-context pricing
-	case "gpt-5.5", "gpt-5.5-2026-04-23", "gpt-5.5-pro", "gpt-5.5-pro-2026-04-23":
-		return 272000 // 272k for the GPT-5.5 family in Shelley
-	case "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano":
-		return 304000 // 304k for the GPT-5.4 family
-	case "gpt-5.3-codex":
-		return 288000 // 288k for gpt-5.3-codex
-	case "grok-4.5":
-		return 500000 // 500k context window for Grok 4.5
-	case "gpt-4.1-2025-04-14", "gpt-4.1-mini-2025-04-14", "gpt-4.1-nano-2025-04-14":
-		return 200000
-	case "gpt-4o-2024-08-06", "gpt-4o-mini-2024-07-18":
-		return 128000
-	default:
-		return 128000
-	}
-}
-
 // MaxImageDimension returns the maximum allowed image dimension.
 // TODO: determine actual OpenAI image dimension limits
 func (s *ResponsesService) MaxImageDimension() int {
@@ -625,6 +590,11 @@ func (s *ResponsesService) MaxImageBytes() int {
 
 // Do sends a request to OpenAI using the Responses API.
 func (s *ResponsesService) Do(ctx context.Context, ir *llm.Request) (*llm.Response, error) {
+	var err error
+	ir, err = llm.PrepareRequestCitations(ctx, ir, "openai-responses", s.adaptCitation)
+	if err != nil {
+		return nil, err
+	}
 	httpc := cmp.Or(s.HTTPC, http.DefaultClient)
 	model := cmp.Or(s.Model, DefaultModel)
 	openAIResponses := s.isOpenAIResponses()
@@ -641,7 +611,12 @@ func (s *ResponsesService) Do(ctx context.Context, ir *llm.Request) (*llm.Respon
 		}
 		messages = fittedMessages
 	}
-	for _, msg := range messages {
+	for i, msg := range messages {
+		for j, c := range msg.Content {
+			if len(c.Citations) > 0 && c.Text == "" {
+				return nil, fmt.Errorf("openai-responses messages[%d].content[%d]: cannot replay citations on empty assistant text", i, j)
+			}
+		}
 		items := fromLLMMessageResponses(msg)
 		allInput = append(allInput, items...)
 	}
@@ -673,7 +648,7 @@ func (s *ResponsesService) Do(ctx context.Context, ir *llm.Request) (*llm.Respon
 		Tools:        tools,
 	}
 	if !s.OmitMaxOutputTokens {
-		req.MaxOutputTokens = cmp.Or(s.MaxTokens, DefaultMaxTokens)
+		req.MaxOutputTokens = maxOutputTokens(baseURL, model.ModelName, s.MaxTokens)
 	}
 	if openAIResponses {
 		req.Include = []string{"reasoning.encrypted_content"}

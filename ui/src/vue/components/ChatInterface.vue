@@ -189,19 +189,25 @@
               >
             </div>
             <div :class="block.sectionClass">
-              <ModelBar
-                :key="block.modelBar.key"
-                :model="block.modelBar.model"
-                :models-used="block.modelBar.modelsUsed"
-                :models="models"
-                :thinking-level="conversationThinkingLevel"
-                :health-revision="modelHealthRevision"
-              />
-              <SystemPromptView
-                v-for="sp in block.systemPrompts"
-                :key="sp.key"
-                :message="sp.message"
-              />
+              <div
+                v-if="block.modelBar.model || block.systemPrompts.length > 0"
+                class="generation-context"
+                data-testid="generation-context"
+              >
+                <ModelBar
+                  :key="block.modelBar.key"
+                  :model="block.modelBar.model"
+                  :models-used="block.modelBar.modelsUsed"
+                  :models="models"
+                  :thinking-level="conversationThinkingLevel"
+                  :health-revision="modelHealthRevision"
+                />
+                <SystemPromptView
+                  v-for="sp in block.systemPrompts"
+                  :key="sp.key"
+                  :message="sp.message"
+                />
+              </div>
               <ChunkHost
                 v-for="chunk in block.chunks"
                 :key="chunk.key"
@@ -1528,7 +1534,9 @@ const isDistilling = computed(() => {
 });
 
 const selectedModelInfo = computed(() => models.value.find((m) => m.id === selectedModel.value));
-const maxContextTokens = computed(() => selectedModelInfo.value?.max_context_tokens || 200000);
+// 0 when the model's context window is unknown: the readout then shows the
+// count alone rather than a made-up denominator.
+const maxContextTokens = computed(() => selectedModelInfo.value?.max_context_tokens || 0);
 
 // Content type constants mirror llm/llm.go.
 const LLM_TYPE_TEXT = 2;

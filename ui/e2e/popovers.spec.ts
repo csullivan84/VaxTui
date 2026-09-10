@@ -127,6 +127,48 @@ test.describe("Message action bar", () => {
     await expect(copy).toBeVisible();
     await expect(copy).toHaveAttribute("data-tooltip", "Copy");
   });
+
+  test("follows long messages and flips clipped tooltips below", async ({ page, request }) => {
+    const slug = await createConversationViaAPI(request, "echo sticky action bar");
+    await page.setViewportSize({ width: 390, height: 667 });
+    await page.goto(`/c/${slug}`);
+
+    const message = page.locator('[data-testid="message"].message-agent').last();
+    await expect(message).toBeVisible({ timeout: 30000 });
+    const entity = message.locator('[data-content-entity="content"]');
+    await expect(entity).toBeVisible();
+
+    await entity.evaluate((element) => {
+      element.style.minHeight = "1000px";
+      const scrollContainer = element.closest<HTMLElement>(".messages-container");
+      if (!scrollContainer) throw new Error("message scroll container not found");
+      const containerTop = scrollContainer.getBoundingClientRect().top;
+      scrollContainer.scrollTop += element.getBoundingClientRect().top - containerTop + 96;
+      element.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const actionBar = entity.locator(".message-action-bar-wrapper");
+    await expect(actionBar).toBeVisible();
+    const stickyInset = await actionBar.evaluate((element) => {
+      const scrollContainer = element.closest<HTMLElement>(".messages-container");
+      if (!scrollContainer) throw new Error("message scroll container not found");
+      return element.getBoundingClientRect().top - scrollContainer.getBoundingClientRect().top;
+    });
+    expect(stickyInset).toBeCloseTo(8, 0);
+
+    const fork = actionBar.getByRole("button", { name: "Fork conversation from here" });
+    await fork.hover();
+    await expect(fork).toHaveAttribute("data-tooltip-placement", "bottom");
+
+    await entity.evaluate((element) => {
+      const scrollContainer = element.closest<HTMLElement>(".messages-container");
+      if (!scrollContainer) throw new Error("message scroll container not found");
+      const containerTop = scrollContainer.getBoundingClientRect().top;
+      scrollContainer.scrollTop += element.getBoundingClientRect().top - containerTop - 120;
+    });
+    await fork.dispatchEvent("mouseover");
+    await expect(fork).toHaveAttribute("data-tooltip-placement", "top");
+  });
 });
 
 test.describe("Context usage popup", () => {
@@ -141,15 +183,15 @@ test.describe("Context usage popup", () => {
     // The label reads "<tokens> · <model name>"; the terse visible text is
     // spelled out for assistive tech.
     await expect(label.locator(".context-usage-label-tokens")).not.toBeEmpty();
-    // The denominator is only in the name when the model declares a context
-    // window, which the predictable test model does.
-    await expect(label).toHaveAccessibleName(/^Context usage: .+ of .+ tokens \([\d.]+%\)$/);
+    // The readout reports actual usage only; no denominator or percentage. A
+    // short test conversation is nowhere near any threshold, so no suffix either.
+    await expect(label).toHaveAccessibleName(/^Context usage: .+ tokens$/);
     await expect(label).toHaveAttribute("aria-expanded", "false");
 
     await label.click();
     const popup = page.locator(".chat-context-popup");
     await expect(popup).toBeVisible();
-    await expect(popup).toContainText("tokens used");
+    await expect(popup).toContainText("LLM call number");
     await expect(label).toHaveAttribute("aria-expanded", "true");
     // The panel is teleported out of the button's subtree, so aria-controls is
     // the only thing tying the two together. It must resolve to the dialog.
@@ -647,7 +689,7 @@ test.describe("Status readout controls", () => {
     // Token count -> cost popup, and NOT the picker.
     await tokens.click();
     await expect(costPopup).toBeVisible();
-    await expect(costPopup).toContainText("tokens used");
+    await expect(costPopup).toContainText("LLM call number");
     await expect(pickerPanel).toHaveCount(0);
     await page.keyboard.press("Escape");
     await expect(costPopup).toBeHidden();

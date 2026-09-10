@@ -48,10 +48,6 @@ func (m *mockService) Do(ctx context.Context, req *llm.Request) (*llm.Response, 
 
 func (m *mockService) Provider() string { return "" }
 
-func (m *mockService) TokenContextWindow() int {
-	return 4096
-}
-
 func (m *mockService) MaxImageDimension() int {
 	return 0
 }
