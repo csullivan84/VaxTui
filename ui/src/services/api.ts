@@ -46,6 +46,7 @@ export interface AvailableModel {
   api_type?: string;
   ready: boolean;
   max_context_tokens?: number;
+  context_pricing_threshold?: number;
   is_default?: boolean;
   supports_images?: boolean;
 }
@@ -1093,6 +1094,8 @@ export interface CustomModel {
   api_key: string;
   model_name: string;
   max_tokens: number;
+  published_max_tokens?: number;
+  effective_max_tokens?: number;
   tags: string; // Comma-separated tags (e.g., "slug" for slug generation)
   reasoning_effort: string; // Legacy provider-verbatim default
   reasoning_support: "auto" | "yes" | "no";

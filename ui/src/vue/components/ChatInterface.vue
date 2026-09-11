@@ -775,6 +775,7 @@ const models = ref<
     source?: string;
     ready: boolean;
     max_context_tokens?: number;
+    context_pricing_threshold?: number;
     supports_reasoning?: boolean;
     reasoning_levels?: Exclude<ThinkingLevel, "default">[];
   }>
@@ -1537,6 +1538,9 @@ const selectedModelInfo = computed(() => models.value.find((m) => m.id === selec
 // 0 when the model's context window is unknown: the readout then shows the
 // count alone rather than a made-up denominator.
 const maxContextTokens = computed(() => selectedModelInfo.value?.max_context_tokens || 0);
+const contextPricingThreshold = computed(
+  () => selectedModelInfo.value?.context_pricing_threshold || 0,
+);
 
 // Content type constants mirror llm/llm.go.
 const LLM_TYPE_TEXT = 2;
@@ -3485,6 +3489,7 @@ const statusContentProps = computed(() => {
     selectedCwd: selectedCwd.value,
     contextWindowSize: contextWindowSize.value,
     maxContextTokens: maxContextTokens.value,
+    contextPricingThreshold: contextPricingThreshold.value,
     usageEntries: usageEntries.value,
     otherUsageRows: otherUsageRows.value,
     messages: messages.value,

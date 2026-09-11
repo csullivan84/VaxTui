@@ -158,13 +158,19 @@ function updateSelectionPrompt() {
     return;
   }
   const selectedInView = composedClosest(selection.anchorNode, ".commit-tour-view");
-  if (selectedInView !== viewRef.value) {
+  const focusInView = composedClosest(selection.focusNode, ".commit-tour-view");
+  if (selectedInView !== viewRef.value || focusInView !== viewRef.value) {
     selectionPrompt.value = null;
     return;
   }
 
   const rect = selection.getRangeAt(0).getBoundingClientRect();
   const chunkElement = composedClosest(selection.anchorNode, "[data-tour-file]");
+  const focusChunkElement = composedClosest(selection.focusNode, "[data-tour-file]");
+  if (chunkElement !== focusChunkElement) {
+    selectionPrompt.value = null;
+    return;
+  }
   const file = chunkElement?.dataset.tourFile;
   const reference = file ? `${file} (${shortHash.value})` : `commit ${shortHash.value}`;
   selectionPrompt.value = {
@@ -190,7 +196,11 @@ function openSelectionComment() {
 }
 
 function scrollToAnchor(anchor: string) {
-  viewRef.value?.querySelector<HTMLElement>(`#${anchor}`)?.scrollIntoView({ block: "start" });
+  const target = viewRef.value?.querySelector<HTMLElement>(`#${anchor}`);
+  if (!target) return;
+  target.tabIndex = -1;
+  target.scrollIntoView({ block: "start" });
+  target.focus({ preventScroll: true });
 }
 
 defineExpose({ scrollToAnchor });
@@ -208,12 +218,14 @@ onMounted(() => {
   themeObserver.observe(document.documentElement, { attributes: true });
   document.addEventListener("selectionchange", handleSelectionChange);
   window.addEventListener("resize", handleResize);
+  viewRef.value?.addEventListener("scroll", handleSelectionChange, { passive: true });
 });
 
 onUnmounted(() => {
   themeObserver?.disconnect();
   document.removeEventListener("selectionchange", handleSelectionChange);
   window.removeEventListener("resize", handleResize);
+  viewRef.value?.removeEventListener("scroll", handleSelectionChange);
   if (selectionFrame !== null) cancelAnimationFrame(selectionFrame);
 });
 </script>

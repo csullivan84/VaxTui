@@ -38,16 +38,19 @@ export function extractSystemPromptSkills(
   prompt: string,
   metadata: SystemPromptSkill[] = [],
 ): SystemPromptSkill[] {
+  // New messages persist the exact discovered skill records. Prefer that
+  // authoritative representation; parsing the rendered prompt remains only
+  // for messages created before skill metadata was added.
+  if (metadata.length > 0) return metadata;
   const section = prompt.match(/<available_skills>([\s\S]*?)<\/available_skills>/)?.[1];
   if (!section) return [];
 
-  const metadataByName = new Map(metadata.map((skill) => [skill.name, skill]));
   return Array.from(section.matchAll(/<skill>([\s\S]*?)<\/skill>/g), (match) => {
     const parsed = {
       name: tagValue(match[1], "name"),
       description: tagValue(match[1], "description"),
       activate: tagValue(match[1], "activate"),
     };
-    return { ...metadataByName.get(parsed.name), ...parsed };
+    return parsed;
   }).filter((skill) => skill.name);
 }

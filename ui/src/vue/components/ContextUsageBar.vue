@@ -18,6 +18,12 @@
       @hide="popupOpen = false"
     >
       {{ formatTokenCount(contextWindowSize) }} tokens
+      <span v-if="maxContextTokens > 0">
+        of {{ formatTokenCount(maxContextTokens) }} context capacity
+      </span>
+      <div v-if="contextPricingThreshold > 0" class="form-hint">
+        Higher-price context begins at {{ formatTokenCount(contextPricingThreshold) }} tokens.
+      </div>
       <div v-if="popupOpen" class="usage-graph-panel">
         <div
           :class="{ 'usage-graph-panel-item-inactive': usageGraph !== 'cost' }"
@@ -50,7 +56,7 @@
         </div>
       </div>
       <div v-if="showLongConversationWarning" class="chat-popup-warning">
-        This conversation is getting long.
+        {{ warningReason }}
         <br />
         Compact it or start a new conversation.
       </div>
@@ -108,9 +114,10 @@ import UsageGraphSwitch from "./UsageGraphSwitch.vue";
 
 const props = defineProps<{
   contextWindowSize: number;
-  /** Model context window (models.dev, pricing-tier clamped); 0 when unknown.
-   *  Never displayed — only floors the warning color as the window fills. */
+  /** Model's hard context window; 0 when unknown. */
   maxContextTokens: number;
+  /** First token-count pricing cliff; 0 when none is known. */
+  contextPricingThreshold: number;
   conversationId?: string | null;
   usageEntries?: UsageEntry[];
   otherUsageRows?: OtherUsageRow[];
@@ -143,6 +150,18 @@ const usageLevelClass = computed(() =>
 // The popup's advice and its once-per-browser auto-open fire exactly when the
 // count first colors.
 const showLongConversationWarning = computed(() => usageLevel.value !== "");
+const warningReason = computed(() => {
+  if (props.maxContextTokens > 0 && props.contextWindowSize / props.maxContextTokens >= 0.7) {
+    return "This conversation is approaching the model's context capacity.";
+  }
+  if (
+    props.contextPricingThreshold > 0 &&
+    props.contextWindowSize >= props.contextPricingThreshold
+  ) {
+    return "This conversation has crossed the model's higher-price context threshold.";
+  }
+  return "This conversation is getting long.";
+});
 let hasAutoOpened = false;
 
 // Spelled out for the accessible name; the level is named in words too since
@@ -150,7 +169,14 @@ let hasAutoOpened = false;
 const usageTitle = computed(() => {
   const level = contextUsageLevelLabel(usageLevel.value);
   const suffix = level ? ` — conversation ${level}` : "";
-  return `Context usage: ${formatTokenCount(props.contextWindowSize)} tokens${suffix}`;
+  const capacity = props.maxContextTokens
+    ? ` of ${formatTokenCount(props.maxContextTokens)}`
+    : "";
+  const pricing =
+    props.contextPricingThreshold > 0 && props.contextWindowSize >= props.contextPricingThreshold
+      ? ` — above the ${formatTokenCount(props.contextPricingThreshold)} higher-price threshold`
+      : "";
+  return `Context usage: ${formatTokenCount(props.contextWindowSize)}${capacity} tokens${suffix}${pricing}`;
 });
 const usageTooltip = computed(() => `${usageTitle.value}. Click for details.`);
 

@@ -15,19 +15,22 @@ import (
 	"shelley.exe.dev/llm/gem"
 	"shelley.exe.dev/llm/oai"
 	"shelley.exe.dev/models"
+	"shelley.exe.dev/models/modelsdev"
 )
 
 // ModelAPI is the API representation of a model
 type ModelAPI struct {
-	ModelID         string `json:"model_id"`
-	DisplayName     string `json:"display_name"`
-	ProviderType    string `json:"provider_type"`
-	Endpoint        string `json:"endpoint"`
-	APIKey          string `json:"api_key"`
-	ModelName       string `json:"model_name"`
-	MaxTokens       int64  `json:"max_tokens"`
-	Tags            string `json:"tags"` // Comma-separated tags (e.g., "slug" for slug generation)
-	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+	ModelID            string `json:"model_id"`
+	DisplayName        string `json:"display_name"`
+	ProviderType       string `json:"provider_type"`
+	Endpoint           string `json:"endpoint"`
+	APIKey             string `json:"api_key"`
+	ModelName          string `json:"model_name"`
+	MaxTokens          int64  `json:"max_tokens"`
+	PublishedMaxTokens int    `json:"published_max_tokens,omitempty"`
+	EffectiveMaxTokens int64  `json:"effective_max_tokens,omitempty"`
+	Tags               string `json:"tags"` // Comma-separated tags (e.g., "slug" for slug generation)
+	ReasoningEffort    string `json:"reasoning_effort,omitempty"`
 	// ImageSupport is one of "auto", "yes", or "no". "auto" is resolved
 	// automatically from the model's endpoint and name.
 	ImageSupport      string `json:"image_support"`
@@ -128,21 +131,28 @@ type TestModelRequest struct {
 }
 
 func toModelAPI(m generated.Model) ModelAPI {
+	published, _ := modelsdev.LookupOutputLimit(m.Endpoint, m.ModelName)
+	effective := m.MaxTokens
+	if effective == 0 || (published > 0 && effective > int64(published)) {
+		effective = int64(published)
+	}
 	return ModelAPI{
-		ModelID:           m.ModelID,
-		DisplayName:       m.DisplayName,
-		ProviderType:      m.ProviderType,
-		Endpoint:          m.Endpoint,
-		APIKey:            m.ApiKey,
-		ModelName:         m.ModelName,
-		MaxTokens:         m.MaxTokens,
-		Tags:              m.Tags,
-		ReasoningEffort:   m.ReasoningEffort,
-		ImageSupport:      m.ImageSupport,
-		ReasoningSupport:  m.ReasoningSupport,
-		ReasoningMap:      m.ReasoningMap,
-		SupportsReasoning: models.ResolveSupportsReasoning(m.Endpoint, m.ModelName, m.ReasoningSupport),
-		SupportsImages:    models.ResolveSupportsImages(m.Endpoint, m.ModelName, m.ImageSupport),
+		ModelID:            m.ModelID,
+		DisplayName:        m.DisplayName,
+		ProviderType:       m.ProviderType,
+		Endpoint:           m.Endpoint,
+		APIKey:             m.ApiKey,
+		ModelName:          m.ModelName,
+		MaxTokens:          m.MaxTokens,
+		PublishedMaxTokens: published,
+		EffectiveMaxTokens: effective,
+		Tags:               m.Tags,
+		ReasoningEffort:    m.ReasoningEffort,
+		ImageSupport:       m.ImageSupport,
+		ReasoningSupport:   m.ReasoningSupport,
+		ReasoningMap:       m.ReasoningMap,
+		SupportsReasoning:  models.ResolveSupportsReasoning(m.Endpoint, m.ModelName, m.ReasoningSupport),
+		SupportsImages:     models.ResolveSupportsImages(m.Endpoint, m.ModelName, m.ImageSupport),
 	}
 }
 

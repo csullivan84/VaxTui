@@ -12,13 +12,20 @@ when: exe.dev
 
 3. Transcribe. Let `$base` be the attached integration's URL (normally `https://llm.int.exe.xyz`). `response_format=json` is required. Optional `prompt`, `keywords[]`, and `languages[]` fields can supply known context, names, and language codes.
    ```
+   set -euo pipefail
+   tmpdir=$(mktemp -d)
+   trap 'rm -rf "$tmpdir"' EXIT
    curl -sS --fail-with-body "$base/v1/audio/transcriptions" \
      -F model=gpt-transcribe \
      -F response_format=json \
      -F "file=@$upload" \
      -o "$tmpdir/response.json"
-   jq -er '.text | select(type == "string")' "$tmpdir/response.json" > "$out"
+   jq -er '.text | select(type == "string" and length > 0)' "$tmpdir/response.json" \
+     > "$tmpdir/transcript.txt"
+   mv "$tmpdir/transcript.txt" "$out"
    ```
+
+   Never redirect directly to `$out`: validate the response first, then atomically replace the destination so a failed request cannot truncate an existing transcript.
 
 ## Errors
 

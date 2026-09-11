@@ -1,6 +1,8 @@
 package server
 
 import (
+	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"io"
@@ -11,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"shelley.exe.dev/committour"
@@ -41,6 +44,73 @@ type GitFileInfo struct {
 	Additions   int    `json:"additions"`
 	Deletions   int    `json:"deletions"`
 	IsGenerated bool   `json:"isGenerated"`
+}
+
+func validCommitHash(hash string) bool {
+	if len(hash) < 4 || len(hash) > 64 {
+		return false
+	}
+	for _, c := range hash {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
+}
+
+func resolveCommit(ctx context.Context, gitRoot, hash string) (string, error) {
+	if !validCommitHash(hash) {
+		return "", errors.New("invalid commit hash")
+	}
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", hash+"^{commit}")
+	cmd.Dir = gitRoot
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+type verifiedTourCacheEntry struct {
+	noteHash [sha256.Size]byte
+	resolved json.RawMessage
+}
+
+var verifiedTourCache = struct {
+	sync.Mutex
+	entries map[string]verifiedTourCacheEntry
+}{entries: make(map[string]verifiedTourCacheEntry)}
+
+func cachedVerifiedTour(gitRoot, fullHash string, note []byte) (json.RawMessage, error) {
+	key := gitRoot + "\x00" + fullHash
+	noteHash := sha256.Sum256(note)
+	verifiedTourCache.Lock()
+	entry, ok := verifiedTourCache.entries[key]
+	verifiedTourCache.Unlock()
+	if ok && entry.noteHash == noteHash {
+		return entry.resolved, nil
+	}
+	tour, err := committour.ParseTour(note)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := committour.Verify(gitRoot, fullHash, tour); err != nil {
+		return nil, err
+	}
+	resolved, err := json.Marshal(tour)
+	if err != nil {
+		return nil, err
+	}
+	verifiedTourCache.Lock()
+	if len(verifiedTourCache.entries) >= 256 {
+		for oldKey := range verifiedTourCache.entries {
+			delete(verifiedTourCache.entries, oldKey)
+			break
+		}
+	}
+	verifiedTourCache.entries[key] = verifiedTourCacheEntry{noteHash: noteHash, resolved: resolved}
+	verifiedTourCache.Unlock()
+	return resolved, nil
 }
 
 // GitFileDiff represents the content of a file diff
@@ -183,7 +253,7 @@ func untrackedGitFiles(gitRoot string) []GitFileInfo {
 // gitLogDiffs lists up to limit commits from startRef (or HEAD when empty)
 // with per-commit diffstats in a single git invocation. Merge commits report
 // their first-parent diffstat. mergeBase, if non-empty, marks the matching commit.
-func gitLogDiffs(gitRoot string, limit int, mergeBase, startRef string) []GitDiffInfo {
+func gitLogDiffs(ctx context.Context, gitRoot string, limit int, mergeBase, startRef string) []GitDiffInfo {
 	// %x01 starts each commit record so numstat lines can't be confused
 	// with headers. --topo-order guarantees descendants of the merge-base
 	// print before it, so the sidebar's slice down to the merge-base
@@ -198,7 +268,7 @@ func gitLogDiffs(gitRoot string, limit int, mergeBase, startRef string) []GitDif
 	if startRef != "" {
 		args = append(args, startRef)
 	}
-	cmd := exec.Command("git", args...)
+	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = gitRoot
 	output, err := cmd.Output()
 	if err != nil {
@@ -264,30 +334,18 @@ func (s *Server) handleGitDiffs(w http.ResponseWriter, r *http.Request) {
 
 	requestedCommit := ""
 	if ref := r.URL.Query().Get("commit"); ref != "" {
-		if len(ref) < 4 || len(ref) > 64 {
-			http.Error(w, "invalid commit", http.StatusBadRequest)
-			return
-		}
-		for _, c := range ref {
-			if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
-				http.Error(w, "invalid commit", http.StatusBadRequest)
-				return
-			}
-		}
-		cmd := exec.Command("git", "rev-parse", "--verify", ref+"^{commit}")
-		cmd.Dir = gitRoot
-		out, err := cmd.Output()
+		var err error
+		requestedCommit, err = resolveCommit(r.Context(), gitRoot, ref)
 		if err != nil {
 			http.Error(w, "invalid commit", http.StatusBadRequest)
 			return
 		}
-		requestedCommit = strings.TrimSpace(string(out))
 	}
 
 	var diffs []GitDiffInfo
 
 	// Working changes
-	workingStatCmd := exec.Command("git", "diff", "HEAD", "--numstat")
+	workingStatCmd := exec.CommandContext(r.Context(), "git", "diff", "HEAD", "--numstat")
 	workingStatCmd.Dir = gitRoot
 	workingStatOutput, _ := workingStatCmd.Output()
 	workingAdditions, workingDeletions, workingFilesCount := parseDiffStat(string(workingStatOutput))
@@ -310,7 +368,7 @@ func (s *Server) handleGitDiffs(w http.ResponseWriter, r *http.Request) {
 	// Compute the merge-base with the configured upstream, if any. Failures
 	// are non-fatal: many local-only branches have no upstream.
 	mergeBase := ""
-	mbCmd := exec.Command("git", "merge-base", "HEAD", "@{upstream}")
+	mbCmd := exec.CommandContext(r.Context(), "git", "merge-base", "HEAD", "@{upstream}")
 	mbCmd.Dir = gitRoot
 	if out, err := mbCmd.Output(); err == nil {
 		mergeBase = strings.TrimSpace(string(out))
@@ -325,7 +383,7 @@ func (s *Server) handleGitDiffs(w http.ResponseWriter, r *http.Request) {
 		// Bound the count walk; past this depth we give up on reaching
 		// the merge-base and the UI shows a bounded window instead.
 		const maxAhead = 990
-		countCmd := exec.Command("git", "rev-list", "--count", "--max-count="+strconv.Itoa(maxAhead), mergeBase+"..HEAD")
+		countCmd := exec.CommandContext(r.Context(), "git", "rev-list", "--count", "--max-count="+strconv.Itoa(maxAhead), mergeBase+"..HEAD")
 		countCmd.Dir = gitRoot
 		if out, err := countCmd.Output(); err == nil {
 			if ahead, err := strconv.Atoi(strings.TrimSpace(string(out))); err == nil {
@@ -335,7 +393,7 @@ func (s *Server) handleGitDiffs(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	commits := gitLogDiffs(gitRoot, limit, mergeBase, "HEAD")
+	commits := gitLogDiffs(r.Context(), gitRoot, limit, mergeBase, "HEAD")
 	if requestedCommit != "" {
 		found := false
 		for _, commit := range commits {
@@ -345,7 +403,7 @@ func (s *Server) handleGitDiffs(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if !found {
-			requested := gitLogDiffs(gitRoot, 1, "", requestedCommit)
+			requested := gitLogDiffs(r.Context(), gitRoot, 1, "", requestedCommit)
 			if len(requested) != 1 {
 				http.Error(w, "failed to read commit", http.StatusInternalServerError)
 				return
@@ -384,16 +442,6 @@ func (s *Server) handleGitTour(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "cwd and hash are required", http.StatusBadRequest)
 		return
 	}
-	if len(hash) < 4 || len(hash) > 64 {
-		http.Error(w, "invalid hash", http.StatusBadRequest)
-		return
-	}
-	for _, c := range hash {
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
-			http.Error(w, "invalid hash", http.StatusBadRequest)
-			return
-		}
-	}
 	if fi, err := os.Stat(cwd); err != nil || !fi.IsDir() {
 		http.Error(w, "invalid cwd", http.StatusBadRequest)
 		return
@@ -404,14 +452,11 @@ func (s *Server) handleGitTour(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fullHashCmd := exec.Command("git", "rev-parse", hash+"^{commit}")
-	fullHashCmd.Dir = gitRoot
-	fullHashBytes, err := fullHashCmd.Output()
+	fullHash, err := resolveCommit(r.Context(), gitRoot, hash)
 	if err != nil {
-		http.Error(w, "failed to read commit", http.StatusInternalServerError)
+		http.Error(w, "invalid hash", http.StatusBadRequest)
 		return
 	}
-	fullHash := strings.TrimSpace(string(fullHashBytes))
 
 	note, err := committour.ReadNote(gitRoot, fullHash)
 	if errors.Is(err, committour.ErrNoNote) {
@@ -422,14 +467,8 @@ func (s *Server) handleGitTour(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// A malformed or stale note (e.g. attached before an amend) is as good
-	// as no tour.
-	tour, err := committour.ParseTour(note)
+	resolved, err := cachedVerifiedTour(gitRoot, fullHash, note)
 	if err != nil {
-		writeGitTourNotFound(w)
-		return
-	}
-	if _, err := committour.Verify(gitRoot, fullHash, tour); err != nil {
 		writeGitTourNotFound(w)
 		return
 	}
@@ -437,14 +476,6 @@ func (s *Server) handleGitTour(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		return
 	}
-	// attach stores chunk references resolved, but a note written by other
-	// means may still contain them; serve the resolved form the UI renders.
-	resolved, err := json.Marshal(tour)
-	if err != nil {
-		writeGitTourNotFound(w)
-		return
-	}
-
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(GitTourResponse{Hash: fullHash, Tour: resolved})
 }

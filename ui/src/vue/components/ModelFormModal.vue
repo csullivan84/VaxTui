@@ -113,14 +113,13 @@
         <label for="custom-model-max-output-tokens">{{ t("maxOutputTokens") }}</label>
         <InputText
           id="custom-model-max-output-tokens"
-          type="number"
-          min="1"
-          step="1"
-          :model-value="form.max_tokens ? String(form.max_tokens) : ''"
+          type="text"
+          inputmode="numeric"
+          :model-value="maxTokensInput"
           :placeholder="t('maxOutputTokensPlaceholder')"
           fluid
           :dt="inputFieldDt"
-          @update:model-value="form.max_tokens = parseInt($event ?? '', 10) || 0"
+          @update:model-value="onMaxTokensInput($event ?? '')"
         />
         <div class="form-hint">{{ t("maxOutputTokensHelp") }}</div>
       </div>
@@ -313,6 +312,8 @@ const reasoningSupportOptions = computed(() => [
 ]);
 
 const form = reactive<FormData>({ ...emptyForm });
+const maxTokensInput = ref("");
+const maxTokensValid = ref(true);
 
 const error = ref<string | null>(null);
 const testing = ref(false);
@@ -380,8 +381,12 @@ watch(
         reasoning_map: parseReasoningMap(m.reasoning_map),
         image_support: m.image_support ?? "auto",
       });
+      maxTokensInput.value = m.max_tokens ? String(m.max_tokens) : "";
+      maxTokensValid.value = true;
     } else {
       resetForm();
+      maxTokensInput.value = "";
+      maxTokensValid.value = true;
     }
   },
   { immediate: true },
@@ -403,7 +408,19 @@ function onModelNameInput(v: string) {
   if (preset && !form.display_name) form.display_name = preset.name;
 }
 
+function onMaxTokensInput(value: string) {
+  maxTokensInput.value = value;
+  const trimmed = value.trim();
+  maxTokensValid.value = trimmed === "" || /^[1-9]\d*$/.test(trimmed);
+  if (maxTokensValid.value) form.max_tokens = trimmed === "" ? 0 : Number(trimmed);
+  error.value = maxTokensValid.value ? null : "Max output tokens must be a positive integer";
+}
+
 async function handleTest() {
+  if (!maxTokensValid.value) {
+    testResult.value = { success: false, message: "Max output tokens must be a positive integer" };
+    return;
+  }
   if (!form.model_name) {
     testResult.value = { success: false, message: t("modelNameRequired") };
     return;
@@ -438,6 +455,10 @@ async function handleTest() {
 }
 
 async function handleSave() {
+  if (!maxTokensValid.value) {
+    error.value = "Max output tokens must be a positive integer";
+    return;
+  }
   if (!form.display_name || !form.api_key || !form.model_name) {
     error.value = "Display name, API key, and model name are required";
     return;

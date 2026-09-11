@@ -205,6 +205,7 @@ type ModelInfo = {
   source?: string;
   ready: boolean;
   max_context_tokens?: number;
+  context_pricing_threshold?: number;
   supports_reasoning?: boolean;
   reasoning_levels?: Exclude<ThinkingLevel, "default">[];
   default_reasoning_level?: string;
@@ -221,6 +222,7 @@ const props = defineProps<{
   selectedCwd: string;
   contextWindowSize: number;
   maxContextTokens: number;
+  contextPricingThreshold: number;
   usageEntries: UsageEntry[];
   otherUsageRows: OtherUsageRow[];
   messages: Message[];
@@ -269,6 +271,7 @@ const cwd = computed(() => props.currentConversation?.cwd || props.selectedCwd);
 const readoutProps = computed(() => ({
   contextWindowSize: props.contextWindowSize,
   maxContextTokens: props.maxContextTokens,
+  contextPricingThreshold: props.contextPricingThreshold,
   usageEntries: props.usageEntries,
   otherUsageRows: props.otherUsageRows,
   messages: props.messages,

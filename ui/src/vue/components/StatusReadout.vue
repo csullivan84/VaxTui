@@ -38,6 +38,7 @@
     <ContextUsageBar
       :context-window-size="contextWindowSize"
       :max-context-tokens="maxContextTokens"
+      :context-pricing-threshold="contextPricingThreshold"
       :conversation-id="conversationId"
       :usage-entries="usageEntries"
       :other-usage-rows="otherUsageRows"
@@ -100,6 +101,7 @@ const props = defineProps<{
   conversationId?: string | null;
   contextWindowSize: number;
   maxContextTokens: number;
+  contextPricingThreshold: number;
   usageEntries?: UsageEntry[];
   otherUsageRows?: OtherUsageRow[];
   messages?: Message[];

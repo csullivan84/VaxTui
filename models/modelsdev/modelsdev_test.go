@@ -323,7 +323,7 @@ func TestLookupContextLimit(t *testing.T) {
 		want     int
 		found    bool
 	}{
-		{"OpenAI clamps to the context pricing tier", "https://api.openai.com/v1", "gpt-5.6-sol", 272000, true},
+		{"OpenAI reports the hard context window", "https://api.openai.com/v1", "gpt-5.6-sol", 1050000, true},
 		{"Anthropic 1M has no tier", "https://api.anthropic.com", "claude-opus-5", 1000000, true},
 		{"Anthropic 200k", "https://api.anthropic.com", "claude-opus-4-5-20251101", 200000, true},
 		{"unknown has no invented limit", "https://made-up.example/v1", "custom-model", 0, false},
@@ -335,6 +335,17 @@ func TestLookupContextLimit(t *testing.T) {
 				t.Fatalf("LookupContextLimit(%q, %q) = (%d, %v), want (%d, %v)", tc.endpoint, tc.model, got, found, tc.want, tc.found)
 			}
 		})
+	}
+}
+
+func TestLookupContextPricingThreshold(t *testing.T) {
+	got, found := LookupContextPricingThreshold("https://api.openai.com/v1", "gpt-5.6-sol")
+	if !found || got != 272000 {
+		t.Fatalf("LookupContextPricingThreshold() = (%d, %v), want (272000, true)", got, found)
+	}
+	got, found = LookupContextPricingThreshold("https://api.anthropic.com", "claude-opus-5")
+	if found || got != 0 {
+		t.Fatalf("model without pricing tier = (%d, %v), want (0, false)", got, found)
 	}
 }
 

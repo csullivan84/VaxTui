@@ -115,6 +115,7 @@ export interface Model {
   api_type?: string;
   ready: boolean;
   max_context_tokens?: number;
+  context_pricing_threshold?: number;
   is_default?: boolean;
   supports_images?: boolean;
   supports_reasoning?: boolean;

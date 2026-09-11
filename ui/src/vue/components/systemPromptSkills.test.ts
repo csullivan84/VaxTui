@@ -42,16 +42,11 @@ assert.deepEqual(
   [
     {
       name: "diagrams",
-      description: 'Draw "quoted" & explain <things>.',
-      activate: "shelley skill cat diagrams",
+      description: "Original metadata description",
+      activate: "original activation",
       source_path: "/tmp/diagrams/SKILL.md",
       origin: "File",
       compatibility: "Requires SVG support",
-    },
-    {
-      name: "deploy",
-      description: "Ship it.",
-      activate: "shelley skill cat deploy",
     },
   ],
 );

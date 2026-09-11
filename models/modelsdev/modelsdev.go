@@ -303,24 +303,29 @@ func LookupOutputLimit(endpoint, modelName string) (int, bool) {
 	return m.Limit.Output, found
 }
 
-// LookupContextLimit reports the models.dev context window for a model,
-// clamped to the smallest "context" pricing tier when one exists. The tier is
-// a pricing cliff (e.g. gpt-5.6 lists a 1,050,000 window but doubles its price
-// past 272,000), not a hard limit; the UI uses this value as the denominator of
-// its context usage readout, so the clamp keeps the readout honest about where
-// a conversation gets expensive.
+// LookupContextLimit reports the model's hard context window.
 func LookupContextLimit(endpoint, modelName string) (int, bool) {
 	m, found := lookupBroad(endpoint, modelName, func(m modelEntry) bool { return m.Limit.Context > 0 })
 	if !found {
 		return 0, false
 	}
-	limit := m.Limit.Context
+	return m.Limit.Context, true
+}
+
+// LookupContextPricingThreshold reports the first prompt-size pricing cliff.
+// This is deliberately separate from the hard context window.
+func LookupContextPricingThreshold(endpoint, modelName string) (int, bool) {
+	m, found := lookupBroad(endpoint, modelName, func(m modelEntry) bool { return m.Limit.Context > 0 })
+	if !found {
+		return 0, false
+	}
+	threshold := 0
 	for _, t := range m.Cost.Tiers {
-		if t.Tier.Type == "context" && t.Tier.Size > 0 && t.Tier.Size < limit {
-			limit = t.Tier.Size
+		if t.Tier.Type == "context" && t.Tier.Size > 0 && (threshold == 0 || t.Tier.Size < threshold) {
+			threshold = t.Tier.Size
 		}
 	}
-	return limit, true
+	return threshold, threshold > 0
 }
 
 // lookupBroad resolves models that may be reached through gateway hosts absent

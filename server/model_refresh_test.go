@@ -68,10 +68,13 @@ func TestHandleModelsReportsMaxContextTokens(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]int{"sol": 272000, "opus": 1000000, "mystery": 0}
+	want := map[string]int{"sol": 1050000, "opus": 1000000, "mystery": 0}
 	for _, m := range got {
 		if m.MaxContextTokens != want[m.ID] {
 			t.Errorf("%s max_context_tokens = %d, want %d", m.ID, m.MaxContextTokens, want[m.ID])
+		}
+		if m.ID == "sol" && m.ContextPricingThreshold != 272000 {
+			t.Errorf("sol context_pricing_threshold = %d, want 272000", m.ContextPricingThreshold)
 		}
 	}
 }

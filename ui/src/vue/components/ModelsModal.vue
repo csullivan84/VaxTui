@@ -76,6 +76,7 @@
         <Column :header="t('columnName')" field="name">
           <template #body="{ data }">
             <span class="models-cell-name">{{ data.name }}</span>
+            <div v-if="data.outputTitle" class="models-cell-endpoint">{{ data.outputTitle }}</div>
             <span v-for="tag in data.tags" :key="tag" class="models-cell-tag">{{ tag }}</span>
           </template>
         </Column>
@@ -243,6 +244,7 @@ interface TableRow {
   imageTitle: string;
   imageAuto: boolean;
   model: CustomModel | null;
+  outputTitle: string;
 }
 
 const tableRows = computed<TableRow[]>(() => {
@@ -276,6 +278,7 @@ const tableRows = computed<TableRow[]>(() => {
         imageTitle: (m.supports_images ?? true) ? t("imageSupportYes") : t("imageSupportNo"),
         imageAuto: false,
         model: null,
+        outputTitle: "",
       });
     }
   }
@@ -297,6 +300,9 @@ const tableRows = computed<TableRow[]>(() => {
       imageTitle: customModelImageTitle(m),
       imageAuto: (m.image_support ?? "auto") === "auto",
       model: m,
+      outputTitle: m.effective_max_tokens
+        ? `Output limit: ${m.effective_max_tokens.toLocaleString()} tokens${m.max_tokens === 0 ? " (published)" : m.effective_max_tokens !== m.max_tokens ? " (capped)" : ""}`
+        : "Output limit: provider default",
     });
   }
   return rows;

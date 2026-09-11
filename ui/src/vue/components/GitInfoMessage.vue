@@ -9,6 +9,7 @@
     class="message message-gitinfo msg-gitinfo-container"
     data-testid="message-gitinfo"
     @mouseenter="refreshTour"
+    @focusin="refreshTour"
   >
     <span>
       <span v-if="worktree" class="msg-worktree">{{ worktree }}</span>
@@ -63,6 +64,9 @@
         {{ " " }}
         <a :href="diffHref" class="msg-diff-link" @click="onDiffLinkClick">diff</a>
       </template>
+      <span v-if="tourState === 'error'" class="sr-only" role="status">
+        Guided tour availability could not be checked.
+      </span>
       <template v-if="tourState === 'present' && canShowDiff">
         {{ " " }}
         <a
@@ -82,15 +86,27 @@
 interface TourProbeCacheEntry {
   promise: Promise<boolean>;
   expiresAt: number;
+  settled: boolean;
 }
 
 const TOUR_PROBE_TTL_MS = 30_000;
 const TOUR_HOVER_RETRY_MS = 5_000;
+const TOUR_PROBE_CACHE_MAX = 256;
 const tourProbeCache = new Map<string, TourProbeCacheEntry>();
+
+function cacheTourProbe(key: string, entry: TourProbeCacheEntry) {
+  tourProbeCache.delete(key);
+  tourProbeCache.set(key, entry);
+  while (tourProbeCache.size > TOUR_PROBE_CACHE_MAX) {
+    const oldest = tourProbeCache.keys().next().value;
+    if (oldest === undefined) break;
+    tourProbeCache.delete(oldest);
+  }
+}
 </script>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { api } from "../../services/api";
 import type { Message as MessageType } from "../../types";
 
@@ -101,7 +117,7 @@ const props = defineProps<{
 
 const copied = ref(false);
 const containerRef = ref<HTMLElement | null>(null);
-type TourState = "unknown" | "present" | "absent";
+type TourState = "unknown" | "present" | "absent" | "error";
 const tourState = ref<TourState>("unknown");
 let tourProbeSequence = 0;
 let lastForcedTourProbeAt = 0;
@@ -169,17 +185,25 @@ async function probeTour(force = false) {
 
   const key = `${cwd}\u0000${hash}`;
   const now = Date.now();
-  let entry = force ? undefined : tourProbeCache.get(key);
+  let entry = tourProbeCache.get(key);
   if (entry && entry.expiresAt <= now) {
     tourProbeCache.delete(key);
     entry = undefined;
   }
-  if (!entry) {
-    entry = {
-      promise: api.hasGitTour(cwd, hash),
+  // A forced refresh ignores a completed cached result, but shares an in-flight
+  // request. Entries do not expose settlement, so replace only expired entries;
+  // the short TTL supplies freshness without duplicate hover traffic.
+  if (!entry || (force && entry.settled)) {
+    const created: TourProbeCacheEntry = {
+      promise: Promise.resolve(false),
       expiresAt: now + TOUR_PROBE_TTL_MS,
+      settled: false,
     };
-    tourProbeCache.set(key, entry);
+    created.promise = api.hasGitTour(cwd, hash).finally(() => {
+      created.settled = true;
+    });
+    entry = created;
+    cacheTourProbe(key, entry);
   }
 
   const sequence = ++tourProbeSequence;
@@ -190,6 +214,7 @@ async function probeTour(force = false) {
     }
   } catch (error) {
     if (tourProbeCache.get(key) === entry) tourProbeCache.delete(key);
+    if (sequence === tourProbeSequence) tourState.value = "error";
     console.error("Failed to check commit tour:", error);
   }
 }
@@ -216,6 +241,13 @@ onMounted(() => {
   tourObserver.observe(containerRef.value);
 });
 onBeforeUnmount(() => tourObserver?.disconnect());
+
+watch([commitHash, worktree], () => {
+  tourProbeSequence++;
+  tourState.value = "unknown";
+  lastForcedTourProbeAt = 0;
+  void probeTour();
+});
 
 function handleCopyHash(e: MouseEvent) {
   e.preventDefault();
