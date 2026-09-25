@@ -32,7 +32,11 @@
 		"erikswedberg",
 		"quangdz-comeback",
 		"tanuck",
-		"Gohlub"
+		"Gohlub",
+		"swaroopch",
+		"alexhughson",
+		"RedBeard0531",
+		"romusz"
 	],
-	"message": "We require contributors to sign our Contributor License Agreement, and we don't have you on file. In order for us to review and merge your code, please contact @crawshaw at david@bold.dev to get yourself added."
+	"message": "We require contributors to sign our Contributor License Agreement, and we don't have you on file. In order for us to review and merge your code, please sign the CLA at https://shelley-cla.exe.xyz"
 }

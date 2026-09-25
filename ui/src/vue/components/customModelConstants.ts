@@ -26,12 +26,16 @@ export const DEFAULT_MODELS: Record<ProviderType, { name: string; model_name: st
   ],
   openai: [
     { name: "GPT-6 Astra", model_name: "gpt-6-astra" },
+    { name: "GPT-6 Sol", model_name: "gpt-6-sol" },
+    { name: "GPT-6 Luna", model_name: "gpt-6-luna" },
     { name: "GPT-5.6 Sol", model_name: "gpt-5.6-sol" },
     { name: "GPT-5.5", model_name: "gpt-5.5" },
     { name: "GPT-5.4", model_name: "gpt-5.4" },
   ],
   "openai-responses": [
     { name: "GPT-6 Astra", model_name: "gpt-6-astra" },
+    { name: "GPT-6 Sol", model_name: "gpt-6-sol" },
+    { name: "GPT-6 Luna", model_name: "gpt-6-luna" },
     { name: "GPT-5.5", model_name: "gpt-5.5" },
     { name: "GPT-5.4", model_name: "gpt-5.4" },
     { name: "GPT-5.4 mini", model_name: "gpt-5.4-mini" },
@@ -91,6 +95,7 @@ export interface FormData {
   max_tokens: number;
   tags: string;
   reasoning_effort: string;
+  reasoning_replay: "auto" | "none" | "reasoning_content";
   reasoning_support: "auto" | "yes" | "no";
   reasoning_map: ReasoningMap;
   image_support: "auto" | "yes" | "no";
@@ -106,6 +111,7 @@ export const emptyForm: FormData = {
   max_tokens: 0,
   tags: "",
   reasoning_effort: "",
+  reasoning_replay: "auto",
   reasoning_support: "auto",
   reasoning_map: { ...DEFAULT_REASONING_MAP },
   image_support: "auto",

@@ -38,9 +38,9 @@
     <ContextUsageBar
       :context-window-size="contextWindowSize"
       :max-context-tokens="maxContextTokens"
-      :context-pricing-threshold="contextPricingThreshold"
       :conversation-id="conversationId"
       :usage-entries="usageEntries"
+      :models="models"
       :other-usage-rows="otherUsageRows"
       :messages="messages"
       :on-distill-new-generation="onDistillNewGeneration"
@@ -77,6 +77,7 @@
           :disabled="agentWorking"
           :refreshing="refreshingModels"
           @select-model="onSwitchConversationModel"
+          @select-combination="onSwitchConversationCombination"
           @thinking-change="onSwitchConversationThinkingLevel"
           @manage-models="onManageModels"
           @refresh-models="onRefreshModels"
@@ -101,7 +102,6 @@ const props = defineProps<{
   conversationId?: string | null;
   contextWindowSize: number;
   maxContextTokens: number;
-  contextPricingThreshold: number;
   usageEntries?: UsageEntry[];
   otherUsageRows?: OtherUsageRow[];
   messages?: Message[];
@@ -115,6 +115,10 @@ const props = defineProps<{
   onUsageNeeded?: () => void;
   onChangeConversationCwd?: () => void;
   onSwitchConversationModel: (model: string) => void;
+  onSwitchConversationCombination: (
+    model: string,
+    level: Exclude<ThinkingLevel, "default"> | null,
+  ) => void;
   onSwitchConversationThinkingLevel: (level: ThinkingLevel) => void;
   onManageModels: () => void;
   onRefreshModels: () => void;

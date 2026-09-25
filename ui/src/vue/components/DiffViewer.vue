@@ -362,33 +362,19 @@
           <div class="diff-viewer-sidebar-section diff-viewer-sidebar-files">
             <template v-if="diffView === 'tour'">
               <div class="diff-viewer-sidebar-label"><span>Table of Contents</span></div>
-              <div class="diff-viewer-sidebar-tour-scroll">
+              <div ref="tourContentsScrollRef" class="diff-viewer-sidebar-tour-scroll">
                 <div v-if="tourLoading" class="diff-viewer-file-list-empty">Loading tour...</div>
                 <div v-else-if="tourError" class="diff-viewer-file-list-empty">
                   Tour unavailable
                 </div>
-                <nav v-else-if="tourContents.length > 0" aria-label="Tour contents">
-                  <ol class="diff-viewer-tour-contents">
-                    <li
-                      v-for="item in tourContents"
-                      :key="item.anchor"
-                      :class="[
-                        'diff-viewer-tour-contents-item',
-                        item.kind,
-                        item.nested ? 'nested' : '',
-                      ]"
-                    >
-                      <button
-                        type="button"
-                        :data-tour-target="item.anchor"
-                        :title="item.label"
-                        @click="scrollToTourAnchor(item.anchor)"
-                      >
-                        {{ item.label }}
-                      </button>
-                    </li>
-                  </ol>
-                </nav>
+                <CommitTourContents
+                  v-else-if="tourContents.length > 0"
+                  :items="tourContents"
+                  :active-anchor="activeTourAnchor"
+                  :expanded-anchors="expandedTourAnchors"
+                  @select="scrollToTourAnchor"
+                  @expand-change="setTourExpanded"
+                />
                 <div v-else class="diff-viewer-file-list-empty">No tour sections</div>
               </div>
             </template>
@@ -426,6 +412,9 @@
               ref="tourViewRef"
               :tour="tourResponse"
               :commit-message="selectedTourCommitMessage"
+              :expanded-anchors="expandedTourAnchors"
+              @expand-change="setTourExpanded"
+              @active-anchor-change="handleTourActiveAnchor"
               @open-comment="openTourComment"
             />
           </div>
@@ -435,9 +424,7 @@
               <span>Loading...</span>
             </div>
             <div
-              v-if="
-                readingMode === 'visual' && !loading && !monacoLoaded && !fileDiff && !error
-              "
+              v-if="readingMode === 'visual' && !loading && !monacoLoaded && !fileDiff && !error"
               class="diff-viewer-loading"
             >
               <div class="spinner"></div>
@@ -605,6 +592,7 @@ import { WorkspaceContextKey } from "../composables/workspaceContext";
 import VimToggle from "./VimToggle.vue";
 import CommentDialog from "./CommentDialog.vue";
 import CommitTourView from "./CommitTourView.vue";
+import CommitTourContents from "./CommitTourContents.vue";
 import CommitPicker from "./CommitPicker.vue";
 import RangeToggle from "./RangeToggle.vue";
 import DirectoryPickerModal from "./DirectoryPickerModal.vue";
@@ -686,17 +674,31 @@ const selectedTo = ref<"working" | "self">("working");
 const diffView = ref<"tour" | "files">("files");
 const tourResponse = ref<GitTourResponse | null>(null);
 const tourViewRef = ref<{ scrollToAnchor: (anchor: string) => void } | null>(null);
+const tourContentsScrollRef = ref<HTMLElement | null>(null);
+const activeTourAnchor = ref<string | null>(null);
+const expandedTourAnchors = ref(new Set<string>());
+let tourContentsResizeObserver: ResizeObserver | null = null;
 const tourLoading = ref(false);
 const tourError = ref<string | null>(null);
 const files = ref<GitFileInfo[]>([]);
 const selectedFile = ref<string | null>(null);
 const workspace = inject(WorkspaceContextKey, null);
 const canOpenSelectedFile = computed(
-  () => !!workspace && !!gitRoot.value && !!selectedFile.value && !isCommitMessageFile(selectedFile.value),
+  () =>
+    !!workspace &&
+    !!gitRoot.value &&
+    !!selectedFile.value &&
+    !isCommitMessageFile(selectedFile.value),
 );
 
 function openSelectedFile() {
-  if (!workspace || !gitRoot.value || !selectedFile.value || isCommitMessageFile(selectedFile.value)) return;
+  if (
+    !workspace ||
+    !gitRoot.value ||
+    !selectedFile.value ||
+    isCommitMessageFile(selectedFile.value)
+  )
+    return;
   workspace.openFile(`${gitRoot.value.replace(/\/+$/, "")}/${selectedFile.value}`);
   emit("close");
 }
@@ -811,6 +813,8 @@ watch(
   async (key) => {
     const requestId = ++tourRequestId;
     tourResponse.value = null;
+    activeTourAnchor.value = null;
+    expandedTourAnchors.value = new Set();
     tourError.value = null;
     tourLoading.value = false;
     tourCommentTarget.value = null;
@@ -1686,6 +1690,41 @@ function scrollToTourAnchor(anchor: string) {
   tourViewRef.value?.scrollToAnchor(anchor);
 }
 
+function setTourExpanded(anchor: string, expanded: boolean) {
+  if (expanded) expandedTourAnchors.value.add(anchor);
+  else expandedTourAnchors.value.delete(anchor);
+}
+
+function handleTourActiveAnchor(anchor: string) {
+  activeTourAnchor.value = anchor;
+  nextTick(revealActiveTourContents);
+}
+
+function revealActiveTourContents() {
+  const container = tourContentsScrollRef.value;
+  const anchor = activeTourAnchor.value;
+  if (!container || !anchor) return;
+  const button = Array.from(container.querySelectorAll<HTMLElement>("[data-tour-target]")).find(
+    (element) => element.dataset.tourTarget === anchor,
+  );
+  if (!button) return;
+
+  const containerRect = container.getBoundingClientRect();
+  const buttonRect = button.getBoundingClientRect();
+  const edgePadding = 4;
+  if (buttonRect.top < containerRect.top + edgePadding) {
+    container.scrollTop -= containerRect.top + edgePadding - buttonRect.top;
+  } else if (buttonRect.bottom > containerRect.bottom - edgePadding) {
+    container.scrollTop += buttonRect.bottom - containerRect.bottom + edgePadding;
+  }
+}
+
+watch(tourContentsScrollRef, (container) => {
+  tourContentsResizeObserver?.disconnect();
+  if (container) tourContentsResizeObserver?.observe(container);
+});
+watch(layout, () => nextTick(revealActiveTourContents), { flush: "post" });
+
 // Title for the sidebar layout's header.
 const currentTitleText = computed<string | null>(() => {
   if (diffView.value === "tour") {
@@ -1867,10 +1906,13 @@ function onDirSelect(path: string) {
 
 // --- Lifecycle ---
 onMounted(() => {
+  tourContentsResizeObserver = new ResizeObserver(revealActiveTourContents);
+  if (tourContentsScrollRef.value) tourContentsResizeObserver.observe(tourContentsScrollRef.value);
   window.addEventListener("resize", handleResize);
 });
 onUnmounted(() => {
   cancelScheduledMonacoLoad();
+  tourContentsResizeObserver?.disconnect();
   window.removeEventListener("resize", handleResize);
   window.removeEventListener("keydown", handleKeyDown, true);
   themeObserver?.disconnect();

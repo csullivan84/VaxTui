@@ -95,7 +95,18 @@
           >
             <div class="command-palette-item-icon" v-html="item.icon"></div>
             <div class="command-palette-item-content">
-              <div class="command-palette-item-title">{{ item.title }}</div>
+              <div class="command-palette-item-title">
+                <template
+                  v-for="(seg, i) in highlightSearchMatches(
+                    item.title,
+                    item.type === 'conversation' && item.url ? query.trim() : '',
+                  )"
+                  :key="i"
+                >
+                  <mark v-if="seg.mark" class="conversation-snippet-mark">{{ seg.text }}</mark>
+                  <template v-else>{{ seg.text }}</template>
+                </template>
+              </div>
               <div v-if="item.subtitle" class="command-palette-item-subtitle">
                 {{ item.subtitle }}
               </div>
@@ -139,7 +150,9 @@ import { useI18n } from "../composables/i18n";
 import { announceA11y } from "../../services/a11yAnnouncer";
 import { tildifyPath } from "../../utils/tildify";
 import { isImeComposing } from "../../utils/imeComposing";
+import { highlightSearchMatches } from "../../utils/searchHighlight";
 import { menuShortcutLabel } from "../../utils/menuShortcuts";
+import type { RecordingMode } from "./recordingDestination";
 
 interface CommandItem {
   id: string;
@@ -162,9 +175,12 @@ const props = defineProps<{
   currentConversation: ConversationWithState | null;
   cwd: string;
   hasCwd: boolean;
+  canRecordAudio: boolean;
+  canRecordScreen: boolean;
 }>();
 
 const emit = defineEmits<{
+  (e: "record", mode: RecordingMode): void;
   (e: "close"): void;
   (e: "new-conversation"): void;
   (e: "new-conversation-with-cwd", cwd: string): void;
@@ -198,7 +214,6 @@ const newConvGitRepoRoot = ref<string | null>(null);
 const newConvGitWorktreeRoot = ref<string | null>(null);
 const inputRef = ref<HTMLInputElement | null>(null);
 const listRef = ref<HTMLDivElement | null>(null);
-let searchTimeout: number | null = null;
 
 function optionId(index: number) {
   return `command-palette-option-${index}`;
@@ -207,6 +222,8 @@ function optionId(index: number) {
 // --- Icon markup (identical to the React JSX icons) ---
 const SVG_OPEN =
   '<svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="16" height="16">';
+const ICON_MICROPHONE = `${SVG_OPEN}<rect x="9" y="2" width="6" height="12" rx="3" /><path stroke-linecap="round" stroke-linejoin="round" d="M5 10v2a7 7 0 0014 0v-2M12 19v3m-4 0h8" /></svg>`;
+const ICON_SCREEN = `${SVG_OPEN}<rect x="3" y="5" width="13" height="14" rx="2" /><path stroke-linecap="round" stroke-linejoin="round" d="m16 10 5-3v10l-5-3z" /></svg>`;
 const ICON_PLUS = `${SVG_OPEN}<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" /></svg>`;
 const ICON_DOWN = `${SVG_OPEN}<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3" /></svg>`;
 const ICON_UP = `${SVG_OPEN}<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 10l7-7m0 0l7 7m-7-7v18" /></svg>`;
@@ -249,32 +266,28 @@ function fuzzyMatch(q: string, text: string): number {
   return score;
 }
 
-// Search conversations on the server (debounced via the query watcher).
-async function searchConversations(searchQuery: string) {
-  if (!searchQuery.trim()) {
-    searchResults.value = [];
-    isSearching.value = false;
-    return;
-  }
-  isSearching.value = true;
-  try {
-    searchResults.value = await api.searchConversations(searchQuery);
-  } catch (err) {
-    console.error("Failed to search conversations:", err);
-    searchResults.value = [];
-  } finally {
-    isSearching.value = false;
-  }
-}
+watch(query, (q, _old, onCleanup) => {
+  const searchQuery = q.trim();
+  searchResults.value = [];
+  isSearching.value = false;
+  if (!searchQuery) return;
 
-watch(query, (q) => {
-  if (searchTimeout) clearTimeout(searchTimeout);
-  if (q.trim()) {
-    searchTimeout = window.setTimeout(() => void searchConversations(q), 150);
-  } else {
-    searchResults.value = [];
-    isSearching.value = false;
-  }
+  const controller = new AbortController();
+  isSearching.value = true;
+  const timeout = window.setTimeout(async () => {
+    try {
+      const results = await api.searchConversationsFTS(searchQuery, controller.signal);
+      if (!controller.signal.aborted) searchResults.value = results;
+    } catch (err) {
+      if (!controller.signal.aborted) console.error("Failed to search conversations:", err);
+    } finally {
+      if (!controller.signal.aborted) isSearching.value = false;
+    }
+  }, 150);
+  onCleanup(() => {
+    clearTimeout(timeout);
+    controller.abort();
+  });
 });
 
 // When the palette opens, look up git roots for the active workspace.
@@ -319,6 +332,24 @@ const actionItems = computed<CommandItem[]>(() => {
     },
     keywords: ["new", "create", "start", "conversation", "chat"],
   });
+
+  for (const mode of ["microphone", "screen"] as const) {
+    if (!(mode === "screen" ? props.canRecordScreen : props.canRecordAudio)) continue;
+    items.push({
+      id: `record-${mode}`,
+      type: "action",
+      title: mode === "screen" ? "Record audio and screen" : "Record audio",
+      shortcut: menuShortcutLabel(mode === "screen" ? "recordScreen" : "recordAudio"),
+      icon: mode === "screen" ? ICON_SCREEN : ICON_MICROPHONE,
+      action: () => {
+        emit("record", mode);
+        emit("close");
+      },
+      keywords: mode === "screen"
+        ? ["record", "audio", "voice", "microphone", "screen", "window", "video", "capture"]
+        : ["record", "audio", "voice", "microphone", "dictation", "transcribe"],
+    });
+  }
 
   const homeDir = window.__SHELLEY_INIT__?.home_dir;
   if (homeDir) {

@@ -11,15 +11,16 @@
   <div
     ref="containerRef"
     class="markdown-content break-words"
-    @click="onImageActivate"
+    @click="onActivate"
     @keydown="onKeydown"
     v-html="html"
   ></div>
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { highlightCode, normalizeCodeLanguage } from "../../services/markdownHighlight";
+import { addCodeBlockHeaders, codeBlockText, setCodeBlockCopied } from "../../utils/codeBlockCopy";
 import { applyHighlightTokens } from "../../utils/codeHighlight";
 import { COMMENT_ICON } from "../../utils/icons";
 import { localhostLinkOptionsFromInit } from "../../utils/linkify";
@@ -51,6 +52,10 @@ const props = defineProps<{
   runKey?: string;
   // Rewrite VM-local links for user-clickable assistant content only.
   rewriteLocalhostLinks?: boolean;
+  // Streaming replaces the v-html subtree on every delta. Highlighting those
+  // short-lived revisions makes fenced blocks alternate between plain text and
+  // tokens, so callers can defer tokenization until their text is stable.
+  deferCodeHighlighting?: boolean;
 }>();
 
 const containerRef = ref<HTMLDivElement | null>(null);
@@ -61,9 +66,11 @@ const containerRef = ref<HTMLDivElement | null>(null);
 // within a viewport of view (same shared observer that gates tool cards),
 // then tokenize.
 let cancelDeferred: (() => void)[] = [];
+const copyFeedbackTimers = new Map<HTMLButtonElement, ReturnType<typeof setTimeout>>();
 onBeforeUnmount(() => {
   for (const cancel of cancelDeferred) cancel();
   cancelDeferred = [];
+  clearCopyFeedback();
 });
 
 const html = computed(
@@ -84,13 +91,59 @@ const html = computed(
   ),
 );
 
-// --- a11y: code block navigation (from HEAD) ---
-function codeBlocks(): HTMLElement[] {
-  return Array.from(containerRef.value?.querySelectorAll<HTMLElement>("pre > code") ?? []);
+// Images inside a link are excluded throughout: there the image is the link's
+// label, so the anchor owns activation and calling it a button would both
+// mis-announce it and add a redundant tab stop. The badge wrapper is a <span>,
+// not an <a>, so `closest("a")` stays an accurate test after wrapping.
+function isCommentable(img: HTMLImageElement): boolean {
+  return !!props.commentable && !img.parentElement?.closest("a");
 }
 
-function prepareCodeBlocks() {
-  const blocks = codeBlocks();
+// Give commentable images button semantics, a tab stop, and the hover badge.
+// Done in bulk after each render (v-html replaces the subtree) rather than
+// per-image, which is also why activation is handled by one delegated listener
+// below. The wrapper is what the badge positions against, matching
+// CommentableImage.vue's markup so both get the same affordance.
+watch(
+  [html, containerRef],
+  () => {
+    // Cancel before the null guard: if the container vanished, stale
+    // registrations would otherwise pin the detached subtree via the
+    // observer's target set.
+    for (const cancel of cancelDeferred) cancel();
+    cancelDeferred = [];
+    clearCopyFeedback();
+    const root = containerRef.value;
+    if (!root) return;
+    if (props.commentable) {
+      for (const img of root.querySelectorAll("img")) {
+        // The wrapper marks an image as already done: this runs whenever the
+        // container ref settles, not only when the HTML is replaced.
+        if (!isCommentable(img) || img.closest(".commentable-image-link")) continue;
+        img.setAttribute("role", "button");
+        img.setAttribute("tabindex", "0");
+        img.classList.add("commentable-image");
+        const wrap = document.createElement("span");
+        wrap.className = "commentable-image-link";
+        img.replaceWith(wrap);
+        wrap.append(img, badge());
+      }
+    }
+    addCodeBlockHeaders(root);
+    prepareCodeBlocks(root);
+    highlightFencedCode(root);
+  },
+  { flush: "post", immediate: true },
+);
+
+// Screen-reader navigation: every fenced block is a labelled tab stop;
+// Alt+Up/Down moves between blocks and Ctrl/Cmd+Shift+C copies the focused one.
+function codeBlocks(root: HTMLElement): HTMLElement[] {
+  return Array.from(root.querySelectorAll<HTMLElement>("pre > code"));
+}
+
+function prepareCodeBlocks(root: HTMLElement): void {
+  const blocks = codeBlocks(root);
   blocks.forEach((block, index) => {
     const language = Array.from(block.classList)
       .find((name) => name.startsWith("language-"))
@@ -108,8 +161,10 @@ function prepareCodeBlocks() {
   });
 }
 
-function focusCodeBlock(direction: 1 | -1) {
-  const blocks = codeBlocks();
+function focusCodeBlock(direction: 1 | -1): void {
+  const root = containerRef.value;
+  if (!root) return;
+  const blocks = codeBlocks(root);
   if (blocks.length === 0) return;
   const current =
     document.activeElement instanceof HTMLElement ? blocks.indexOf(document.activeElement) : -1;
@@ -123,26 +178,12 @@ function focusCodeBlock(direction: 1 | -1) {
   announceA11y(`Code block ${next + 1} of ${blocks.length}.`);
 }
 
-function onKeydown(event: KeyboardEvent) {
-  // First handle image comment activation (upstream)
-  const imgTarget = event.target;
-  if (imgTarget instanceof HTMLImageElement && isCommentable(imgTarget)) {
-    if (event.key === "Enter" || event.key === " ") {
-      if ((event as KeyboardEvent).repeat) return;
-      event.preventDefault();
-      openImageComment({ src: imgTarget.src });
-      return;
-    }
-  }
-  // Then handle code block navigation (a11y)
-  if (event.altKey && event.key === "ArrowDown") {
+function onKeydown(event: KeyboardEvent): void {
+  onActivate(event);
+  if (event.defaultPrevented) return;
+  if (event.altKey && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
     event.preventDefault();
-    focusCodeBlock(1);
-    return;
-  }
-  if (event.altKey && event.key === "ArrowUp") {
-    event.preventDefault();
-    focusCodeBlock(-1);
+    focusCodeBlock(event.key === "ArrowDown" ? 1 : -1);
     return;
   }
   if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "c") {
@@ -157,43 +198,6 @@ function onKeydown(event: KeyboardEvent) {
   }
 }
 
-onMounted(prepareCodeBlocks);
-watch(html, () => nextTick(prepareCodeBlocks));
-
-// --- upstream: commentable images ---
-function isCommentable(img: HTMLImageElement): boolean {
-  return !!props.commentable && !img.parentElement?.closest("a");
-}
-
-watch(
-  [html, containerRef],
-  () => {
-    // Cancel before the null guard: if the container vanished, stale
-    // registrations would otherwise pin the detached subtree via the
-    // observer's target set.
-    for (const cancel of cancelDeferred) cancel();
-    cancelDeferred = [];
-    const root = containerRef.value;
-    if (!root) return;
-    if (props.commentable) {
-      for (const img of root.querySelectorAll("img")) {
-        // The wrapper marks an image as already done: this runs whenever the
-        // container ref settles, not only when the HTML is replaced.
-        if (!isCommentable(img as HTMLImageElement) || img.closest(".commentable-image-link")) continue;
-        img.setAttribute("role", "button");
-        img.setAttribute("tabindex", "0");
-        img.classList.add("commentable-image");
-        const wrap = document.createElement("span");
-        wrap.className = "commentable-image-link";
-        img.replaceWith(wrap);
-        wrap.append(img, badge());
-      }
-    }
-    highlightFencedCode(root);
-  },
-  { flush: "post", immediate: true },
-);
-
 function languageFor(code: HTMLElement): string | undefined {
   for (const className of code.classList) {
     const match = /^language-(.+)$/.exec(className);
@@ -203,6 +207,7 @@ function languageFor(code: HTMLElement): string | undefined {
 }
 
 function highlightFencedCode(root: HTMLElement): void {
+  if (props.deferCodeHighlighting) return;
   for (const code of root.querySelectorAll<HTMLElement>("pre > code")) {
     const state = code.dataset.shelleyCodeHighlight;
     if (state && state !== "deferred") continue;
@@ -253,10 +258,51 @@ function badge(): HTMLElement {
   return el;
 }
 
-function onImageActivate(e: MouseEvent | KeyboardEvent) {
-  const img = e.target;
+function clearCopyFeedback(): void {
+  for (const [button, timer] of copyFeedbackTimers) {
+    clearTimeout(timer);
+    setCodeBlockCopied(button, false);
+  }
+  copyFeedbackTimers.clear();
+}
+
+async function copyCodeBlock(button: HTMLButtonElement): Promise<void> {
+  const text = codeBlockText(button);
+  if (text === undefined) return;
+
+  try {
+    await navigator.clipboard.writeText(text);
+    const previousTimer = copyFeedbackTimers.get(button);
+    if (previousTimer) clearTimeout(previousTimer);
+    setCodeBlockCopied(button, true);
+    const timer = setTimeout(() => {
+      setCodeBlockCopied(button, false);
+      copyFeedbackTimers.delete(button);
+    }, 1500);
+    copyFeedbackTimers.set(button, timer);
+    announceA11y("Code copied.");
+  } catch (error) {
+    console.error("Copying code failed", error);
+    announceA11y("Could not copy code.", "assertive");
+  }
+}
+
+function onActivate(e: MouseEvent | KeyboardEvent) {
+  const target = e.target;
+  if (e instanceof MouseEvent && target instanceof Element) {
+    const button = target.closest<HTMLButtonElement>(".shelley-code-copy");
+    if (button) {
+      void copyCodeBlock(button);
+      return;
+    }
+  }
+
+  const img = target;
   if (!(img instanceof HTMLImageElement) || !isCommentable(img)) return;
   if (e instanceof KeyboardEvent) {
+    // Only the activation keys, and only once the target is known to be an
+    // image: a blanket space-prevent here would cost every message its
+    // space-to-scroll. Autorepeat is ignored so holding a key doesn't churn.
     if (e.repeat || (e.key !== "Enter" && e.key !== " ")) return;
     e.preventDefault();
     openImageComment({ src: img.src });

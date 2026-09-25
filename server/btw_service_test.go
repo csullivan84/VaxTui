@@ -39,7 +39,7 @@ func (s *btwCapturingService) lastRequest() *llm.Request {
 
 func TestBtwServiceFrozenPrefixIsStableAndRequestIsImmutable(t *testing.T) {
 	_, database, _ := newTestServer(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	parent, err := database.CreateConversation(ctx, nil, true, nil, nil, db.ConversationOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -231,7 +231,7 @@ func TestConversationManagerNilDecoratorPreservesServiceAndRequest(t *testing.T)
 		System:   []llm.SystemContent{{Type: "text", Text: "unchanged"}},
 		Messages: []llm.Message{llm.UserStringMessage("ordinary")},
 	}
-	if _, err := service.Do(context.Background(), request); err != nil {
+	if _, err := service.Do(t.Context(), request); err != nil {
 		t.Fatal(err)
 	}
 	if inner.inputs[0] != request {
@@ -319,5 +319,51 @@ func TestLimitBtwFrozenHistoryNeverOrphansTools(t *testing.T) {
 			}
 			assertPaired(t, got)
 		})
+	}
+}
+
+func TestBtwFrozenReferencePreservesMessageProvenance(t *testing.T) {
+	_, database, _ := newTestServer(t)
+	ctx := t.Context()
+	parent, err := database.CreateConversation(ctx, nil, true, nil, nil, db.ConversationOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := database.CreateSubagentConversation(ctx, "backend", parent.ConversationID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := "Backend progress\n\tAPI <ready>"
+	row, err := database.CreateMessage(ctx, db.CreateMessageParams{
+		ConversationID: parent.ConversationID,
+		Type:           db.MessageTypeUser,
+		LLMData:        llm.UserStringMessage(text),
+		UserData: senderMessageUserData{
+			SenderConversationID: child.ConversationID,
+			SenderSlug:           "backend",
+			SenderRelationship:   senderRelationshipSubagent,
+			Text:                 text,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	capture := &btwCapturingService{Service: predictable.NewService()}
+	service, err := newBtwService(ctx, database, parent.ConversationID,
+		db.BtwParentPointer{Generation: parent.CurrentGeneration, SequenceID: row.SequenceID}, 10, capture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Do(ctx, &llm.Request{Messages: []llm.Message{llm.UserStringMessage("What is the backend doing?")}}); err != nil {
+		t.Fatal(err)
+	}
+	wrapped := `<subagent_message conversation_id="` + child.ConversationID + `" slug="backend">` +
+		"\nBackend progress\n\tAPI &lt;ready&gt;\n</subagent_message>"
+	want, err := json.Marshal(stableBtwContent(llm.TextContent(wrapped)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if frozen := capture.lastRequest().System[0].Text; !strings.Contains(frozen, string(want)) {
+		t.Fatalf("frozen reference lost sender provenance:\n%s\nwant content:\n%s", frozen, want)
 	}
 }

@@ -1,13 +1,10 @@
-<!-- Vue port of components/KeywordSearchTool.tsx.
-     Preserves: .tool, .tool-header, .tool-summary, .tool-emoji 🔍, .tool-command,
-     .tool-toggle, .tool-details, .tool-section, .tool-label, .tool-code,
-     .tool-time, .tool-error, .tool-success, data-testid tool-call-running/completed.
+<!-- Retained for historical conversations; keyword_search is no longer an executable tool.
 
      shelley-a11y: collapsed results stay in the a11y tree. -->
 <template>
   <div class="tool" :data-testid="isComplete ? 'tool-call-completed' : 'tool-call-running'">
     <div
-      class="tool-header"
+      class="tool-header keyword-search-tool-header"
       role="button"
       tabindex="0"
       :aria-expanded="isExpanded"
@@ -40,6 +37,7 @@
       :plain-text="collapsedPlainText"
       body-class="tool-details"
     >
+      <RunningToolTime v-if="isRunning && isExpanded" :start-time="toolInvokedAt" />
       <div v-if="query" class="tool-section">
         <div class="tool-label">Query:</div>
         <pre class="tool-code">{{ query }}</pre>
@@ -68,11 +66,14 @@ import { announceToolA11y } from "../../../services/a11yAnnouncer";
 import { useToolExpanded } from "../../composables/toolDetail";
 import ToolAccessibleBody from "./ToolAccessibleBody.vue";
 import ToolChevron from "./ToolChevron.vue";
+import RunningToolTime from "./RunningToolTime.vue";
 import ToolStatusIcon from "./ToolStatusIcon.vue";
+import { toolOutcomeSuffix } from "../../utils/toolStatus";
 
 const props = defineProps<{
   toolInput?: unknown;
   isRunning?: boolean;
+  toolInvokedAt?: string | null;
   toolResult?: LLMContent[];
   hasError?: boolean;
   executionTime?: string;
@@ -95,15 +96,11 @@ const query = computed(() => {
 
 const searchTerms = computed<string[]>(() => {
   const ti = props.toolInput;
-  if (
-    typeof ti === "object" &&
-    ti !== null &&
-    "search_terms" in ti &&
-    Array.isArray((ti as { search_terms: unknown }).search_terms)
-  ) {
-    return (ti as { search_terms: string[] }).search_terms;
-  }
-  return [];
+  if (typeof ti !== "object" || ti === null || !("search_terms" in ti)) return [];
+  const terms = ti.search_terms;
+  // The retired tool also accepted a bare string as one term, not a comma-separated list.
+  if (typeof terms === "string") return [terms];
+  return Array.isArray(terms) ? terms : [];
 });
 
 const output = computed(() =>
@@ -124,10 +121,12 @@ const isComplete = computed(() => !props.isRunning && props.toolResult !== undef
 
 const searchSubject = computed(() => fullText.value || "keyword search");
 const outputLabel = computed(() => `Search results for \`${searchSubject.value}\``);
-const toggleLabel = computed(() =>
-  isExpanded.value
-    ? `Collapse search results for \`${searchSubject.value}\``
-    : `Expand search results for \`${searchSubject.value}\``,
+const toggleLabel = computed(
+  () =>
+    (isExpanded.value
+      ? `Collapse search results for \`${searchSubject.value}\``
+      : `Expand search results for \`${searchSubject.value}\``) +
+    toolOutcomeSuffix(isComplete.value, props.hasError),
 );
 
 const collapsedPlainText = computed(() => {

@@ -56,6 +56,7 @@
       :plain-text="collapsedPlainText"
       body-class="tool-details"
     >
+      <RunningToolTime v-if="isRunning && isExpanded" :start-time="toolInvokedAt" />
       <div class="tool-section">
         <div class="tool-label">Prompt files:</div>
         <pre class="tool-code">{{ promptFiles.join("\n") || "(none)" }}</pre>
@@ -94,7 +95,9 @@ import { useToolExpanded } from "../../composables/toolDetail";
 import ToolAccessibleBody from "./ToolAccessibleBody.vue";
 import CommentableImage from "../CommentableImage.vue";
 import ToolChevron from "./ToolChevron.vue";
+import RunningToolTime from "./RunningToolTime.vue";
 import ToolStatusIcon from "./ToolStatusIcon.vue";
+import { toolOutcomeSuffix } from "../../utils/toolStatus";
 
 interface LLMOneShotInput {
   prompt_files?: string[] | string;
@@ -121,6 +124,7 @@ interface LLMOneShotDisplayImage {
 const props = defineProps<{
   toolInput?: unknown;
   isRunning?: boolean;
+  toolInvokedAt?: string | null;
   toolResult?: LLMContent[];
   hasError?: boolean;
   executionTime?: string;
@@ -171,8 +175,10 @@ const summary = computed(() => {
   return parts.join(" · ") || "llm_one_shot";
 });
 const outputLabel = computed(() => "LLM one-shot result");
-const toggleLabel = computed(() =>
-  isExpanded.value ? "Collapse LLM one-shot result" : "Expand LLM one-shot result",
+const toggleLabel = computed(
+  () =>
+    (isExpanded.value ? "Collapse LLM one-shot result" : "Expand LLM one-shot result") +
+    toolOutcomeSuffix(isComplete.value, props.hasError),
 );
 const collapsedPlainText = computed(() => {
   const parts = [`Prompt files:\n${promptFiles.value.join("\n") || "(none)"}`];

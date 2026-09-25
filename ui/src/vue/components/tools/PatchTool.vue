@@ -125,6 +125,7 @@
       :plain-text="collapsedPlainText"
       body-class="patch-tool-details"
     >
+      <RunningToolTime v-if="isRunning && isExpanded" :start-time="toolInvokedAt" />
       <div v-if="isComplete && !hasError && hasDiff" class="patch-tool-section">
         <div v-if="patchFiles.length > 1" class="patch-tool-diffs-container patch-tool-file-list">
           <PatchFileDiff
@@ -193,7 +194,9 @@ import { useNearViewport } from "../../composables/nearViewport";
 import { WorkspaceContextKey } from "../../composables/workspaceContext";
 import { useOpenFileEditor } from "../../composables/fileEditor";
 import ToolChevron from "./ToolChevron.vue";
+import RunningToolTime from "./RunningToolTime.vue";
 import ToolStatusIcon from "./ToolStatusIcon.vue";
+import { toolOutcomeSuffix } from "../../utils/toolStatus";
 import PatchFileDiff from "./PatchFileDiff.vue";
 
 const DIFF_THEMES: ThemesType = { dark: "github-dark", light: "github-light" };
@@ -272,6 +275,7 @@ function getLanguageFromPath(path: string): SupportedLanguages {
 const props = defineProps<{
   toolInput?: unknown;
   isRunning?: boolean;
+  toolInvokedAt?: string | null;
   toolResult?: LLMContent[];
   hasError?: boolean;
   executionTime?: string;
@@ -286,10 +290,12 @@ if (!props.hasError) {
   isExpanded.value = true;
 }
 const outputLabel = computed(() => `Patch output for \`${filename.value}\``);
-const toggleLabel = computed(() =>
-  isExpanded.value
-    ? `Collapse patch for \`${filename.value}\``
-    : `Expand patch for \`${filename.value}\``,
+const toggleLabel = computed(
+  () =>
+    (isExpanded.value
+      ? `Collapse patch for \`${filename.value}\``
+      : `Expand patch for \`${filename.value}\``) +
+    toolOutcomeSuffix(isComplete.value, props.hasError),
 );
 const collapsedPlainText = computed(() => {
   if (!isComplete.value) return "";
@@ -535,7 +541,7 @@ const fileDiff = computed<FileDiffMetadata | null>(() => {
 const diffError = computed(() => nearViewport.value && hasDiff.value && fileDiff.value == null);
 
 // Rough height reserved for a not-yet-hydrated diff so scrolling up through
-// history doesn't shift as diffs hydrate. ~20px per diff line; snapshots
+// history doesn't shift as diffs hydrate. ~18px per diff line; snapshots
 // (old/new content) render only changed hunks, so estimate conservatively.
 const placeholderHeight = computed(() => {
   const dd = displayData.value;
@@ -549,7 +555,7 @@ const placeholderHeight = computed(() => {
       80,
     );
   }
-  return `${Math.min(lines * 20, 2000)}px`;
+  return `${Math.min(lines * 18, 2000)}px`;
 });
 
 // Where this tool renders relative to the viewport: see nearViewport above.

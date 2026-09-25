@@ -32,6 +32,7 @@ type Conversation struct {
 	IsDraft              bool      `json:"is_draft"`
 	Draft                string    `json:"draft"`
 	QueuedMessages       string    `json:"queued_messages"`
+	TurnInterrupted      bool      `json:"turn_interrupted"`
 }
 
 type Herd struct {
@@ -93,6 +94,7 @@ type Model struct {
 	ImageSupport     string    `json:"image_support"`
 	ReasoningSupport string    `json:"reasoning_support"`
 	ReasoningMap     string    `json:"reasoning_map"`
+	ReasoningReplay  string    `json:"reasoning_replay"`
 }
 
 type NotificationChannel struct {

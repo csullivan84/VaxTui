@@ -11,6 +11,7 @@
           class: 'chat-context-popup',
           id: popupId,
           'aria-label': 'Context usage',
+          style: { '--context-popup-available-height': popupAvailableHeight },
         },
         content: { class: 'chat-context-popup-content' },
       }"
@@ -18,12 +19,6 @@
       @hide="popupOpen = false"
     >
       {{ formatTokenCount(contextWindowSize) }} tokens
-      <span v-if="maxContextTokens > 0">
-        of {{ formatTokenCount(maxContextTokens) }} context capacity
-      </span>
-      <div v-if="contextPricingThreshold > 0" class="form-hint">
-        Higher-price context begins at {{ formatTokenCount(contextPricingThreshold) }} tokens.
-      </div>
       <div v-if="popupOpen" class="usage-graph-panel">
         <div
           :class="{ 'usage-graph-panel-item-inactive': usageGraph !== 'cost' }"
@@ -33,6 +28,7 @@
         >
           <TokenCostGraph
             :entries="usageEntries || []"
+            :models="models"
             :other-usage-rows="otherUsageRows || []"
             :conversation-id="conversationId"
             :active="usageGraph === 'cost'"
@@ -56,7 +52,7 @@
         </div>
       </div>
       <div v-if="showLongConversationWarning" class="chat-popup-warning">
-        {{ warningReason }}
+        This conversation is getting long.
         <br />
         Compact it or start a new conversation.
       </div>
@@ -104,7 +100,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, useId, watch } from "vue";
 import Popover from "primevue/popover";
-import type { Message } from "../../types";
+import type { Message, Model } from "../../types";
 import { contextUsageLevel, contextUsageLevelLabel } from "../../utils/contextUsage";
 import { formatTokenCount } from "../../utils/tokenCostGraph";
 import type { OtherUsageRow, UsageEntry } from "../../utils/tokenCostGraph";
@@ -114,12 +110,12 @@ import UsageGraphSwitch from "./UsageGraphSwitch.vue";
 
 const props = defineProps<{
   contextWindowSize: number;
-  /** Model's hard context window; 0 when unknown. */
+  /** Model context window (models.dev, pricing-tier clamped); 0 when unknown.
+   *  Never displayed — only floors the warning color as the window fills. */
   maxContextTokens: number;
-  /** First token-count pricing cliff; 0 when none is known. */
-  contextPricingThreshold: number;
   conversationId?: string | null;
   usageEntries?: UsageEntry[];
+  models: Model[];
   otherUsageRows?: OtherUsageRow[];
   messages?: Message[];
   onDistillNewGeneration?: () => Promise<void> | void;
@@ -135,6 +131,7 @@ const props = defineProps<{
 const distilling = ref(false);
 const usageGraph = ref<"cost" | "context">("cost");
 const popupOpen = ref(false);
+const popupAvailableHeight = ref<string>();
 const popupId = useId();
 const popoverRef = ref<InstanceType<typeof Popover> | null>(null);
 const barRef = ref<HTMLElement | null>(null);
@@ -150,18 +147,6 @@ const usageLevelClass = computed(() =>
 // The popup's advice and its once-per-browser auto-open fire exactly when the
 // count first colors.
 const showLongConversationWarning = computed(() => usageLevel.value !== "");
-const warningReason = computed(() => {
-  if (props.maxContextTokens > 0 && props.contextWindowSize / props.maxContextTokens >= 0.7) {
-    return "This conversation is approaching the model's context capacity.";
-  }
-  if (
-    props.contextPricingThreshold > 0 &&
-    props.contextWindowSize >= props.contextPricingThreshold
-  ) {
-    return "This conversation has crossed the model's higher-price context threshold.";
-  }
-  return "This conversation is getting long.";
-});
 let hasAutoOpened = false;
 
 // Spelled out for the accessible name; the level is named in words too since
@@ -169,14 +154,7 @@ let hasAutoOpened = false;
 const usageTitle = computed(() => {
   const level = contextUsageLevelLabel(usageLevel.value);
   const suffix = level ? ` — conversation ${level}` : "";
-  const capacity = props.maxContextTokens
-    ? ` of ${formatTokenCount(props.maxContextTokens)}`
-    : "";
-  const pricing =
-    props.contextPricingThreshold > 0 && props.contextWindowSize >= props.contextPricingThreshold
-      ? ` — above the ${formatTokenCount(props.contextPricingThreshold)} higher-price threshold`
-      : "";
-  return `Context usage: ${formatTokenCount(props.contextWindowSize)}${capacity} tokens${suffix}${pricing}`;
+  return `Context usage: ${formatTokenCount(props.contextWindowSize)} tokens${suffix}`;
 });
 const usageTooltip = computed(() => `${usageTitle.value}. Click for details.`);
 
@@ -191,6 +169,11 @@ function openPopup(event: Event) {
 // event, including the programmatic auto-open below, so ask again here: the
 // hover/focus/click hints above are an optimization, this is the guarantee.
 function onPopupShow() {
+  // Keep a tall breakdown above its trigger, including on short viewports.
+  // Otherwise Popover clamps it to the viewport top and can cover the label.
+  if (barRef.value) {
+    popupAvailableHeight.value = `${Math.max(0, barRef.value.getBoundingClientRect().top - 16)}px`;
+  }
   popupOpen.value = true;
   props.onUsageNeeded?.();
 }

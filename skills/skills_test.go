@@ -1,6 +1,7 @@
 package skills
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,6 +52,64 @@ Body content.
 			wantError: true,
 		},
 		{
+			name: "duplicate top-level keys are rejected",
+			content: `---
+name: first-name
+name: second-name
+description: Duplicate names.
+---
+`,
+			wantError: true,
+		},
+		{
+			name: "duplicate metadata keys are rejected",
+			content: `---
+name: duplicate-metadata
+description: Duplicate metadata.
+metadata:
+  owner: first
+  owner: second
+---
+`,
+			wantError: true,
+		},
+		{
+			name: "aliases in extra metadata are accepted",
+			content: `---
+name: alias-skill
+description: A skill using aliases.
+metadata: &metadata
+  author: example
+copy: *metadata
+---
+`,
+			wantName:  "alias-skill",
+			wantDesc:  "A skill using aliases.",
+			wantError: false,
+		},
+		{
+			name: "cyclic aliases are rejected",
+			content: `---
+name: cyclic-alias
+description: Cyclic alias.
+metadata: &metadata
+  self: *metadata
+---
+`,
+			wantError: true,
+		},
+		{
+			name: "multiple YAML documents are rejected",
+			content: `---
+name: multi-document
+description: First document.
+...
+name: second-document
+---
+`,
+			wantError: true,
+		},
+		{
 			name: "missing name",
 			content: `---
 description: A skill without a name
@@ -86,14 +145,52 @@ description: A skill with consecutive hyphens
 			wantError: true,
 		},
 		{
-			name: "quoted values",
+			name: "mixed quotes and delimiter text",
 			content: `---
-name: "my-skill"
-description: 'A skill with quoted values'
+name: "quoted-skill"
+description: "Use 'single quotes', \"double quotes\", and --- safely."
 ---
 `,
-			wantName:  "my-skill",
-			wantDesc:  "A skill with quoted values",
+			wantName:  "quoted-skill",
+			wantDesc:  `Use 'single quotes', "double quotes", and --- safely.`,
+			wantError: false,
+		},
+		{
+			name: "description with escaped NUL",
+			content: `---
+name: nul-description
+description: "bad\0description"
+---
+`,
+			wantError: true,
+		},
+		{
+			name: "null description scalar remains source text",
+			content: `---
+name: null-description
+description: null
+---
+`,
+			wantName:  "null-description",
+			wantDesc:  "null",
+			wantError: false,
+		},
+		{
+			name: "tagged description scalar remains source text",
+			content: `---
+name: tagged-description
+description: !!binary aGVsbG8=
+---
+`,
+			wantName:  "tagged-description",
+			wantDesc:  "aGVsbG8=",
+			wantError: false,
+		},
+		{
+			name:      "leading whitespace and delimiter trailing whitespace",
+			content:   "\n \t---  \nname: whitespace-skill\ndescription: Delimiters may have surrounding whitespace.\n---\t\n",
+			wantName:  "whitespace-skill",
+			wantDesc:  "Delimiters may have surrounding whitespace.",
 			wantError: false,
 		},
 	}
@@ -127,6 +224,37 @@ description: 'A skill with quoted values'
 				t.Errorf("description = %q, want %q", skill.Description, tt.wantDesc)
 			}
 		})
+	}
+}
+
+func TestParseRejectsExcessiveAliasExpansion(t *testing.T) {
+	var content strings.Builder
+	content.WriteString("---\nname: alias-expansion\ndescription: Excessive alias expansion.\nlevel0: &level0 [x, x]\n")
+	for i := 1; i <= 20; i++ {
+		fmt.Fprintf(&content, "level%d: &level%d [*level%d, *level%d]\n", i, i, i-1, i-1)
+	}
+	content.WriteString("---\n")
+
+	_, err := ParseContent(content.String())
+	if err == nil || !strings.Contains(err.Error(), "alias expansion exceeds limit") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestParseMetadataScalarsRemainStrings(t *testing.T) {
+	skill, err := ParseContent(`---
+name: metadata-scalars
+description: Preserve YAML scalar source values.
+metadata:
+  version: 1.0
+  enabled: true
+---
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if skill.Metadata["version"] != "1.0" || skill.Metadata["enabled"] != "true" {
+		t.Fatalf("metadata = %#v", skill.Metadata)
 	}
 }
 
@@ -410,6 +538,15 @@ func skillNames(skills []Skill) []string {
 	return names
 }
 
+func skillByName(skills []Skill, name string) *Skill {
+	for i := range skills {
+		if skills[i].Name == name {
+			return &skills[i]
+		}
+	}
+	return nil
+}
+
 func TestProjectSkillsDirs(t *testing.T) {
 	// Create a directory structure:
 	// tmpDir/
@@ -473,12 +610,13 @@ func TestDefaultDirsReturnsExistingCandidates(t *testing.T) {
 	// Create a fake home directory with skill directories
 	tmpHome := t.TempDir()
 
-	// Create all three candidate directories
+	// Create all four candidate directories
 	configShelley := filepath.Join(tmpHome, ".config", "shelley")
 	configAgents := filepath.Join(tmpHome, ".config", "agents", "skills")
+	dotAgentsSkills := filepath.Join(tmpHome, ".agents", "skills")
 	dotShelley := filepath.Join(tmpHome, ".shelley")
 
-	for _, dir := range []string{configShelley, configAgents, dotShelley} {
+	for _, dir := range []string{configShelley, configAgents, dotAgentsSkills, dotShelley} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -491,19 +629,20 @@ func TestDefaultDirsReturnsExistingCandidates(t *testing.T) {
 
 	dirs := DefaultDirs()
 
-	if len(dirs) != 3 {
-		t.Fatalf("expected 3 dirs, got %d: %v", len(dirs), dirs)
+	if len(dirs) != 4 {
+		t.Fatalf("expected 4 dirs, got %d: %v", len(dirs), dirs)
 	}
 
-	// Verify all three candidates are returned
-	want := map[string]bool{
-		configShelley: true,
-		configAgents:  true,
-		dotShelley:    true,
+	// Verify all four candidates are returned, in order
+	want := []string{
+		configShelley,
+		configAgents,
+		dotAgentsSkills,
+		dotShelley,
 	}
-	for _, d := range dirs {
-		if !want[d] {
-			t.Errorf("unexpected dir in result: %s", d)
+	for i, d := range dirs {
+		if d != want[i] {
+			t.Errorf("dirs[%d] = %s, want %s", i, d, want[i])
 		}
 	}
 }
@@ -548,6 +687,14 @@ func TestSkillsFoundRegardlessOfWorkingDir(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: my-skill\ndescription: A test skill.\n---\nContent\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// And a skill in ~/.agents/skills/ (non-XDG alternative location)
+	dotAgentsSkillDir := filepath.Join(tmpHome, ".agents", "skills", "my-dot-agents-skill")
+	if err := os.MkdirAll(dotAgentsSkillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dotAgentsSkillDir, "SKILL.md"), []byte("---\nname: my-dot-agents-skill\ndescription: A test skill in ~/.agents.\n---\nContent\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	oldHome := os.Getenv("HOME")
 	os.Setenv("HOME", tmpHome)
@@ -561,11 +708,15 @@ func TestSkillsFoundRegardlessOfWorkingDir(t *testing.T) {
 	dirs := DefaultDirs()
 	found := Discover(dirs)
 
-	if len(found) != 1 {
-		t.Fatalf("expected 1 skill, got %d (dirs=%v)", len(found), dirs)
+	if len(found) != 2 {
+		t.Fatalf("expected 2 skills, got %d (dirs=%v)", len(found), dirs)
 	}
-	if found[0].Name != "my-skill" {
-		t.Errorf("expected my-skill, got %s", found[0].Name)
+	gotNames := map[string]bool{}
+	for _, s := range found {
+		gotNames[s.Name] = true
+	}
+	if !gotNames["my-skill"] || !gotNames["my-dot-agents-skill"] {
+		t.Errorf("expected my-skill and my-dot-agents-skill, got %v", gotNames)
 	}
 
 	// DiscoverInTree from the project dir should NOT find user-level skills
@@ -575,10 +726,10 @@ func TestSkillsFoundRegardlessOfWorkingDir(t *testing.T) {
 		t.Errorf("expected 0 tree skills from unrelated project, got %d", len(treeSkills))
 	}
 
-	// But the combined result should still have the skill
+	// But the combined result should still have both skills
 	all := append(found, treeSkills...)
-	if len(all) != 1 {
-		t.Fatalf("expected 1 total skill, got %d", len(all))
+	if len(all) != 2 {
+		t.Fatalf("expected 2 total skills, got %d", len(all))
 	}
 
 	_ = projectDir // used above
@@ -590,15 +741,9 @@ func TestBuiltinSkills(t *testing.T) {
 		t.Fatalf("expected exactly 10 built-in skills, got %d: %v", len(builtins), skillNames(builtins))
 	}
 
-	wantSkills := []string{"commit-tour", "customizing-shelley", "excalidraw", "node-and-js-frameworks", "previous-conversations", "reflection-integration", "request-integration", "schedule", "shelley-hooks", "transcribing-audio"}
+	wantSkills := []string{"commit-tour", "customizing-shelley", "excalidraw", "node-and-js-frameworks", "previous-conversations", "reflection-integration", "schedule", "shelley-hooks", "suggesting-exe-dev-actions", "transcribing-audio"}
 	for _, wantName := range wantSkills {
-		var found *Skill
-		for i := range builtins {
-			if builtins[i].Name == wantName {
-				found = &builtins[i]
-				break
-			}
-		}
+		found := skillByName(builtins, wantName)
 		if found == nil {
 			t.Fatalf("expected built-in %q skill", wantName)
 		}
@@ -610,6 +755,43 @@ func TestBuiltinSkills(t *testing.T) {
 		}
 		if found.Path != "" {
 			t.Errorf("%s: built-in skill should have empty Path, got %q", wantName, found.Path)
+		}
+	}
+}
+
+func TestExeDevActionsBuiltinKeepsIntegrationsOptional(t *testing.T) {
+	actions := skillByName(BuiltinSkills(), "suggesting-exe-dev-actions")
+	if actions == nil {
+		t.Fatal("suggesting-exe-dev-actions built-in skill not found")
+	}
+	if !strings.Contains(actions.Description, "optional") {
+		t.Error("skill description must make action links optional")
+	}
+	for _, want := range []string{
+		"Integrations are optional", "user's preferred credential setup",
+		"local files or environment variables", "Prefer connection links",
+		"Keep credentials out of links",
+	} {
+		if !strings.Contains(actions.Body, want) {
+			t.Errorf("instructions missing %q", want)
+		}
+	}
+	if strings.Contains(strings.ToLower(actions.Body), "never ask the user to paste") {
+		t.Error("instructions must not impose a blanket ban on the user's credential setup")
+	}
+}
+
+func TestPreviousConversationsBuiltinIncludesSubagents(t *testing.T) {
+	previous := skillByName(BuiltinSkills(), "previous-conversations")
+	if previous == nil {
+		t.Fatal("previous-conversations built-in skill not found")
+	}
+	if !strings.Contains(strings.ToLower(previous.Description), "subagent") {
+		t.Errorf("description does not mention subagents: %q", previous.Description)
+	}
+	for _, want := range []string{"parent_conversation_id", "subagent ID"} {
+		if !strings.Contains(previous.Body, want) {
+			t.Errorf("instructions missing %q: %q", want, previous.Body)
 		}
 	}
 }
@@ -636,7 +818,7 @@ func TestToPromptXMLBuiltinSkill(t *testing.T) {
 }
 
 func TestExtractBody(t *testing.T) {
-	content := "---\nname: test\n---\n\n# Body\n\nContent here."
+	content := "---\nname: test\ndescription: 'Text containing --- safely.'\n---\n\n# Body\n\nContent here."
 	body := extractBody(content)
 	if body != "# Body\n\nContent here." {
 		t.Errorf("extractBody = %q, want %q", body, "# Body\n\nContent here.")
@@ -872,4 +1054,72 @@ func TestFilterWhen(t *testing.T) {
 	if len(got) != 2 || got[0].Name != "always" || got[1].Name != "on-exe" {
 		t.Errorf("ExeDev=true: got %v, want [always on-exe]", skillNames(got))
 	}
+}
+
+func TestToPromptXMLUsesPerSkillActivation(t *testing.T) {
+	xml := ToPromptXML([]Skill{{
+		Name:        "remote-skill",
+		Description: "Loaded from an integration.",
+		Activate:    "curl -fsS https://remote.int.example/",
+	}})
+	if !strings.Contains(xml, "<activate>curl -fsS https://remote.int.example/</activate>") {
+		t.Fatalf("remote activation missing from XML: %s", xml)
+	}
+}
+
+func TestListAllWithIntegrationsPrecedence(t *testing.T) {
+	t.Run("integration beats builtin", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		root := t.TempDir()
+		got := ListAllWithIntegrations(root, root, []Skill{{Name: "schedule", Description: "Integration schedule."}})
+		for _, skill := range got {
+			if skill.Name == "schedule" {
+				if skill.Description != "Integration schedule." {
+					t.Fatalf("schedule description = %q", skill.Description)
+				}
+				return
+			}
+		}
+		t.Fatal("integration schedule skill missing")
+	})
+
+	t.Run("filesystem beats integration", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		root := t.TempDir()
+		dir := filepath.Join(root, ".skills", "same-name")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("---\nname: same-name\ndescription: Filesystem version.\n---\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		got := ListAllWithIntegrations(root, root, []Skill{{Name: "same-name", Description: "Integration version."}})
+		for _, skill := range got {
+			if skill.Name == "same-name" {
+				if skill.Description != "Filesystem version." {
+					t.Fatalf("same-name description = %q", skill.Description)
+				}
+				return
+			}
+		}
+		t.Fatal("filesystem skill missing")
+	})
+
+	t.Run("malformed filesystem suppresses integration and builtin", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		root := t.TempDir()
+		dir := filepath.Join(root, ".skills", "schedule")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		got := ListAllWithIntegrations(root, root, []Skill{{Name: "schedule", Description: "Integration schedule."}})
+		for _, skill := range got {
+			if skill.Name == "schedule" {
+				t.Fatalf("malformed filesystem claim did not suppress schedule: %+v", skill)
+			}
+		}
+	})
 }

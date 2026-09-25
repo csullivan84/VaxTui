@@ -103,7 +103,7 @@ func TestFromLLMMessageResponses(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			items := fromLLMMessageResponses(tt.msg)
+			items := fromLLMMessageResponses(tt.msg, responsesReasoningReplayEncrypted)
 			if len(items) != tt.expected {
 				t.Errorf("expected %d items, got %d", tt.expected, len(items))
 			}
@@ -142,7 +142,7 @@ func TestFromLLMMessageResponsesWithImage(t *testing.T) {
 			{Type: llm.ContentTypeText, Text: "What is in this image?"},
 			{Type: llm.ContentTypeText, MediaType: "image/png", Data: "abc123"},
 		},
-	})
+	}, responsesReasoningReplayEncrypted)
 	if len(items) != 1 {
 		t.Fatalf("expected 1 item, got %d", len(items))
 	}
@@ -165,7 +165,7 @@ func TestFromLLMMessageResponsesWithImageOnlyAndMultipleImages(t *testing.T) {
 			{Type: llm.ContentTypeText, Text: "between"},
 			{Type: llm.ContentTypeText, MediaType: "image/jpeg", Data: "second"},
 		},
-	})
+	}, responsesReasoningReplayEncrypted)
 	if len(items) != 1 {
 		t.Fatalf("expected 1 item, got %d", len(items))
 	}
@@ -199,7 +199,7 @@ func TestFromLLMMessageResponsesWithToolResultImage(t *testing.T) {
 				{Type: llm.ContentTypeText, MediaType: "image/jpeg", Data: "xyz789"},
 			},
 		}},
-	})
+	}, responsesReasoningReplayEncrypted)
 	if len(items) != 2 {
 		t.Fatalf("expected 2 items, got %d", len(items))
 	}
@@ -227,7 +227,7 @@ func TestFromLLMMessageResponsesWithImageOnlyToolResultAndRegularContent(t *test
 			},
 			{Type: llm.ContentTypeText, Text: "regular text"},
 		},
-	})
+	}, responsesReasoningReplayEncrypted)
 	if len(items) != 3 {
 		t.Fatalf("expected 3 items, got %d: %+v", len(items), items)
 	}
@@ -560,7 +560,7 @@ func TestResponsesServiceIntegration(t *testing.T) {
 		Model:  GPT53Codex,
 	}
 
-	ctx := context.Background()
+	ctx := t.Context()
 
 	t.Run("simple request", func(t *testing.T) {
 		req := &llm.Request{
@@ -674,7 +674,7 @@ func TestResponsesServiceDoSendsSystemAsInstructions(t *testing.T) {
 		ModelURL: server.URL,
 	}
 
-	_, err := svc.Do(context.Background(), &llm.Request{
+	_, err := svc.Do(t.Context(), &llm.Request{
 		System: []llm.SystemContent{
 			{Text: "You are a helpful assistant"},
 			{Text: "Be concise"},
@@ -730,7 +730,7 @@ func TestResponsesServiceDoSendsDefaultMaxOutputTokens(t *testing.T) {
 		ModelURL: server.URL,
 	}
 
-	_, err := svc.Do(context.Background(), &llm.Request{
+	_, err := svc.Do(t.Context(), &llm.Request{
 		Messages: []llm.Message{{
 			Role:    llm.MessageRoleUser,
 			Content: []llm.Content{{Type: llm.ContentTypeText, Text: "hi"}},
@@ -820,7 +820,7 @@ func TestResponsesServiceDo(t *testing.T) {
 	defer server.Close()
 
 	// Create a service with the mock server
-	ctx := context.Background()
+	ctx := t.Context()
 	svc := &ResponsesService{
 		APIKey:   "test-api-key",
 		Model:    GPT41,
@@ -971,7 +971,7 @@ func TestResponsesServiceDoConsumesPlainTextStream(t *testing.T) {
 		Model:    GPT41,
 		ModelURL: server.URL,
 	}
-	resp, err := svc.Do(context.Background(), &llm.Request{
+	resp, err := svc.Do(t.Context(), &llm.Request{
 		Messages: []llm.Message{{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "Hello!"}}}},
 		OnStream: func(delta llm.StreamDelta) {
 			streamed.WriteString(delta.Text)
@@ -1014,7 +1014,7 @@ func TestResponsesServiceRetriesPlainTextServerError(t *testing.T) {
 		ModelURL: server.URL,
 		Backoff:  []time.Duration{0},
 	}
-	resp, err := svc.Do(context.Background(), &llm.Request{
+	resp, err := svc.Do(t.Context(), &llm.Request{
 		Messages: []llm.Message{{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "hi"}}}},
 		OnRetry:  func(event llm.RetryEvent) { retries = append(retries, event) },
 	})
@@ -1058,7 +1058,7 @@ func TestResponsesServicePrefersStructuredServerErrorMessage(t *testing.T) {
 
 	var retry llm.RetryEvent
 	svc := &ResponsesService{APIKey: "test-api-key", Model: GPT41, ModelURL: server.URL, Backoff: []time.Duration{0}}
-	_, err := svc.Do(context.Background(), &llm.Request{
+	_, err := svc.Do(t.Context(), &llm.Request{
 		Messages: []llm.Message{{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "hi"}}}},
 		OnRetry:  func(event llm.RetryEvent) { retry = event },
 	})
@@ -1076,7 +1076,7 @@ func TestResponsesServiceUsesFirstBackoffForFirstRetry(t *testing.T) {
 	}))
 	defer server.Close()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	var retry llm.RetryEvent
 	svc := &ResponsesService{
@@ -1121,7 +1121,7 @@ func TestResponsesServiceRetriesPlainTextRateLimit(t *testing.T) {
 
 	var retries []llm.RetryEvent
 	svc := &ResponsesService{APIKey: "test-api-key", Model: GPT41, ModelURL: server.URL, Backoff: []time.Duration{0}}
-	_, err := svc.Do(context.Background(), &llm.Request{
+	_, err := svc.Do(t.Context(), &llm.Request{
 		Messages: []llm.Message{{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "hi"}}}},
 		OnRetry:  func(event llm.RetryEvent) { retries = append(retries, event) },
 	})
@@ -1144,7 +1144,7 @@ func TestResponsesServiceBoundsRetriedErrorBodies(t *testing.T) {
 	defer server.Close()
 
 	svc := &ResponsesService{APIKey: "test-api-key", Model: GPT41, ModelURL: server.URL, Backoff: []time.Duration{0}}
-	_, err := svc.Do(context.Background(), &llm.Request{
+	_, err := svc.Do(t.Context(), &llm.Request{
 		Messages: []llm.Message{{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "hi"}}}},
 	})
 	if err == nil {
@@ -1152,6 +1152,375 @@ func TestResponsesServiceBoundsRetriedErrorBodies(t *testing.T) {
 	}
 	if len(err.Error()) > 20<<10 {
 		t.Fatalf("error length = %d, want bounded retry history", len(err.Error()))
+	}
+}
+
+type responsesRequestErrorForTest struct {
+	info llm.RequestErrorInfo
+}
+
+func (e *responsesRequestErrorForTest) Error() string { return "request failed" }
+func (e *responsesRequestErrorForTest) RequestErrorInfo() llm.RequestErrorInfo {
+	return e.info
+}
+
+type responsesRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f responsesRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func TestResponsesServiceExhaustionUsesLatestRequestMetadata(t *testing.T) {
+	for _, tt := range []struct {
+		name               string
+		latestAttemptStall bool
+		wantStallDuration  time.Duration
+	}{
+		{name: "earlier stall does not leak", wantStallDuration: 0},
+		{name: "latest stall is preserved", latestAttemptStall: true, wantStallDuration: 3 * time.Minute},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			attempts := 0
+			httpc := &http.Client{Transport: responsesRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+				attempts++
+				stall := attempts == 1
+				if tt.latestAttemptStall {
+					stall = attempts == 16
+				}
+				if stall {
+					return nil, &responsesRequestErrorForTest{info: llm.RequestErrorInfo{
+						Retryable:         true,
+						IdleStallDuration: 3 * time.Minute,
+					}}
+				}
+				stream := "event: response.failed\n" +
+					`data: {"type":"response.failed","response":{"status":"failed","error":{"message":"temporary server failure","type":"server_error","code":"server_error"}}}` + "\n\n"
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+					Body:       io.NopCloser(strings.NewReader(stream)),
+					Request:    req,
+				}, nil
+			})}
+
+			svc := &ResponsesService{APIKey: "test-api-key", Model: GPT41, ModelURL: "https://example.test", HTTPC: httpc, Backoff: []time.Duration{0}}
+			_, err := svc.Do(t.Context(), &llm.Request{
+				Messages: []llm.Message{{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "hi"}}}},
+			})
+			if err == nil {
+				t.Fatal("Do() error = nil, want exhausted retries")
+			}
+			info, ok := llm.RequestErrorInfoFromError(err)
+			if !ok || !info.Retryable || !info.NoImmediateRetry || info.IdleStallDuration != tt.wantStallDuration {
+				t.Fatalf("error metadata = %+v, %v; want stall %v", info, ok, tt.wantStallDuration)
+			}
+		})
+	}
+}
+
+func TestResponsesErrorRetryable(t *testing.T) {
+	tests := []struct {
+		name string
+		err  *responsesError
+		want bool
+	}{
+		{name: "nil", err: nil, want: true},
+		{name: "unclassified", err: &responsesError{Message: "provider-specific failure"}, want: true},
+		{name: "unsupported images override server code", err: &responsesError{Message: "This model does not support image inputs", Type: "server_error", Code: json.RawMessage(`"server_error"`)}, want: false},
+		{name: "unsupported value", err: &responsesError{Code: json.RawMessage(`"unsupported_value"`)}, want: false},
+		{name: "invalid prompt", err: &responsesError{Code: json.RawMessage(`"invalid_prompt"`)}, want: false},
+		{name: "misalignment policy violation", err: &responsesError{Code: json.RawMessage(`"misalignment_policy_violation"`)}, want: false},
+		{name: "invalid image", err: &responsesError{Code: json.RawMessage(`"invalid_image"`)}, want: false},
+		{name: "invalid request type", err: &responsesError{Type: "invalid_request_error"}, want: false},
+		{name: "vector store timeout", err: &responsesError{Code: json.RawMessage(`"vector_store_timeout"`)}, want: true},
+		{name: "numeric rate limit", err: &responsesError{Code: json.RawMessage(`429`)}, want: true},
+		{name: "numeric server error", err: &responsesError{Code: json.RawMessage(`503`)}, want: true},
+		{name: "numeric client error", err: &responsesError{Code: json.RawMessage(`400`)}, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := responsesErrorRetryable(tt.err); got != tt.want {
+				t.Fatalf("responsesErrorRetryable(%+v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseResponsesSSEEmptyTerminalErrorMessage(t *testing.T) {
+	stream := strings.Join([]string{
+		`event: error`,
+		`data: {"type":"error","error":{"message":"","type":"invalid_request_error","code":"unsupported_value"}}`,
+		``,
+	}, "\n")
+	_, err := parseResponsesSSEStream(strings.NewReader(stream), nil)
+	if err == nil {
+		t.Fatal("parseResponsesSSEStream() error = nil, want terminal error")
+	}
+	info, ok := llm.RequestErrorInfoFromError(err)
+	if !ok || info.Retryable {
+		t.Fatalf("error metadata = %+v, %v; want non-retryable", info, ok)
+	}
+}
+
+func TestResponsesServiceDoesNotRetryUnclassifiedJSONError(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(responsesResponse{
+			Status: "failed",
+			Error:  &responsesError{Message: "response was filtered by content policy"},
+		})
+	}))
+	defer server.Close()
+
+	svc := &ResponsesService{APIKey: "test-api-key", Model: GPT41, ModelURL: server.URL, Backoff: []time.Duration{0}}
+	_, err := svc.Do(t.Context(), &llm.Request{
+		Messages: []llm.Message{{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "hi"}}}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "filtered by content policy") {
+		t.Fatalf("Do() error = %v, want content policy error", err)
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want 1", attempts)
+	}
+	info, ok := llm.RequestErrorInfoFromError(err)
+	if !ok || info.Retryable {
+		t.Fatalf("error metadata = %+v, %v; want non-retryable", info, ok)
+	}
+}
+
+func TestResponsesServiceJSONServerErrorIsManualRetryOnly(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(responsesResponse{
+			Status: "failed",
+			Error: &responsesError{
+				Message: "The server had an error processing your request",
+				Type:    "server_error",
+				Code:    json.RawMessage(`"server_error"`),
+			},
+		})
+	}))
+	defer server.Close()
+
+	svc := &ResponsesService{APIKey: "test-api-key", Model: GPT41, ModelURL: server.URL, Backoff: []time.Duration{0}}
+	_, err := svc.Do(t.Context(), &llm.Request{
+		Messages: []llm.Message{{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "hi"}}}},
+	})
+	if err == nil {
+		t.Fatal("Do() error = nil, want server error")
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want 1", attempts)
+	}
+	info, ok := llm.RequestErrorInfoFromError(err)
+	if !ok || !info.Retryable || !info.NoImmediateRetry {
+		t.Fatalf("error metadata = %+v, %v; want manual retry only", info, ok)
+	}
+}
+
+func TestResponsesServiceMarksExhaustedRetries(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "event: response.failed\n")
+		fmt.Fprint(w, `data: {"type":"response.failed","response":{"status":"failed","error":{"message":"temporary server failure","type":"server_error","code":"server_error"}}}`)
+		fmt.Fprint(w, "\n\n")
+	}))
+	defer server.Close()
+
+	svc := &ResponsesService{APIKey: "test-api-key", Model: GPT41, ModelURL: server.URL, Backoff: []time.Duration{0}}
+	_, err := svc.Do(t.Context(), &llm.Request{
+		Messages: []llm.Message{{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "hi"}}}},
+	})
+	if err == nil {
+		t.Fatal("Do() error = nil, want exhausted retries")
+	}
+	if attempts != 16 {
+		t.Fatalf("attempts = %d, want 16", attempts)
+	}
+	info, ok := llm.RequestErrorInfoFromError(err)
+	if !ok || !info.Retryable || !info.NoImmediateRetry {
+		t.Fatalf("error metadata = %+v, %v; want manual retry only", info, ok)
+	}
+}
+
+func TestResponsesServiceDoesNotRetryFailedStreamResponse(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "event: response.failed\n")
+		fmt.Fprint(w, `data: {"type":"response.failed","response":{"status":"failed","error":{"message":"This model does not support image inputs","type":"server_error","code":"server_error"}}}`)
+		fmt.Fprint(w, "\n\n")
+	}))
+	defer server.Close()
+
+	var retries []llm.RetryEvent
+	svc := &ResponsesService{APIKey: "test-api-key", Model: GPT41, ModelURL: server.URL, Backoff: []time.Duration{0}}
+	_, err := svc.Do(t.Context(), &llm.Request{
+		Messages: []llm.Message{{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "hi"}}}},
+		OnRetry:  func(event llm.RetryEvent) { retries = append(retries, event) },
+	})
+	if err == nil || !strings.Contains(err.Error(), "This model does not support image inputs") {
+		t.Fatalf("Do() error = %v, want image support error", err)
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want 1", attempts)
+	}
+	if len(retries) != 0 {
+		t.Fatalf("retry events = %#v, want none", retries)
+	}
+	info, ok := llm.RequestErrorInfoFromError(err)
+	if !ok || info.Retryable {
+		t.Fatalf("error metadata = %+v, %v; want non-retryable", info, ok)
+	}
+}
+
+func TestResponsesServiceRetriesTransientFailedStreamResponse(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts == 1 {
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(w, "event: response.failed\n")
+			fmt.Fprint(w, `data: {"type":"response.failed","response":{"status":"failed","error":{"message":"The service is temporarily overloaded","type":"server_error","code":"server_error"}}}`)
+			fmt.Fprint(w, "\n\n")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(responsesResponse{
+			ID:     "retry-ok",
+			Status: "completed",
+			Output: []responsesOutputItem{{Type: "message", Role: "assistant", Content: []responsesContent{{Type: "output_text", Text: "ok"}}}},
+			Usage:  responsesUsage{InputTokens: 1, OutputTokens: 1},
+		})
+	}))
+	defer server.Close()
+
+	var retries []llm.RetryEvent
+	svc := &ResponsesService{APIKey: "test-api-key", Model: GPT41, ModelURL: server.URL, Backoff: []time.Duration{0}}
+	resp, err := svc.Do(t.Context(), &llm.Request{
+		Messages: []llm.Message{{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "hi"}}}},
+		OnRetry:  func(event llm.RetryEvent) { retries = append(retries, event) },
+	})
+	if err != nil {
+		t.Fatalf("Do() error = %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+	if len(retries) != 1 || !strings.Contains(retries[0].Err, "temporarily overloaded") {
+		t.Fatalf("retry events = %#v, want transient stream failure", retries)
+	}
+	if got := resp.Content[0].Text; got != "ok" {
+		t.Fatalf("response text = %q, want ok", got)
+	}
+}
+
+func TestResponsesServiceRetriesTopLevelTransientStreamError(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts == 1 {
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(w, "event: error\n")
+			fmt.Fprint(w, `data: {"type":"error","code":"server_error","message":"The service is temporarily unavailable"}`)
+			fmt.Fprint(w, "\n\n")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(responsesResponse{
+			ID:     "retry-ok",
+			Status: "completed",
+			Output: []responsesOutputItem{{Type: "message", Role: "assistant", Content: []responsesContent{{Type: "output_text", Text: "ok"}}}},
+			Usage:  responsesUsage{InputTokens: 1, OutputTokens: 1},
+		})
+	}))
+	defer server.Close()
+
+	var retries []llm.RetryEvent
+	svc := &ResponsesService{APIKey: "test-api-key", Model: GPT41, ModelURL: server.URL, Backoff: []time.Duration{0}}
+	_, err := svc.Do(t.Context(), &llm.Request{
+		Messages: []llm.Message{{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "hi"}}}},
+		OnRetry:  func(event llm.RetryEvent) { retries = append(retries, event) },
+	})
+	if err != nil {
+		t.Fatalf("Do() error = %v", err)
+	}
+	if attempts != 2 || len(retries) != 1 {
+		t.Fatalf("attempts = %d, retries = %#v; want 2 attempts and 1 retry", attempts, retries)
+	}
+}
+
+func TestResponsesServiceRetriesUnclassifiedStreamError(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts == 1 {
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(w, "event: error\n")
+			fmt.Fprint(w, `data: {"type":"error","message":"upstream connect error or disconnect/reset before headers"}`)
+			fmt.Fprint(w, "\n\n")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(responsesResponse{
+			ID:     "retry-ok",
+			Status: "completed",
+			Output: []responsesOutputItem{{Type: "message", Role: "assistant", Content: []responsesContent{{Type: "output_text", Text: "ok"}}}},
+			Usage:  responsesUsage{InputTokens: 1, OutputTokens: 1},
+		})
+	}))
+	defer server.Close()
+
+	svc := &ResponsesService{APIKey: "test-api-key", Model: GPT41, ModelURL: server.URL, Backoff: []time.Duration{0}}
+	_, err := svc.Do(t.Context(), &llm.Request{
+		Messages: []llm.Message{{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "hi"}}}},
+	})
+	if err != nil {
+		t.Fatalf("Do() error = %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+}
+
+func TestResponsesServiceTerminalErrorOverridesEarlierRetryMetadata(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts == 1 {
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(w, "event: response.failed\n")
+			fmt.Fprint(w, `data: {"type":"response.failed","response":{"status":"failed","error":{"message":"The service is temporarily overloaded","type":"server_error","code":"server_error"}}}`)
+			fmt.Fprint(w, "\n\n")
+			return
+		}
+		http.Error(w, "invalid_request_error: unsupported model", http.StatusBadRequest)
+	}))
+	defer server.Close()
+
+	svc := &ResponsesService{APIKey: "test-api-key", Model: GPT41, ModelURL: server.URL, Backoff: []time.Duration{0}}
+	_, err := svc.Do(t.Context(), &llm.Request{
+		Messages: []llm.Message{{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "hi"}}}},
+	})
+	if err == nil {
+		t.Fatal("Do() error = nil, want terminal client error")
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+	if !strings.Contains(err.Error(), "temporarily overloaded") {
+		t.Fatalf("error = %v, want earlier retry context", err)
+	}
+	info, ok := llm.RequestErrorInfoFromError(err)
+	if !ok || info.Retryable {
+		t.Fatalf("error metadata = %+v, %v; want non-retryable", info, ok)
 	}
 }
 
@@ -1164,7 +1533,7 @@ func TestResponsesServiceDoesNotRetryPlainTextClientError(t *testing.T) {
 	defer server.Close()
 
 	svc := &ResponsesService{APIKey: "test-api-key", Model: GPT41, ModelURL: server.URL, Backoff: []time.Duration{0}}
-	_, err := svc.Do(context.Background(), &llm.Request{
+	_, err := svc.Do(t.Context(), &llm.Request{
 		Messages: []llm.Message{{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "hi"}}}},
 	})
 	if err == nil {
@@ -1186,7 +1555,7 @@ func TestResponsesServiceBoundsClientErrorBody(t *testing.T) {
 	defer server.Close()
 
 	svc := &ResponsesService{APIKey: "test-api-key", Model: GPT41, ModelURL: server.URL}
-	_, err := svc.Do(context.Background(), &llm.Request{
+	_, err := svc.Do(t.Context(), &llm.Request{
 		Messages: []llm.Message{{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "hi"}}}},
 	})
 	if err == nil {
@@ -1220,7 +1589,7 @@ func TestResponsesServiceRetriesEmptyJSONResponse(t *testing.T) {
 	defer server.Close()
 
 	svc := &ResponsesService{APIKey: "test-api-key", Model: GPT41, ModelURL: server.URL}
-	resp, err := svc.Do(context.Background(), &llm.Request{
+	resp, err := svc.Do(t.Context(), &llm.Request{
 		Messages: []llm.Message{{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "hi"}}}},
 	})
 	if err != nil {
@@ -1261,6 +1630,31 @@ func TestShouldRetryResponsesDecodeError(t *testing.T) {
 	}
 }
 
+// TestToLLMUsageFromResponses pins the split of OpenAI's input_tokens total
+// into Shelley's Anthropic-style fields. Numbers are from real gpt-5.6-sol and
+// gpt-6-astra calls: cached_tokens and cache_write_tokens are both subsets of
+// input_tokens, and GPT-5.6+ bills writes at 1.25x input.
+func TestToLLMUsageFromResponses(t *testing.T) {
+	svc := &ResponsesService{}
+	tests := []struct {
+		name                        string
+		details                     openAIInputTokensDetails
+		wantIn, wantWrite, wantRead uint64
+	}{
+		{"pre-5.6: reads only", openAIInputTokensDetails{CachedTokens: 2816}, 945, 0, 2816},
+		{"5.6+ cold call: nearly all writes", openAIInputTokensDetails{CacheWriteTokens: 3758}, 3, 3758, 0},
+		{"5.6+ follow-up: mostly reads", openAIInputTokensDetails{CachedTokens: 3751, CacheWriteTokens: 7}, 3, 7, 3751},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := svc.toLLMUsageFromResponses(responsesUsage{InputTokens: 3761, InputTokensDetails: tt.details, OutputTokens: 6}, nil)
+			if got.InputTokens != tt.wantIn || got.CacheCreationInputTokens != tt.wantWrite || got.CacheReadInputTokens != tt.wantRead || got.OutputTokens != 6 {
+				t.Errorf("usage = %+v, want in=%d write=%d read=%d out=6", got, tt.wantIn, tt.wantWrite, tt.wantRead)
+			}
+		})
+	}
+}
+
 func TestResponsesServiceDoWithCaching(t *testing.T) {
 	// Test that cached tokens are correctly mapped to Usage fields
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1278,8 +1672,9 @@ func TestResponsesServiceDoWithCaching(t *testing.T) {
 			},
 			Usage: responsesUsage{
 				InputTokens: 100,
-				InputTokensDetails: &responsesInputTokensDetails{
-					CachedTokens: 80,
+				InputTokensDetails: openAIInputTokensDetails{
+					CachedTokens:     80,
+					CacheWriteTokens: 15,
 				},
 				OutputTokens: 50,
 			},
@@ -1289,7 +1684,7 @@ func TestResponsesServiceDoWithCaching(t *testing.T) {
 	}))
 	defer server.Close()
 
-	ctx := context.Background()
+	ctx := t.Context()
 	svc := &ResponsesService{
 		APIKey:   "test-api-key",
 		Model:    GPT41,
@@ -1306,22 +1701,22 @@ func TestResponsesServiceDoWithCaching(t *testing.T) {
 		t.Fatalf("Do() error = %v", err)
 	}
 
-	// InputTokens should be total - cached = 100 - 80 = 20
-	if resp.Usage.InputTokens != 20 {
-		t.Errorf("resp.Usage.InputTokens = %d, expected 20 (non-cached portion)", resp.Usage.InputTokens)
+	// InputTokens should exclude cache reads and writes: 100 - 80 - 15 = 5
+	if resp.Usage.InputTokens != 5 {
+		t.Errorf("resp.Usage.InputTokens = %d, expected 5 (non-cached portion)", resp.Usage.InputTokens)
 	}
 	// CacheReadInputTokens should be the cached amount
 	if resp.Usage.CacheReadInputTokens != 80 {
 		t.Errorf("resp.Usage.CacheReadInputTokens = %d, expected 80", resp.Usage.CacheReadInputTokens)
 	}
-	// CacheCreationInputTokens should be 0 (OpenAI doesn't report this)
-	if resp.Usage.CacheCreationInputTokens != 0 {
-		t.Errorf("resp.Usage.CacheCreationInputTokens = %d, expected 0", resp.Usage.CacheCreationInputTokens)
+	// CacheCreationInputTokens should be the cache-write amount
+	if resp.Usage.CacheCreationInputTokens != 15 {
+		t.Errorf("resp.Usage.CacheCreationInputTokens = %d, expected 15", resp.Usage.CacheCreationInputTokens)
 	}
 	if resp.Usage.OutputTokens != 50 {
 		t.Errorf("resp.Usage.OutputTokens = %d, expected 50", resp.Usage.OutputTokens)
 	}
-	// TotalInputTokens = 20 + 0 + 80 = 100 (matches OpenAI's input_tokens)
+	// TotalInputTokens = 5 + 15 + 80 = 100 (matches OpenAI's input_tokens)
 	if resp.Usage.TotalInputTokens() != 100 {
 		t.Errorf("resp.Usage.TotalInputTokens() = %d, expected 100", resp.Usage.TotalInputTokens())
 	}
@@ -1374,7 +1769,7 @@ func TestResponsesServiceReasoningEffort(t *testing.T) {
 				ThinkingLevel:   tt.thinkingLevel,
 				ReasoningEffort: tt.reasoningEffort,
 			}
-			_, err := svc.Do(context.Background(), &llm.Request{
+			_, err := svc.Do(t.Context(), &llm.Request{
 				Messages: []llm.Message{{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "hi"}}}},
 			})
 			if err != nil {
@@ -1447,7 +1842,7 @@ func TestResponsesServiceRequestLevelThinking(t *testing.T) {
 				ThinkingLevel:   tt.svcLevel,
 				ReasoningEffort: tt.svcEffort,
 			}
-			_, err := svc.Do(context.Background(), &llm.Request{
+			_, err := svc.Do(t.Context(), &llm.Request{
 				Messages:      []llm.Message{{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "hi"}}}},
 				ThinkingLevel: tt.reqLevel,
 			})
@@ -1502,7 +1897,7 @@ func TestResponsesServiceStallTimeout(t *testing.T) {
 	// Bound the test so a regression (no idle timeout) fails fast instead of
 	// hanging the suite. The responses client retries stream failures with
 	// backoff, so this deadline also caps how long those retries run.
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 	defer cancel()
 
 	_, err := svc.Do(ctx, &llm.Request{
@@ -1521,8 +1916,10 @@ func TestResponsesServiceStallTimeout(t *testing.T) {
 }
 
 func TestResponsesServicePatchProfile(t *testing.T) {
-	if got := (&ResponsesService{ProviderName: "openai", Model: Model{SupportsApplyPatch: true}}).PatchProfile(); got != "codex_apply_patch" {
-		t.Fatalf("capable OpenAI Responses profile = %q", got)
+	for _, model := range []Model{GPT6Astra, GPT6Sol, GPT6Luna} {
+		if got := (&ResponsesService{ProviderName: "openai", Model: model}).PatchProfile(); got != "codex_apply_patch" {
+			t.Fatalf("%s OpenAI Responses profile = %q", model.ModelName, got)
+		}
 	}
 	if got := (&ResponsesService{ProviderName: "openai"}).PatchProfile(); got != "flat" {
 		t.Fatalf("uncatalogued OpenAI Responses profile = %q", got)
@@ -1554,14 +1951,32 @@ func TestResponsesCustomToolCallConversion(t *testing.T) {
 		t.Fatalf("tool input = %s", got)
 	}
 
-	items := fromLLMMessageResponses(llm.Message{Role: llm.MessageRoleAssistant, Content: response.Content})
+	items := fromLLMMessageResponses(llm.Message{Role: llm.MessageRoleAssistant, Content: response.Content}, responsesReasoningReplayEncrypted)
 	if len(items) != 1 || items[0].Type != "custom_tool_call" || items[0].Input == "" {
 		t.Fatalf("replayed items = %+v", items)
 	}
 }
 
+func TestResponsesWebSearchQueryConversion(t *testing.T) {
+	service := &ResponsesService{}
+	for _, action := range []*responsesAction{
+		{Type: "search", Query: "singular query"},
+		{Type: "search", Queries: []string{"singular query"}},
+	} {
+		response := service.toLLMResponseFromResponses(&responsesResponse{Output: []responsesOutputItem{{
+			ID: "ws_1", Type: "web_search_call", Action: action,
+		}}}, nil)
+		if len(response.Content) != 1 {
+			t.Fatalf("content = %+v", response.Content)
+		}
+		if got := string(response.Content[0].ToolInput); got != `{"query":"singular query"}` {
+			t.Fatalf("tool input = %s", got)
+		}
+	}
+}
+
 func TestResponsesCustomToolResultUsesCustomOutput(t *testing.T) {
-	items := fromLLMMessageResponses(llm.Message{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeToolResult, ToolName: "apply_patch", ToolUseID: "call_1", ToolResult: llm.TextContent("done")}}})
+	items := fromLLMMessageResponses(llm.Message{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeToolResult, ToolName: "apply_patch", ToolUseID: "call_1", ToolResult: llm.TextContent("done")}}}, responsesReasoningReplayEncrypted)
 	if len(items) != 1 || items[0].Type != "custom_tool_call_output" {
 		t.Fatalf("items = %+v", items)
 	}
@@ -1582,6 +1997,18 @@ func TestParseResponsesSSECustomToolCall(t *testing.T) {
 	}
 	if len(response.Output) != 1 || response.Output[0].Type != "custom_tool_call" || response.Output[0].Input == "" {
 		t.Fatalf("output = %+v", response.Output)
+	}
+}
+
+func TestParseResponsesSSEErrorAcceptsNumericCode(t *testing.T) {
+	stream := strings.Join([]string{
+		`event: error`,
+		`data: {"type":"error","error":{"message":"overloaded","type":"server_error","code":500}}`,
+		``,
+	}, "\n")
+	_, err := parseResponsesSSEStream(strings.NewReader(stream), nil)
+	if err == nil || !strings.Contains(err.Error(), "stream error event: overloaded") {
+		t.Fatalf("error = %v, want parsed stream error", err)
 	}
 }
 

@@ -21,7 +21,7 @@ function assert(cond: boolean, msg: string) {
 assert(platformIsMac("MacIntel"), "MacIntel is detected as macOS");
 assert(!platformIsMac("Linux x86_64"), "Linux is not detected as macOS");
 
-// Every action has a combo, and combos are unique by (mod, shift, code).
+// Every action has a combo, and combos are unique by (mod, alt, shift, code).
 const ids: MenuActionId[] = [
   "commandPalette",
   "diffs",
@@ -32,13 +32,15 @@ const ids: MenuActionId[] = [
   "editAgentsMd",
   "editFile",
   "checkVersion",
+  "recordAudio",
+  "recordScreen",
 ];
 for (const id of ids) {
   assert(!!MENU_COMBOS[id], `combo exists for ${id}`);
 }
 const sigs = ids.map((id) => {
   const c = MENU_COMBOS[id];
-  return `${c.mod}|${c.shift}|${c.code}`;
+  return `${c.mod}|${!!c.alt}|${c.shift}|${c.code}`;
 });
 assert(new Set(sigs).size === sigs.length, `combos are unique: ${sigs.join(", ")}`);
 
@@ -47,13 +49,17 @@ assert(menuShortcutLabel("commandPalette", false) === "Ctrl+K", "commandPalette 
 assert(menuShortcutLabel("diffs", false) === "Ctrl+Shift+D", "diffs label");
 assert(menuShortcutLabel("gitGraph", false) === "Ctrl+Shift+G", "gitGraph label");
 assert(menuShortcutLabel("terminal", false) === "Ctrl+`", "terminal label (ctrl, no shift)");
-assert(menuShortcutLabel("archive", false) === "Ctrl+Shift+A", "archive label");
+assert(menuShortcutLabel("archive", false) === "Ctrl+Shift+X", "archive label");
 assert(menuShortcutLabel("export", false) === "Ctrl+Shift+E", "export label");
 assert(menuShortcutLabel("editAgentsMd", false) === "Ctrl+Shift+,", "editAgentsMd label");
-assert(menuShortcutLabel("editFile", false) === "Ctrl+Shift+P", "editFile label");
+assert(menuShortcutLabel("editFile", false) === "Ctrl+P", "editFile label");
 assert(menuShortcutLabel("checkVersion", false) === "Ctrl+Shift+U", "checkVersion label");
 assert(menuShortcutLabel("diffs", true) === "⌘⇧D", "macOS command label");
 assert(menuShortcutLabel("terminal", true) === "⌃`", "macOS control label");
+assert(menuShortcutLabel("recordScreen", true) === "⌘⌥⇧M", "macOS screen recording label");
+
+assert(menuShortcutLabel("recordAudio", false) === "Ctrl+Shift+M", "audio recording label");
+assert(menuShortcutLabel("recordScreen", false) === "Ctrl+Alt+Shift+M", "screen recording label");
 
 // Helper to fabricate a keydown-like event.
 function ev(part: Partial<KeyboardEvent>): KeyboardEvent {
@@ -69,10 +75,17 @@ function ev(part: Partial<KeyboardEvent>): KeyboardEvent {
 
 // comboMatches: exact modifier + physical key.
 assert(
+  comboMatches(ev({ code: "KeyP", key: "з", ctrlKey: true }), MENU_COMBOS.editFile, false),
+  "editFile uses physical KeyP regardless of keyboard layout",
+);
+assert(
   comboMatches(ev({ code: "KeyD", ctrlKey: true, shiftKey: true }), MENU_COMBOS.diffs, false),
   "diffs matches Ctrl+Shift+D",
 );
-assert(!comboMatches(ev({ code: "KeyD", ctrlKey: true }), MENU_COMBOS.diffs, false), "diffs needs shift");
+assert(
+  !comboMatches(ev({ code: "KeyD", ctrlKey: true }), MENU_COMBOS.diffs, false),
+  "diffs needs shift",
+);
 assert(
   !comboMatches(
     ev({ code: "KeyD", ctrlKey: true, shiftKey: true, altKey: true }),
@@ -94,8 +107,49 @@ assert(
   "terminal matches Ctrl+`",
 );
 assert(
-  !comboMatches(ev({ code: "Backquote", ctrlKey: true, shiftKey: true }), MENU_COMBOS.terminal, false),
+  !comboMatches(
+    ev({ code: "Backquote", ctrlKey: true, shiftKey: true }),
+    MENU_COMBOS.terminal,
+    false,
+  ),
   "terminal rejects shift",
+);
+
+assert(
+  comboMatches(ev({ code: "KeyM", ctrlKey: true, shiftKey: true }), MENU_COMBOS.recordAudio, false),
+  "audio matches Ctrl+Shift+M",
+);
+assert(
+  !comboMatches(ev({ code: "KeyM", ctrlKey: true }), MENU_COMBOS.recordAudio, false),
+  "audio needs shift",
+);
+assert(
+  !comboMatches(
+    ev({ code: "KeyM", ctrlKey: true, shiftKey: true, altKey: true }),
+    MENU_COMBOS.recordAudio,
+    false,
+  ),
+  "audio rejects alt",
+);
+assert(
+  comboMatches(
+    ev({ code: "KeyM", ctrlKey: true, shiftKey: true, altKey: true }),
+    MENU_COMBOS.recordScreen,
+    false,
+  ),
+  "screen matches Ctrl+Alt+Shift+M",
+);
+assert(
+  !comboMatches(
+    ev({ code: "KeyM", ctrlKey: true, shiftKey: true }),
+    MENU_COMBOS.recordScreen,
+    false,
+  ),
+  "screen needs alt",
+);
+assert(
+  matchChatInterfaceAction(ev({ code: "KeyM", ctrlKey: true, shiftKey: true }), false) === null,
+  "recording is NOT ChatInterface-owned",
 );
 
 // matchChatInterfaceAction only returns ChatInterface-owned actions.
@@ -112,7 +166,7 @@ assert(
   "palette is NOT ChatInterface-owned",
 );
 assert(
-  matchChatInterfaceAction(ev({ code: "KeyP", ctrlKey: true, shiftKey: true }), false) === null,
+  matchChatInterfaceAction(ev({ code: "KeyP", ctrlKey: true }), false) === null,
   "editFile is NOT ChatInterface-owned",
 );
 assert(

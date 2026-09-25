@@ -3,13 +3,18 @@
      (NOT a messages row); offers a per-message cancel affordance. -->
 <template>
   <div
-    class="message message-user message-queued"
+    :class="[
+      'message',
+      source ? 'message-tool message-conversation' : 'message-user',
+      'message-queued',
+    ]"
     data-testid="queued-ghost"
     role="article"
-    aria-label="Queued user message"
+    :aria-label="landmarkLabel"
   >
-    <h2 class="sr-only">Queued user message</h2>
+    <h2 class="sr-only">{{ landmarkLabel }}</h2>
     <div class="message-content" data-testid="message-content">
+      <ConversationMessageAuthor v-if="source" :source="source" />
       <div class="whitespace-pre-wrap break-words">{{ text }}</div>
       <div class="queued-message-badge" data-testid="queued-badge">
         <span class="queued-message-badge-label">
@@ -27,8 +32,18 @@
           Queued
         </span>
         <button
+          v-if="onSendNow"
+          class="queued-message-badge-action queued-message-badge-send"
+          :disabled="sendNowPending"
+          data-testid="send-queued-now"
+          v-tooltip.top="'Interrupt the current response and send this now'"
+          @click.stop="onSendNow(queued.id)"
+        >
+          Send now
+        </button>
+        <button
           v-if="onCancel"
-          class="queued-message-badge-cancel"
+          class="queued-message-badge-action"
           data-testid="cancel-queued"
           v-tooltip.top="'Cancel queued message'"
           @click.stop="onCancel(queued.id)"
@@ -43,11 +58,19 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { type QueuedMessage, queuedMessageText } from "../../types";
+import { conversationMessageSource } from "../../utils/messageSource";
+import ConversationMessageAuthor from "./ConversationMessageAuthor.vue";
 
 const props = defineProps<{
   queued: QueuedMessage;
+  onSendNow?: (id: string) => void;
+  sendNowPending?: boolean;
   onCancel?: (id: string) => void;
 }>();
 
 const text = computed(() => queuedMessageText(props.queued));
+const source = computed(() => conversationMessageSource(props.queued.user_data));
+const landmarkLabel = computed(() =>
+  source.value ? "Queued conversation message" : "Queued user message",
+);
 </script>

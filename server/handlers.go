@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/rand"
@@ -38,6 +39,24 @@ import (
 	"shelley.exe.dev/ui"
 	"shelley.exe.dev/version"
 )
+
+func marshalDeltaBatchFrames(conversationID string, deltas []llm.StreamDelta) ([]byte, error) {
+	var frames bytes.Buffer
+	for i := range deltas {
+		event := StreamResponse{
+			ConversationID: conversationID,
+			StreamDelta:    &deltas[i],
+		}
+		data, err := json.Marshal(event)
+		if err != nil {
+			return nil, err
+		}
+		frames.WriteString("data: ")
+		frames.Write(data)
+		frames.WriteString("\n\n")
+	}
+	return frames.Bytes(), nil
+}
 
 // handleRead serves files from limited allowed locations via /api/read?path=
 func (s *Server) handleRead(w http.ResponseWriter, r *http.Request) {
@@ -234,15 +253,6 @@ func (s *Server) handleReadFile(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"path": clean, "content": string(b)})
-}
-
-// userAgentsMdPath returns the path to ~/.config/shelley/AGENTS.md
-func userAgentsMdPath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("cannot determine home directory: %w", err)
-	}
-	return filepath.Join(home, ".config", "shelley", "AGENTS.md"), nil
 }
 
 const maxUploadBytes = 1 << 30 // 1 GiB
@@ -585,50 +595,7 @@ func (s *Server) staticHandler(fsys http.FileSystem) http.Handler {
 	})
 }
 
-// hashString computes a simple hash of a string
-func hashString(s string) uint32 {
-	var hash uint32
-	for _, c := range s {
-		hash = ((hash << 5) - hash) + uint32(c)
-	}
-	return hash
-}
-
-// generateFaviconSVG creates a Cool S favicon with color based on hostname hash
-// Big colored circle background with the Cool S inscribed in white
-func generateFaviconSVG(hostname string) string {
-	hash := hashString(hostname)
-	h := hash % 360
-	bgColor := fmt.Sprintf("hsl(%d, 70%%, 55%%)", h)
-	// White S on colored background - good contrast on any saturated hue
-	strokeColor := "#ffffff"
-
-	// Original Cool S viewBox: 0 0 171 393 (tall rectangle)
-	// Square viewBox 0 0 400 400 with circle, S scaled and centered inside
-	// S dimensions: 171x393, scale 0.97 gives 166x381, centered in 400x400
-	return fmt.Sprintf(
-		`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400">
-<circle cx="200" cy="200" r="200" fill="%s"/>
-<g transform="translate(117 10) scale(0.97)">
-<g stroke-linecap="round"><g transform="translate(13.3 97.5) rotate(0 1.4 42.2)"><path d="M1.28 0.48C1.15 14.67,-0.96 71.95,-1.42 86.14M-1.47-1.73C-0.61 11.51,4.65 66.62,4.21 81.75" stroke="%s" stroke-width="14" fill="none"/></g></g>
-<g stroke-linecap="round"><g transform="translate(87.6 97.2) rotate(0 1.2 42.4)"><path d="M-1.42 1.14C-1.89 15.33,-1.41 71.93,-1.52 85.6M3-0.71C3.35 12.53,3.95 66.59,4.06 80.91" stroke="%s" stroke-width="14" fill="none"/></g></g>
-<g stroke-linecap="round"><g transform="translate(156.3 91) rotate(0 0.7 42.1)"><path d="M-1.52 0.6C-1.62 14.26,-1.97 68.6,-2.04 83.12M2.86-1.55C3.77 12.32,3.09 71.53,3.26 85.73" stroke="%s" stroke-width="14" fill="none"/></g></g>
-<g stroke-linecap="round"><g transform="translate(157.7 230.3) rotate(0 0.6 42.9)"><path d="M-2.04-1.88C-2.11 12.64,-2.52 72.91,-1.93 87.72M2.05 3.27C3.01 17.02,3.68 70.97,3.43 84.18" stroke="%s" stroke-width="14" fill="none"/></g></g>
-<g stroke-linecap="round"><g transform="translate(12.6 226.7) rotate(0 0.2 44.3)"><path d="M-1.93 2.72C-1.33 17.52,1.37 73.57,1.54 86.96M2.23 1.72C2.77 15.92,1.05 69.12,0.14 83.02" stroke="%s" stroke-width="14" fill="none"/></g></g>
-<g stroke-linecap="round"><g transform="translate(82.8 226.6) rotate(0 -1.1 43.1)"><path d="M1.54 1.96C1.7 15.35,-0.76 69.37,-0.93 83.06M-1.07 0.56C-1.19 15.45,-3.69 71.28,-3.67 85.64" stroke="%s" stroke-width="14" fill="none"/></g></g>
-<g stroke-linecap="round"><g transform="translate(152.7 311.8) rotate(0 -32.3 34.6)"><path d="M-0.93-1.94C-12.26 9.08,-55.27 56.42,-66.46 68.08M3.76 3.18C-8.04 14.42,-56.04 59.98,-68.41 71.22" stroke="%s" stroke-width="14" fill="none"/></g></g>
-<g stroke-linecap="round"><g transform="translate(14.7 308.2) rotate(0 34.1 33.6)"><path d="M0.54-0.92C12.51 10.75,58.76 55.93,70.91 68.03M-2.62-3.88C8.97 8.35,55.58 59.22,68.08 71.13" stroke="%s" stroke-width="14" fill="none"/></g></g>
-<g stroke-linecap="round"><g transform="translate(11.3 178.5) rotate(0 35.7 23.4)"><path d="M-1.09-0.97C10.89 7.63,60.55 42.51,72.41 50.67M3.51-3.96C15.2 4,60.24 37.93,70.94 47.11" stroke="%s" stroke-width="14" fill="none"/></g></g>
-<g stroke-linecap="round"><g transform="translate(11.3 223.5) rotate(0 13.4 -10.2)"><path d="M1.41 2.67C6.27-1,23.83-19.1,28.07-23M-1.26 1.66C3.24-1.45,19.69-14.92,25.32-19.37" stroke="%s" stroke-width="14" fill="none"/></g></g>
-<g stroke-linecap="round"><g transform="translate(13.3 94.5) rotate(0 34.6 -42.2)"><path d="M-0.93 0C9.64-13.89,53.62-66.83,64.85-80.71M3.76-2.46C15.07-15.91,59.99-71.5,70.08-84.48" stroke="%s" stroke-width="14" fill="none"/></g></g>
-<g stroke-linecap="round"><g transform="translate(81.3 12.5) rotate(0 36.1 39.1)"><path d="M-2.15 2.29C10.41 14.58,61.78 62.2,74.43 73.73M1.88 1.07C14.1 13.81,60.32 65.18,71.89 77.21" stroke="%s" stroke-width="14" fill="none"/></g></g>
-<g stroke-linecap="round"><g transform="translate(88.3 177.5) rotate(0 31.2 22.9)"><path d="M-0.57-0.27C10.92 7.09,55.6 38.04,66.75 46.48M-4.32-2.89C6.87 4.52,51.07 40.67,63.83 48.74" stroke="%s" stroke-width="14" fill="none"/></g></g>
-<g stroke-linecap="round"><g transform="translate(155.3 174.5) rotate(0 -10.7 13.4)"><path d="M-1.25-2.52C-5.27 2.41,-21.09 24.62,-24.67 29.33M3.26 2.28C0.21 6.4,-14.57 20.81,-19.18 25.04" stroke="%s" stroke-width="14" fill="none"/></g></g>
-</g>
-</svg>`,
-		bgColor, strokeColor, strokeColor, strokeColor, strokeColor, strokeColor, strokeColor, strokeColor, strokeColor, strokeColor, strokeColor, strokeColor, strokeColor, strokeColor, strokeColor,
-	)
-}
+const defaultFaviconEmoji = "🐚"
 
 func generateEmojiFaviconSVG(emoji string) string {
 	return fmt.Sprintf(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400">
@@ -732,21 +699,15 @@ func (s *Server) serveIndexWithInit(w http.ResponseWriter, r *http.Request, fs h
 		return
 	}
 
-	// Generate favicon as data URI
-	// Include the listening port in the hash so demo servers on different ports
-	// get visually distinct favicons.
-	faviconKey := hostname
-	if s.listenPort != 0 {
-		faviconKey = fmt.Sprintf("%s:%d", hostname, s.listenPort)
+	// Use the VM's reflection emoji, or Shelley's universal emoji when
+	// reflection metadata is unavailable (for example, standalone installs).
+	emoji := s.reflectionEmoji(r.Context())
+	if emoji == "" {
+		emoji = defaultFaviconEmoji
 	}
-	faviconSVG := generateFaviconSVG(faviconKey)
-	if s.featureFlagBool(r.Context(), FlagReflectionEmojiFavicon) {
-		if emoji := cachedReflectionEmoji(r.Context()); emoji != "" {
-			faviconSVG = generateEmojiFaviconSVG(emoji)
-		}
-	}
+	faviconSVG := generateEmojiFaviconSVG(emoji)
 	faviconDataURI := "data:image/svg+xml," + url.PathEscape(faviconSVG)
-	faviconLink := fmt.Sprintf(`<link rel="icon" type="image/svg+xml" href="%s"/>`, faviconDataURI)
+	faviconLink := fmt.Sprintf(`<link rel="icon" type="image/svg+xml" href="%s"/>`, html.EscapeString(faviconDataURI))
 
 	// Inject the script tag and favicon before </head>
 	initScript := fmt.Sprintf(`<script>window.__SHELLEY_INIT__=%s;</script>`, initJSON)
@@ -955,11 +916,17 @@ func (s *Server) conversationMux() *http.ServeMux {
 	mux.HandleFunc("POST /{id}/retry", func(w http.ResponseWriter, r *http.Request) {
 		s.handleRetryConversation(w, r, r.PathValue("id"))
 	})
+	mux.HandleFunc("POST /{id}/resume", func(w http.ResponseWriter, r *http.Request) {
+		s.handleResumeConversation(w, r, r.PathValue("id"))
+	})
 	mux.HandleFunc("GET /{id}/btw", func(w http.ResponseWriter, r *http.Request) {
 		s.handleListBtwReaders(w, r, r.PathValue("id"))
 	})
 	mux.HandleFunc("POST /{id}/btw/{childID}/summarize", func(w http.ResponseWriter, r *http.Request) {
 		s.handleSummarizeBtwReader(w, r, r.PathValue("id"), r.PathValue("childID"))
+	})
+	mux.HandleFunc("POST /{id}/btw/{childID}/dismiss", func(w http.ResponseWriter, r *http.Request) {
+		s.handleDismissBtwReader(w, r, r.PathValue("id"), r.PathValue("childID"))
 	})
 	mux.HandleFunc("POST /{id}/continue", func(w http.ResponseWriter, r *http.Request) {
 		s.handleContinueConversation(w, r, r.PathValue("id"))
@@ -982,8 +949,14 @@ func (s *Server) conversationMux() *http.ServeMux {
 	mux.HandleFunc("GET /{id}/subagents", func(w http.ResponseWriter, r *http.Request) {
 		s.handleGetSubagents(w, r, r.PathValue("id"))
 	})
+	mux.HandleFunc("POST /{id}/send-queued", func(w http.ResponseWriter, r *http.Request) {
+		s.handleSendQueuedNow(w, r, r.PathValue("id"))
+	})
 	mux.HandleFunc("POST /{id}/cancel-queued", func(w http.ResponseWriter, r *http.Request) {
 		s.handleCancelQueued(w, r, r.PathValue("id"))
+	})
+	mux.HandleFunc("POST /{id}/retry-queued", func(w http.ResponseWriter, r *http.Request) {
+		s.handleRetryQueued(w, r, r.PathValue("id"))
 	})
 	mux.HandleFunc("PUT /{id}/draft", func(w http.ResponseWriter, r *http.Request) {
 		s.handleUpdateDraft(w, r, r.PathValue("id"))
@@ -1079,11 +1052,12 @@ func derefString(p *string) string {
 
 // ChatRequest represents a chat message from the user
 type ChatRequest struct {
-	Message             string                  `json:"message"`
-	Model               string                  `json:"model,omitempty"`
-	Cwd                 string                  `json:"cwd,omitempty"`
-	ConversationOptions *db.ConversationOptions `json:"conversation_options,omitempty"`
-	Queue               bool                    `json:"queue,omitempty"`
+	Message              string                  `json:"message"`
+	Model                string                  `json:"model,omitempty"`
+	Cwd                  string                  `json:"cwd,omitempty"`
+	ConversationOptions  *db.ConversationOptions `json:"conversation_options,omitempty"`
+	Queue                bool                    `json:"queue,omitempty"`
+	SenderConversationID string                  `json:"sender_conversation_id,omitempty"`
 }
 
 // handleChatConversation handles POST /conversation/<id>/chat
@@ -1107,8 +1081,8 @@ func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	if req.ConversationOptions != nil &&
-		(req.ConversationOptions.Kind != "" || req.ConversationOptions.ParentPointer != nil) {
-		http.Error(w, "kind and parent_pointer are internal conversation options", http.StatusBadRequest)
+		(req.ConversationOptions.Kind != "" || req.ConversationOptions.ParentPointer != nil || req.ConversationOptions.CommitTour != nil) {
+		http.Error(w, "kind, parent_pointer, and commit_tour are internal conversation options", http.StatusBadRequest)
 		return
 	}
 
@@ -1119,6 +1093,13 @@ func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, 
 	if err != nil {
 		s.logger.Error("Failed to load conversation", "conversationID", conversationID, "error", err)
 		http.Error(w, "Conversation not found", http.StatusNotFound)
+		return
+	}
+
+	senderUserData, err := s.senderUserData(ctx, *existing, req.SenderConversationID)
+	if err != nil {
+		s.logger.Error("Failed to resolve chat sender", "conversationID", conversationID, "error", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
 
@@ -1186,6 +1167,27 @@ func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, 
 	// carrier here. Both the immediate-send (recordTurnStartMessage) and queued
 	// (QueueMessage) paths read it off this ctx.
 	ctx = contextWithUserEmail(ctx, userEmail)
+
+	commitTourReasoning := db.ParseConversationOptions(existing.ConversationOptions).ThinkingLevel
+	if commitTourReasoning == "" {
+		commitTourReasoning = llm.ServiceDefaultReasoningLevel(llmService)
+	}
+	if s.handleCommitTourCommand(ctx, w, *existing, modelID, commitTourReasoning, req.Message) {
+		return
+	}
+
+	// Built-in /transcription is durable queued user input backed by a hidden
+	// child. Reject bad commands before any side effect (draft promotion or
+	// manager creation); it is queued below once the parent exists.
+	transcriptionPath, transcriptionContext, isTranscription, err := validateTranscriptionCommand(req.Message)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if isTranscription && existing.Archived {
+		http.Error(w, "conversation is archived", http.StatusConflict)
+		return
+	}
 
 	// A built-in /btw is a detached child start, not a parent turn. Give an
 	// installed slash/btw hook first refusal, then create the child before
@@ -1344,6 +1346,17 @@ func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, 
 		}
 	}
 
+	// The command itself is control input: it is never persisted as an LLM
+	// message and is replaced by the finished transcript before queue drain.
+	if isTranscription {
+		if senderUserData != nil {
+			senderUserData.Text = req.Message
+			ctx = contextWithTurnUserData(ctx, *senderUserData)
+		}
+		s.queueTranscription(ctx, w, manager, transcriptionPath, transcriptionContext, modelID)
+		return
+	}
+
 	// Built-in /model command: switch the conversation to a different model
 	// mid-conversation. Handled entirely here — it never reaches the LLM.
 	if s.handleModelCommand(ctx, w, conversationID, modelID, manager, req.Message) {
@@ -1378,7 +1391,7 @@ func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, 
 	// Decide whether this message will be queued or accepted immediately.
 	// The chat-message hook is told which path it will take so it can react
 	// accordingly.
-	willQueue := req.Queue || manager.IsDistilling()
+	willQueue := req.Queue || manager.IsDistilling() || manager.HasQueuedMessages()
 
 	// Run chat-message hook; the hook may rewrite the message text. Hook
 	// failures abort the request — the user's message is not delivered.
@@ -1393,6 +1406,10 @@ func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	req.Message = newMsg
+	if senderUserData != nil {
+		senderUserData.Text = req.Message
+		ctx = contextWithTurnUserData(ctx, *senderUserData)
+	}
 
 	// Create user message
 	userMessage := llm.Message{
@@ -1422,6 +1439,16 @@ func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, 
 	}
 
 	firstMessage, err := manager.AcceptUserMessage(ctx, llmService, modelID, userMessage)
+	if errors.Is(err, errQueuedMessagesPending) {
+		if err := manager.QueueMessage(ctx, s, modelID, userMessage); err != nil {
+			s.logger.Error("Failed to queue user message after concurrent queue reservation", "conversationID", conversationID, "error", err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+		json.NewEncoder(w).Encode(map[string]string{"status": "queued"})
+		return
+	}
 	if errors.Is(err, errConversationModelMismatch) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -1433,24 +1460,7 @@ func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, 
 	}
 
 	if firstMessage {
-		ctxNoCancel := context.WithoutCancel(ctx)
-		go func() {
-			slugCtx, cancel := context.WithTimeout(ctxNoCancel, 15*time.Second)
-			defer cancel()
-			_, marker, err := slug.GenerateSlug(slugCtx, s.llmManager, s.db, s.logger, conversationID, req.Message, modelID)
-			// Publish the usage marker before anything else. It owns a real
-			// sequence_id, so a client that never sees it observes a hole and
-			// throws away its cached history. Publish even when slug assignment
-			// failed: the row exists regardless.
-			if marker != nil {
-				s.notifySubscribersNewMessage(ctxNoCancel, conversationID, marker)
-			}
-			if err != nil {
-				s.logger.Warn("Failed to generate slug for conversation", "conversationID", conversationID, "error", err)
-			} else {
-				go s.notifySubscribers(ctxNoCancel, conversationID)
-			}
-		}()
+		s.generateSlugAsync(conversationID, req.Message, modelID)
 	}
 
 	w.WriteHeader(http.StatusAccepted)
@@ -1644,24 +1654,7 @@ func (s *Server) handleNewConversation(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if firstMessage && !hookSlugApplied {
-		ctxNoCancel := context.WithoutCancel(ctx)
-		go func() {
-			slugCtx, cancel := context.WithTimeout(ctxNoCancel, 15*time.Second)
-			defer cancel()
-			_, marker, err := slug.GenerateSlug(slugCtx, s.llmManager, s.db, s.logger, conversationID, req.Message, modelID)
-			// Publish the usage marker before anything else. It owns a real
-			// sequence_id, so a client that never sees it observes a hole and
-			// throws away its cached history. Publish even when slug assignment
-			// failed: the row exists regardless.
-			if marker != nil {
-				s.notifySubscribersNewMessage(ctxNoCancel, conversationID, marker)
-			}
-			if err != nil {
-				s.logger.Warn("Failed to generate slug for conversation", "conversationID", conversationID, "error", err)
-			} else {
-				go s.notifySubscribers(ctxNoCancel, conversationID)
-			}
-		}()
+		s.generateSlugAsync(conversationID, req.Message, modelID)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -1681,22 +1674,57 @@ func (s *Server) handleCancelConversation(w http.ResponseWriter, r *http.Request
 
 	ctx := r.Context()
 
-	// Get the conversation manager if it exists
 	s.mu.Lock()
 	manager, exists := s.activeConversations[conversationID]
 	s.mu.Unlock()
-
-	// Cancel the conversation itself first (so it stops issuing new subagent
-	// work), then propagate to any actively-working subagents beneath it. The
-	// subagent tree is cancelled even when the parent has no active loop:
-	// the parent may have gone idle (or been evicted) while its subagents
-	// keep working, and the user's cancel means "stop all of this work".
-	if exists {
-		if err := manager.CancelConversation(ctx); err != nil {
-			s.logger.Error("Failed to cancel conversation", "conversationID", conversationID, "error", err)
+	if !exists {
+		conversation, err := s.db.GetConversationByID(ctx, conversationID)
+		if errors.Is(err, sql.ErrNoRows) {
+			http.Error(w, "Conversation not found", http.StatusNotFound)
+			return
+		}
+		if err != nil {
+			s.logger.Error("Failed to load conversation for cancellation", "conversationID", conversationID, "error", err)
 			http.Error(w, "Failed to cancel conversation", http.StatusInternalServerError)
 			return
 		}
+		if conversation.AgentWorking {
+			// Synchronize with startup's get-or-create so Stop either clears the
+			// pending token before it is claimed or cancels the loop after Retry.
+			manager, err = s.getOrCreateConversationManager(ctx, conversationID, r.Header.Get("X-ExeDev-Email"))
+			if err == nil {
+				exists = true
+			} else {
+				s.logger.Warn("Failed to load working conversation for cancellation", "conversationID", conversationID, "error", err)
+				if clearErr := s.db.ClearConversationRuntimeState(ctx, conversationID); clearErr != nil {
+					s.logger.Error("Failed to clear conversation runtime state", "conversationID", conversationID, "error", clearErr)
+					http.Error(w, "Failed to cancel conversation", http.StatusInternalServerError)
+					return
+				}
+			}
+		}
+	}
+
+	// Cancel detached transcription work and clear the durable queue, then
+	// cancel the parent loop and the remaining child tree. The subagent tree is
+	// cancelled even when the parent has no active loop: the parent may have
+	// gone idle (or been evicted) while its subagents keep working, and the
+	// user's cancel means "stop all of this work".
+	err := s.cancelQueuedTranscriptions(ctx, conversationID, "", func() error {
+		if exists {
+			return manager.CancelConversation(ctx)
+		}
+		_, err := s.db.ClearQueuedMessages(ctx, conversationID)
+		return err
+	})
+	if errors.Is(err, sql.ErrNoRows) {
+		http.Error(w, "Conversation not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		s.logger.Error("Failed to cancel conversation", "conversationID", conversationID, "error", err)
+		http.Error(w, "Failed to cancel conversation", http.StatusInternalServerError)
+		return
 	}
 	cancelledSubagents := s.cancelSubagentTree(ctx, conversationID)
 
@@ -1711,6 +1739,48 @@ func (s *Server) handleCancelConversation(w http.ResponseWriter, r *http.Request
 		"status":              status,
 		"cancelled_subagents": cancelledSubagents,
 	})
+}
+
+// handleResumeConversation handles POST /api/conversation/<id>/resume. It
+// re-fires a turn carrying the durable conversation bit written during ordinary
+// startup, without adding a synthetic user message. Upgrade restarts resume
+// automatically.
+func (s *Server) handleResumeConversation(w http.ResponseWriter, r *http.Request, conversationID string) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	ctx := r.Context()
+	manager, err := s.getOrCreateConversationManager(ctx, conversationID, r.Header.Get("X-ExeDev-Email"))
+	if err != nil {
+		s.logger.Warn("Resume: failed to load conversation", "conversationID", conversationID, "error", err)
+		http.Error(w, "conversation not found", http.StatusNotFound)
+		return
+	}
+	modelList := s.getModelList()
+	defaultModelID := s.effectiveDefaultModel(modelList)
+	serviceForModel := func(modelID string) (llm.Service, error) {
+		service, err := s.llmManager.GetService(modelID)
+		if err != nil {
+			return nil, errors.New(unsupportedModelMessage(modelID, modelList))
+		}
+		return service, nil
+	}
+	if err := manager.ContinueInterruptedTurn(ctx, defaultModelID, serviceForModel); err != nil {
+		if errors.Is(err, errInterruptedTurnNotApplicable) {
+			w.WriteHeader(http.StatusAccepted)
+			json.NewEncoder(w).Encode(map[string]string{"status": "not_applicable"})
+			return
+		}
+		s.logger.Warn("Resume rejected", "conversationID", conversationID, "error", err)
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	s.logger.Info("Interrupted conversation resumed", "conversationID", conversationID)
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(map[string]string{"status": "resuming"})
 }
 
 // handleRetryConversation handles POST /api/conversation/<id>/retry.
@@ -2109,14 +2179,26 @@ func (s *Server) runStream(w http.ResponseWriter, r *http.Request, conversationI
 		if !initCompression() {
 			return false
 		}
-		data, err := json.Marshal(streamData)
-		if err != nil {
-			s.logger.Debug("failed to marshal stream response", "error", err)
-			return false
-		}
-		if _, err := fmt.Fprintf(compressedSink, "data: %s\n\n", data); err != nil {
-			s.logger.Debug("conversation stream write failed", "error", err)
-			return false
+		if len(streamData.streamDeltas) > 0 {
+			frames, err := marshalDeltaBatchFrames(streamData.ConversationID, streamData.streamDeltas)
+			if err != nil {
+				s.logger.Debug("failed to marshal stream response", "error", err)
+				return false
+			}
+			if _, err := compressedSink.Write(frames); err != nil {
+				s.logger.Debug("conversation stream write failed", "error", err)
+				return false
+			}
+		} else {
+			data, err := json.Marshal(streamData)
+			if err != nil {
+				s.logger.Debug("failed to marshal stream response", "error", err)
+				return false
+			}
+			if _, err := fmt.Fprintf(compressedSink, "data: %s\n\n", data); err != nil {
+				s.logger.Debug("conversation stream write failed", "error", err)
+				return false
+			}
 		}
 		if err := flushCompressor(); err != nil {
 			s.logger.Debug("conversation stream compressor flush failed", "error", err)
@@ -2509,15 +2591,18 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 
 // ModelInfo represents a model in the API response
 type ModelInfo struct {
-	ID                      string `json:"id"`
-	DisplayName             string `json:"display_name,omitempty"`
-	Source                  string `json:"source,omitempty"`   // Human-readable source (e.g., "exe.dev gateway", "$ANTHROPIC_API_KEY")
-	BaseURL                 string `json:"base_url,omitempty"` // Upstream origin (e.g., "https://llm.int.exe.xyz")
-	APIType                 string `json:"api_type,omitempty"` // Wire protocol (e.g., "anthropic-messages")
-	Ready                   bool   `json:"ready"`
-	MaxContextTokens        int    `json:"max_context_tokens,omitempty"`
-	ContextPricingThreshold int    `json:"context_pricing_threshold,omitempty"`
-	IsDefault               bool   `json:"is_default,omitempty"`
+	ID           string `json:"id"`
+	DisplayName  string `json:"display_name,omitempty"`
+	Mode         string `json:"mode,omitempty"`
+	Source       string `json:"source,omitempty"`   // Human-readable source (e.g., "exe.dev gateway", "$ANTHROPIC_API_KEY")
+	BaseURL      string `json:"base_url,omitempty"` // Upstream origin (e.g., "https://llm.int.exe.xyz")
+	APIType      string `json:"api_type,omitempty"` // Wire protocol (e.g., "anthropic-messages")
+	APIModelName string `json:"api_model_name,omitempty"`
+	Ready        bool   `json:"ready"`
+	// MaxContextTokens is the models.dev context window (clamped to the
+	// pricing tier, see modelsdev.LookupContextLimit); 0 when unknown.
+	MaxContextTokens int  `json:"max_context_tokens,omitempty"`
+	IsDefault        bool `json:"is_default,omitempty"`
 	// Tier is 1 for prominent models and 2 for models overshadowed by a
 	// better available sibling (see models.AssignTiers). The UI keeps tier-2
 	// models behind a "more models" affordance. Older iOS/Android clients that
@@ -2865,11 +2950,12 @@ func (s *Server) getModelList() []ModelInfo {
 			// Add display name and source from model info
 			if modelInfo := s.llmManager.GetModelInfo(id); modelInfo != nil {
 				info.DisplayName = modelInfo.DisplayName
+				info.Mode = modelInfo.Mode
 				info.Source = modelInfo.Source
 				info.BaseURL = modelInfo.BaseURL
 				info.APIType = modelInfo.APIType
+				info.APIModelName = modelInfo.APIModelName
 				info.MaxContextTokens, _ = modelsdev.LookupContextLimit(modelInfo.BaseURL, modelInfo.APIModelName)
-				info.ContextPricingThreshold, _ = modelsdev.LookupContextPricingThreshold(modelInfo.BaseURL, modelInfo.APIModelName)
 			}
 			modelList = append(modelList, info)
 		}
@@ -3746,47 +3832,83 @@ func (s *Server) handleSetSetting(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
+// handleSendQueuedNow interrupts the active turn and drains the durable queue
+// from its FIFO head. queued_id must name that head item (checked under the
+// loop lifecycle lock in SendQueuedNow) so a button on a stale or later ghost
+// cannot reorder user messages.
+func (s *Server) handleSendQueuedNow(w http.ResponseWriter, r *http.Request, conversationID string) {
+	queuedID := r.URL.Query().Get("queued_id")
+	if queuedID == "" {
+		http.Error(w, "queued_id is required", http.StatusBadRequest)
+		return
+	}
+	conversation, err := s.db.GetConversationByID(r.Context(), conversationID)
+	if errors.Is(err, sql.ErrNoRows) {
+		http.Error(w, "Conversation not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	if conversation.Archived {
+		http.Error(w, "conversation is archived", http.StatusConflict)
+		return
+	}
+	manager, err := s.getOrCreateConversationManager(r.Context(), conversationID, r.Header.Get("X-ExeDev-Email"))
+	if err != nil {
+		s.logger.Error("Failed to initialize conversation for send now", "conversationID", conversationID, "error", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	if err := manager.SendQueuedNow(r.Context(), s, queuedID); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+}
+
 // handleCancelQueued handles POST /conversation/<id>/cancel-queued
 // Cancels pending queued user messages for a conversation. With a ?queued_id=
 // query param it removes a single queued message by its QueuedMessage id;
 // without it, the whole queue is cleared.
 func (s *Server) handleCancelQueued(w http.ResponseWriter, r *http.Request, conversationID string) {
 	queuedID := r.URL.Query().Get("queued_id")
+	ctx := r.Context()
 
 	s.mu.Lock()
-	manager, ok := s.activeConversations[conversationID]
+	manager, active := s.activeConversations[conversationID]
 	s.mu.Unlock()
 
-	if ok {
-		if queuedID != "" {
-			manager.CancelQueuedMessage(r.Context(), s, queuedID)
-		} else {
-			manager.CancelQueuedMessages(r.Context(), s)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
-		return
-	}
-
-	// No active manager (e.g. after a restart, before the conversation is
-	// opened) but the queued_messages array may still hold persisted entries.
-	// Clear/remove directly via the DB so the user can always drain the queue,
-	// then broadcast the updated conversation row to list subscribers (the DB
-	// write also bumps updated_at, firing the list-patch OnCommit hook).
-	ctx := r.Context()
+	// Without an active manager (e.g. after a restart, before the conversation
+	// is opened) the queued_messages array may still hold persisted entries, so
+	// remove them directly and broadcast the row ourselves.
 	var conv *generated.Conversation
-	var err error
-	if queuedID != "" {
-		conv, err = s.db.RemoveQueuedMessages(ctx, conversationID, queuedID)
-	} else {
-		conv, err = s.db.ClearQueuedMessages(ctx, conversationID)
-	}
-	if err != nil {
-		s.logger.Error("Failed to cancel queued messages (no manager)", "conversationID", conversationID, "error", err)
+	err := s.cancelQueuedTranscriptions(ctx, conversationID, queuedID, func() (err error) {
+		switch {
+		case active && queuedID != "":
+			conv, err = manager.CancelQueuedMessage(ctx, s, queuedID)
+		case active:
+			conv, err = manager.CancelQueuedMessages(ctx, s)
+		case queuedID != "":
+			conv, err = s.db.RemoveQueuedMessages(ctx, conversationID, queuedID)
+		default:
+			conv, err = s.db.ClearQueuedMessages(ctx, conversationID)
+		}
+		return err
+	})
+	if errors.Is(err, sql.ErrNoRows) {
 		http.Error(w, "Conversation not found", http.StatusNotFound)
 		return
 	}
-	s.publishConversationListUpdate(ConversationListUpdate{Type: "update", Conversation: conv})
+	if err != nil {
+		s.logger.Error("Failed to cancel queued messages", "conversationID", conversationID, "error", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	if !active {
+		s.publishConversationListUpdate(ConversationListUpdate{Type: "update", Conversation: conv})
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
@@ -4184,8 +4306,8 @@ func validateModelReasoningLevel(model *ModelInfo, level string) string {
 }
 
 func validateConversationOptions(opts db.ConversationOptions) string {
-	if opts.Kind != "" || opts.ParentPointer != nil {
-		return "kind and parent_pointer are internal conversation options"
+	if opts.Kind != "" || opts.ParentPointer != nil || opts.CommitTour != nil {
+		return "kind, parent_pointer, and commit_tour are internal conversation options"
 	}
 	for name, v := range opts.ToolOverrides {
 		if v != "on" && v != "off" {

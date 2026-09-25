@@ -187,6 +187,7 @@ LIMIT ? OFFSET ?;
 -- Search conversations by slug OR message content (user messages and agent responses, not system prompts)
 -- Includes both top-level conversations and subagent conversations
 SELECT DISTINCT sqlc.embed(c),
+  CAST(CASE WHEN c.slug LIKE '%' || sqlc.arg('query') || '%' THEN 0 ELSE 1 END AS INTEGER) AS slug_rank,
   -- See preview_packed note on ListConversations. Inner messages alias is
   -- pm here to avoid colliding with the outer LEFT JOIN messages m.
   CAST(COALESCE((
@@ -219,16 +220,16 @@ FROM conversations c
 LEFT JOIN messages m ON c.conversation_id = m.conversation_id AND m.type IN ('user', 'agent')
 WHERE c.archived = FALSE
   AND (
-    c.slug LIKE '%' || ? || '%'
-    OR json_extract(m.user_data, '$.text') LIKE '%' || ? || '%'
-    OR m.llm_data LIKE '%' || ? || '%'
+    c.slug LIKE '%' || sqlc.arg('query') || '%'
+    OR json_extract(m.user_data, '$.text') LIKE '%' || sqlc.arg('query') || '%'
+    OR m.llm_data LIKE '%' || sqlc.arg('query') || '%'
   )
-ORDER BY c.updated_at DESC
-LIMIT ? OFFSET ?;
+ORDER BY slug_rank, c.updated_at DESC
+LIMIT sqlc.arg('limit') OFFSET sqlc.arg('offset');
 
 -- name: SearchConversationsFTSList :many
--- Top-level conversations (active first, then archived) matching either a
--- slug substring or an FTS5 MATCH against messages_fts. The caller builds
+-- Top-level conversations matching either a slug substring or an FTS5 MATCH
+-- against messages_fts, with slug matches first. The caller builds
 -- both the LIKE pattern (with %, _, \ pre-escaped) and the MATCH
 -- expression from user input.
 WITH fts_hits AS (
@@ -238,6 +239,7 @@ WITH fts_hits AS (
   WHERE messages_fts MATCH @fts_match
 )
 SELECT sqlc.embed(c),
+  CAST(CASE WHEN c.slug LIKE sqlc.arg('slug_like') ESCAPE '\' THEN 0 ELSE 1 END AS INTEGER) AS slug_rank,
   -- preview_packed: locate the newest agent message that actually contains a
   -- text block (the EXISTS short-circuits on the first one), then pull that
   -- block. The outer ORDER BY rides idx_messages_conv_type_seq, so we stop at
@@ -279,7 +281,7 @@ WHERE c.parent_conversation_id IS NULL
     c.slug LIKE @slug_like ESCAPE '\'
     OR c.conversation_id IN (SELECT conversation_id FROM fts_hits)
   )
-ORDER BY c.archived ASC, c.updated_at DESC
+ORDER BY slug_rank, c.archived ASC, c.updated_at DESC
 LIMIT sqlc.arg('limit') OFFSET sqlc.arg('offset');
 
 -- name: SearchArchivedConversations :many
@@ -301,7 +303,9 @@ WHERE conversation_id = ?;
 
 -- name: IncrementConversationGeneration :one
 UPDATE conversations
-SET current_generation = current_generation + 1, updated_at = CURRENT_TIMESTAMP
+SET current_generation = current_generation + 1,
+    turn_interrupted = FALSE,
+    updated_at = CURRENT_TIMESTAMP
 WHERE conversation_id = ?
 RETURNING *;
 
@@ -310,8 +314,10 @@ RETURNING *;
 -- before summarization runs, so on failure we restore the previous value to
 -- keep the old (intact) generation active.
 UPDATE conversations
-SET current_generation = ?, updated_at = CURRENT_TIMESTAMP
-WHERE conversation_id = ?
+SET current_generation = sqlc.arg('current_generation'),
+    turn_interrupted = sqlc.arg('turn_interrupted'),
+    updated_at = CURRENT_TIMESTAMP
+WHERE conversation_id = sqlc.arg('conversation_id')
 RETURNING *;
 
 -- name: DeleteConversation :exec
@@ -456,13 +462,77 @@ WHERE conversation_id = ?
 RETURNING *;
 
 -- name: SetConversationAgentWorking :exec
--- Sets the agent_working flag. Deliberately does NOT bump updated_at:
--- working transitions happen at every loop start/finish and we don't want
--- them to reorder the conversation list. The patch stream picks the change
--- up via the standard Pool.OnCommit hook.
+-- Sets the agent_working flag. Starting any turn also resolves a prior
+-- interruption: the user either clicked Continue or deliberately sent new
+-- input instead. Deliberately does NOT bump updated_at; runtime state changes
+-- must not reorder the conversation list.
 UPDATE conversations
-SET agent_working = ?
-WHERE conversation_id = ?;
+SET agent_working = sqlc.arg('agent_working'),
+    turn_interrupted = CASE
+      WHEN sqlc.arg('agent_working') THEN FALSE
+      ELSE turn_interrupted
+    END
+WHERE conversation_id = sqlc.arg('conversation_id');
+
+-- name: SetConversationTurnInterrupted :exec
+-- Records durable user-facing restart state without adding transcript rows or
+-- reordering the conversation list.
+UPDATE conversations
+SET turn_interrupted = sqlc.arg('turn_interrupted')
+WHERE conversation_id = sqlc.arg('conversation_id');
+
+-- name: ClaimInterruptedTurn :execrows
+-- Atomically moves a manually resumed conversation from interrupted+idle to
+-- working. The guard makes duplicate clicks and cross-request races harmless.
+UPDATE conversations
+SET turn_interrupted = FALSE,
+    agent_working = TRUE
+WHERE conversation_id = sqlc.arg('conversation_id')
+  AND turn_interrupted = TRUE
+  AND agent_working = FALSE
+  AND parent_conversation_id IS NULL;
+
+-- name: ClaimUpgradeInterruptedTurn :execrows
+-- Atomically validates the durable turn version captured before listeners
+-- opened and marks that exact stale turn claimed. The marker is hidden while
+-- agent_working is true, survives another crash as a manual interruption, and
+-- prevents duplicate resume workers. New user work changes the message version.
+UPDATE conversations
+SET turn_interrupted = TRUE
+WHERE conversations.conversation_id = sqlc.arg('conversation_id')
+  AND conversations.agent_working = TRUE
+  AND conversations.turn_interrupted = FALSE
+  AND conversations.parent_conversation_id IS NULL
+  AND conversations.current_generation = sqlc.arg('current_generation')
+  AND (SELECT COALESCE(MAX(sequence_id), 0)
+       FROM messages
+       WHERE messages.conversation_id = conversations.conversation_id
+         AND messages.type = 'user') = sqlc.arg('max_user_sequence_id');
+
+-- name: FinishUpgradeInterruptedTurn :execrows
+-- Clears the hidden claim immediately before the automatic retry. Failures
+-- after this point restore the visible manual interruption state.
+UPDATE conversations
+SET turn_interrupted = FALSE
+WHERE conversation_id = sqlc.arg('conversation_id')
+  AND agent_working = TRUE
+  AND turn_interrupted = TRUE
+  AND parent_conversation_id IS NULL;
+
+-- name: MarkUpgradeResumeInterrupted :execrows
+-- Converts a failed automatic resume into the ordinary manual-recovery state,
+-- but only while the startup token still names the same durable turn.
+UPDATE conversations
+SET agent_working = FALSE,
+    turn_interrupted = TRUE
+WHERE conversations.conversation_id = sqlc.arg('conversation_id')
+  AND conversations.agent_working = TRUE
+  AND conversations.parent_conversation_id IS NULL
+  AND conversations.current_generation = sqlc.arg('current_generation')
+  AND (SELECT COALESCE(MAX(sequence_id), 0)
+       FROM messages
+       WHERE messages.conversation_id = conversations.conversation_id
+         AND messages.type = 'user') = sqlc.arg('max_user_sequence_id');
 
 -- name: ResetAllAgentWorking :exec
 -- Called on server startup to clear any stale TRUE values left over from a
@@ -480,16 +550,27 @@ WHERE agent_working = TRUE
 ORDER BY updated_at DESC;
 
 -- name: SearchConversationsFTSSnippets :many
--- Best snippet per message for the given conversation IDs, ordered by
--- FTS rank so the caller can keep the first row seen per conversation.
+-- Best-ranked snippet per conversation for the given conversation IDs.
 -- snippet(table, columnIndex=-1 (any), start, end, ellipsis, tokenCount).
-SELECT m.conversation_id,
+WITH ranked AS (
+  SELECT m.conversation_id,
+         m.message_id,
+         row_number() OVER (
+           PARTITION BY m.conversation_id
+           ORDER BY hits.rank
+         ) AS rank_in_conversation
+  FROM messages m
+  JOIN messages_fts hits ON hits.rowid = m.rowid
+  WHERE hits.messages_fts MATCH @fts_match
+    AND m.conversation_id IN (sqlc.slice('conv_ids'))
+)
+SELECT ranked.conversation_id,
        snippet(messages_fts, 0, sqlc.arg(mark_start), sqlc.arg(mark_end), '...', 16) AS snippet
-FROM messages m
+FROM ranked
+JOIN messages m ON m.message_id = ranked.message_id
 JOIN messages_fts ON messages_fts.rowid = m.rowid
-WHERE messages_fts MATCH @fts_match
-  AND m.conversation_id IN (sqlc.slice('conv_ids'))
-ORDER BY messages_fts.rank;
+WHERE ranked.rank_in_conversation = 1
+  AND messages_fts.messages_fts MATCH @fts_match;
 
 -- name: UpdateConversationTags :one
 -- Tagging is a metadata-only edit; deliberately does not bump updated_at
@@ -498,3 +579,18 @@ UPDATE conversations
 SET tags = ?
 WHERE conversation_id = ?
 RETURNING *;
+
+-- name: ListConversationsWithQueuedTranscriptions :many
+-- Every conversation (archived or not) whose durable queue holds a
+-- transcription item. Used once at startup to recover detached workers.
+SELECT * FROM conversations
+WHERE queued_messages LIKE '%"kind":"transcription"%'
+ORDER BY created_at ASC;
+
+-- name: ListCommitTourWorkers :many
+-- Specialized child conversations durably tracking requested commit tours.
+SELECT * FROM conversations
+WHERE parent_conversation_id IS NOT NULL
+  AND user_initiated = FALSE
+  AND conversation_options LIKE '%"kind":"commit-tour"%'
+ORDER BY created_at ASC, rowid ASC;

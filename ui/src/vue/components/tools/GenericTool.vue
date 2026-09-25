@@ -16,9 +16,12 @@
       @keydown.enter.prevent="isExpanded = !isExpanded"
       @keydown.space.prevent="isExpanded = !isExpanded"
     >
-      <div class="tool-summary">
+      <div :class="['tool-summary', { 'generic-tool-summary--complete': isComplete }]">
         <span class="tool-emoji" :class="{ running: isRunning }" aria-hidden="true">⚙️</span>
-        <span class="tool-command">{{ toolName }}</span>
+        <span class="generic-tool-copy">
+          <span class="tool-command">{{ toolName }}</span>
+          <GenericToolWarning v-if="isComplete" :tool-name="toolName" />
+        </span>
         <ToolStatusIcon v-if="isComplete && hasError" state="error" class="tool-error" />
         <ToolStatusIcon v-if="isComplete && !hasError" state="ok" class="tool-success" />
       </div>
@@ -40,6 +43,7 @@
       :plain-text="collapsedPlainText"
       body-class="tool-details"
     >
+      <RunningToolTime v-if="isRunning && isExpanded" :start-time="toolInvokedAt" />
       <div v-if="toolInput !== undefined" class="tool-section">
         <div class="tool-label">Input:</div>
         <pre class="tool-code">{{ formatData(toolInput) }}</pre>
@@ -70,13 +74,17 @@ import type { LLMContent } from "../../../types";
 import { announceToolA11y } from "../../../services/a11yAnnouncer";
 import { useToolExpanded } from "../../composables/toolDetail";
 import ToolAccessibleBody from "./ToolAccessibleBody.vue";
+import GenericToolWarning from "./GenericToolWarning.vue";
 import ToolChevron from "./ToolChevron.vue";
+import RunningToolTime from "./RunningToolTime.vue";
 import ToolStatusIcon from "./ToolStatusIcon.vue";
+import { toolOutcomeSuffix } from "../../utils/toolStatus";
 
 const props = defineProps<{
   toolName: string;
   toolInput?: unknown;
   isRunning?: boolean;
+  toolInvokedAt?: string | null;
   toolResult?: LLMContent[];
   hasError?: boolean;
   executionTime?: string;
@@ -119,10 +127,12 @@ const outputAsRows = computed((): string[] | null => {
 const isComplete = computed(() => !props.isRunning && props.toolResult !== undefined);
 
 const outputLabel = computed(() => `Tool output for ${props.toolName}`);
-const toggleLabel = computed(() =>
-  isExpanded.value
-    ? `Collapse tool output for ${props.toolName}`
-    : `Expand tool output for ${props.toolName}`,
+const toggleLabel = computed(
+  () =>
+    (isExpanded.value
+      ? `Collapse tool output for ${props.toolName}`
+      : `Expand tool output for ${props.toolName}`) +
+    toolOutcomeSuffix(isComplete.value, props.hasError),
 );
 
 const collapsedPlainText = computed(() => {

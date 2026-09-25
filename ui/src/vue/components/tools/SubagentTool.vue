@@ -69,6 +69,7 @@
       body-class="tool-details"
       :body-id="detailsId"
     >
+      <RunningToolTime v-if="isRunning && isExpanded" :start-time="toolInvokedAt" />
       <div class="tool-section">
         <div class="tool-label">
           Prompt to '{{ slug }}':
@@ -81,7 +82,7 @@
 
       <div v-if="isComplete" class="tool-section">
         <div class="tool-label">
-          Response:
+          Response{{ hasError ? " (Error)" : "" }}:
           <span v-if="executionTime" class="tool-time">{{ executionTime }}</span>
         </div>
         <div :class="`tool-code ${hasError ? 'error' : ''}`">
@@ -118,7 +119,9 @@ import ToolAccessibleBody from "./ToolAccessibleBody.vue";
 import { announceA11y } from "../../../services/a11yAnnouncer";
 import { useSubagentLive, navigateToConversationSlug } from "../../composables/subagentLive";
 import ToolChevron from "./ToolChevron.vue";
+import RunningToolTime from "./RunningToolTime.vue";
 import ToolStatusIcon from "./ToolStatusIcon.vue";
+import { toolOutcomeSuffix } from "../../utils/toolStatus";
 
 interface SubagentInput {
   slug?: string;
@@ -131,6 +134,7 @@ interface SubagentInput {
 const props = defineProps<{
   toolInput?: unknown;
   isRunning?: boolean;
+  toolInvokedAt?: string | null;
   toolResult?: LLMContent[];
   hasError?: boolean;
   executionTime?: string;
@@ -209,10 +213,12 @@ const commandText = computed(() => {
 });
 
 const outputLabel = computed(() => `Subagent details for ${slug.value}`);
-const toggleLabel = computed(() =>
-  isExpanded.value
-    ? `Collapse subagent details for ${slug.value}`
-    : `Expand subagent details for ${slug.value}`,
+const toggleLabel = computed(
+  () =>
+    (isExpanded.value
+      ? `Collapse subagent details for ${slug.value}`
+      : `Expand subagent details for ${slug.value}`) +
+    toolOutcomeSuffix(isComplete.value, props.hasError),
 );
 const accessibleText = computed(() => {
   const badges: string[] = [];

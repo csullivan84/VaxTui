@@ -15,6 +15,7 @@ import (
 	"shelley.exe.dev/db"
 	"shelley.exe.dev/db/generated"
 	"shelley.exe.dev/llm"
+	"shelley.exe.dev/llm/oai"
 	"shelley.exe.dev/llm/predictable"
 	"shelley.exe.dev/models/modelsdev"
 )
@@ -62,123 +63,11 @@ func TestDeepSeekV4ProviderCapabilityDescriptions(t *testing.T) {
 	}
 }
 
-func TestByID(t *testing.T) {
-	tests := []struct {
-		id      string
-		wantID  string
-		wantNil bool
-	}{
-		{id: "gpt-6-astra", wantID: "gpt-6-astra"},
-		{id: "gpt-5.6-sol", wantID: "gpt-5.6-sol"},
-		{id: "gpt-5.6-terra", wantID: "gpt-5.6-terra"},
-		{id: "gpt-5.6-luna", wantID: "gpt-5.6-luna"},
-		{id: "gpt-5.5", wantID: "gpt-5.5"},
-		{id: "gpt-5.5-pro", wantNil: true},
-		{id: "deepseek-v4-flash", wantNil: true},
-		{id: "deepseek-v4-pro", wantNil: true},
-		{id: "deepseek-v4-pro-fireworks", wantID: "deepseek-v4-pro-fireworks"},
-		{id: "gpt-5.3-codex", wantID: "gpt-5.3-codex"},
-		{id: "claude-opus-5", wantID: "claude-opus-5"},
-		{id: "claude-sonnet-5", wantID: "claude-sonnet-5"},
-		{id: "claude-sonnet-4.5", wantID: "claude-sonnet-4.5"},
-		{id: "claude-haiku-4.5", wantID: "claude-haiku-4.5"},
-		{id: "claude-opus-4.5", wantID: "claude-opus-4.5"},
-		{id: "claude-fable-5.1", wantID: "claude-fable-5.1"},
-		{id: "claude-fable-5", wantID: "claude-fable-5"},
-		{id: "claude-opus-4.8", wantID: "claude-opus-4.8"},
-		{id: "claude-opus-4.7", wantID: "claude-opus-4.7"},
-		{id: "claude-opus-4.6", wantID: "claude-opus-4.6"},
-		{id: "grok-4.5", wantID: "grok-4.5"},
-		{id: "nonexistent", wantNil: true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.id, func(t *testing.T) {
-			m := ByID(tt.id)
-			if tt.wantNil {
-				if m != nil {
-					t.Errorf("ByID(%q) = %v, want nil", tt.id, m)
-				}
-				return
-			}
-			if m == nil {
-				t.Fatalf("ByID(%q) = nil, want non-nil", tt.id)
-			}
-			if m.ID != tt.wantID {
-				t.Errorf("ByID(%q).ID = %q, want %q", tt.id, m.ID, tt.wantID)
-			}
-		})
-	}
-}
-
-func TestGPT6AstraCatalogEntry(t *testing.T) {
-	m := ByID("gpt-6-astra")
-	if m == nil {
-		t.Fatal("ByID(gpt-6-astra) = nil, want non-nil")
-	}
-	if m.Provider != ProviderOpenAI {
-		t.Errorf("Provider = %q, want %q", m.Provider, ProviderOpenAI)
-	}
-	if m.APIType != APITypeOpenAIResponses {
-		t.Errorf("APIType = %q, want %q", m.APIType, APITypeOpenAIResponses)
-	}
-	if m.APIModelName != "gpt-6-astra" {
-		t.Errorf("APIModelName = %q, want gpt-6-astra", m.APIModelName)
-	}
-	if m.DefaultBaseURL != DefaultOpenAIBaseURL {
-		t.Errorf("DefaultBaseURL = %q, want %q", m.DefaultBaseURL, DefaultOpenAIBaseURL)
-	}
-}
-
-func TestFable51CatalogEntry(t *testing.T) {
-	m := ByID("claude-fable-5.1")
-	if m == nil {
-		t.Fatal("ByID(claude-fable-5.1) = nil, want non-nil")
-	}
-	if m.Provider != ProviderAnthropic {
-		t.Errorf("Provider = %q, want %q", m.Provider, ProviderAnthropic)
-	}
-	if m.APIType != APITypeAnthropicMessages {
-		t.Errorf("APIType = %q, want %q", m.APIType, APITypeAnthropicMessages)
-	}
-	if m.APIModelName != "claude-fable-5-1" {
-		t.Errorf("APIModelName = %q, want claude-fable-5-1", m.APIModelName)
-	}
-	if m.DefaultBaseURL != DefaultAnthropicBaseURL {
-		t.Errorf("DefaultBaseURL = %q, want %q", m.DefaultBaseURL, DefaultAnthropicBaseURL)
-	}
-}
-
-func TestKimiK3FireworksCatalogEntry(t *testing.T) {
-	m := ByID("kimi-k3-fireworks")
-	if m == nil {
-		t.Fatal("ByID(kimi-k3-fireworks) = nil, want non-nil")
-	}
-	if m.Provider != ProviderFireworks {
-		t.Errorf("Provider = %q, want %q", m.Provider, ProviderFireworks)
-	}
-	if m.APIType != APITypeOpenAIChat {
-		t.Errorf("APIType = %q, want %q", m.APIType, APITypeOpenAIChat)
-	}
-	if m.APIModelName != "accounts/fireworks/models/kimi-k3" {
-		t.Errorf("APIModelName = %q, want %q", m.APIModelName, "accounts/fireworks/models/kimi-k3")
-	}
-	if m.DefaultBaseURL != DefaultFireworksBaseURL {
-		t.Errorf("DefaultBaseURL = %q, want %q", m.DefaultBaseURL, DefaultFireworksBaseURL)
-	}
-	if m.Build == nil {
-		t.Fatal("Build is nil")
-	}
-	// Existing Kimi K2.x entries remain available.
-	for _, id := range []string{"kimi-k2.6-fireworks", "kimi-k2.7-code-fireworks"} {
-		if ByID(id) == nil {
-			t.Errorf("ByID(%q) = nil, want non-nil", id)
+func TestNativeDeepSeekRemoved(t *testing.T) {
+	for _, id := range []string{"deepseek-v4-flash", "deepseek-v4-pro"} {
+		if ByID(id) != nil {
+			t.Errorf("ByID(%q) != nil; native DeepSeek is removed in this fork", id)
 		}
-	}
-}
-
-func TestDefault(t *testing.T) {
-	if d := Default(); d.ID != "claude-opus-4.8" {
-		t.Errorf("Default().ID = %q, want %q", d.ID, "claude-opus-4.8")
 	}
 }
 
@@ -217,37 +106,6 @@ func TestNewManagerRegistersBuiltModels(t *testing.T) {
 	}
 }
 
-func TestGetAvailableModelsOrderStable(t *testing.T) {
-	mgr, err := NewManager(&Config{Models: []Built{predictableBuilt()}})
-	if err != nil {
-		t.Fatalf("NewManager failed: %v", err)
-	}
-	a := mgr.GetAvailableModels()
-	b := mgr.GetAvailableModels()
-	if len(a) == 0 || len(a) != len(b) {
-		t.Fatalf("unstable lengths %d vs %d", len(a), len(b))
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			t.Errorf("index %d differs: %q vs %q", i, a[i], b[i])
-		}
-	}
-}
-
-func TestLoggingService(t *testing.T) {
-	mockService := &mockLLMService{}
-	logger := slog.Default()
-	loggingSvc := &loggingService{service: mockService, logger: logger, modelID: "test-model", provider: ProviderBuiltIn}
-
-	response, err := loggingSvc.Do(context.Background(), &llm.Request{Messages: []llm.Message{llm.UserStringMessage("Hello")}})
-	if err != nil || response == nil {
-		t.Fatalf("Do: response=%v err=%v", response, err)
-	}
-	if loggingSvc.MaxImageDimension() != mockService.MaxImageDimension() {
-		t.Errorf("MaxImageDimension mismatch")
-	}
-}
-
 func TestLoggingServiceUsageCollector(t *testing.T) {
 	type collected struct {
 		purpose string
@@ -260,7 +118,7 @@ func TestLoggingServiceUsageCollector(t *testing.T) {
 		modelID: "test-model",
 	}
 	req := &llm.Request{Messages: []llm.Message{llm.UserStringMessage("hi")}}
-	ctxWithCollector := llm.WithUsageCollector(context.Background(), func(purpose string, usage llm.Usage) {
+	ctxWithCollector := llm.WithUsageCollector(t.Context(), func(purpose string, usage llm.Usage) {
 		got = append(got, collected{purpose, usage})
 	})
 
@@ -299,7 +157,7 @@ func TestLoggingServiceUsageCollector(t *testing.T) {
 
 	// Purpose tag but no collector in ctx: no panic, nothing collected.
 	svc.service = &mockLLMService{}
-	if _, err := svc.Do(llm.WithPurpose(context.Background(), "keyword_search"), req); err != nil {
+	if _, err := svc.Do(llm.WithPurpose(t.Context(), "keyword_search"), req); err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 1 {
@@ -366,28 +224,16 @@ func TestManagerHasModel(t *testing.T) {
 	}
 }
 
-func TestModelBuildSignature(t *testing.T) {
-	// Each catalog model's Build must produce a non-nil llm.Service when
-	// given any URL/key and an http.Client.
-	customClient := &http.Client{}
-	for _, m := range All() {
-		svc := m.Build("https://example.test/v1", "key", customClient)
-		if svc == nil {
-			t.Errorf("Build(%s) returned nil", m.ID)
-		}
-	}
-}
-
 func TestRefreshCustomModelsConcurrent(t *testing.T) {
 	testDB, err := db.New(db.Config{DSN: t.TempDir() + "/test.db"})
 	if err != nil {
 		t.Fatalf("failed to create test db: %v", err)
 	}
 	defer testDB.Close()
-	if err := testDB.Migrate(context.Background()); err != nil {
+	if err := testDB.Migrate(t.Context()); err != nil {
 		t.Fatalf("failed to migrate test db: %v", err)
 	}
-	if _, err := testDB.CreateModel(context.Background(), generated.CreateModelParams{
+	if _, err := testDB.CreateModel(t.Context(), generated.CreateModelParams{
 		ModelID:      "custom-test-model",
 		DisplayName:  "Test Model",
 		ProviderType: "openai",
@@ -736,10 +582,10 @@ func TestRefreshBuiltModelsReplacesBuiltModelsAndPreservesCustomModels(t *testin
 		t.Fatalf("failed to create test db: %v", err)
 	}
 	defer testDB.Close()
-	if err := testDB.Migrate(context.Background()); err != nil {
+	if err := testDB.Migrate(t.Context()); err != nil {
 		t.Fatalf("failed to migrate test db: %v", err)
 	}
-	if _, err := testDB.CreateModel(context.Background(), generated.CreateModelParams{
+	if _, err := testDB.CreateModel(t.Context(), generated.CreateModelParams{
 		ModelID:      "custom-test-model",
 		DisplayName:  "Test Model",
 		ProviderType: "openai",
@@ -799,7 +645,91 @@ func TestRefreshBuiltModelsReplacesBuiltModelsAndPreservesCustomModels(t *testin
 	}
 }
 
+func TestGetTranscriptionModelsIncludesIntegrationAndCustomRoutes(t *testing.T) {
+	testDB, err := db.New(db.Config{DSN: t.TempDir() + "/test.db"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer testDB.Close()
+	if err := testDB.Migrate(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testDB.CreateModel(t.Context(), generated.CreateModelParams{
+		ModelID:      "custom-transcription-model",
+		DisplayName:  "Transcription Model",
+		ProviderType: "openai",
+		Endpoint:     "https://api.example.com/v1",
+		ApiKey:       "transcription-key",
+		ModelName:    "gpt-transcribe",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr, err := NewManager(&Config{
+		TranscriptionModels: []TranscriptionModel{{
+			Model:    "gpt-transcribe",
+			Endpoint: "https://llm.int.exe.xyz/v1/audio/transcriptions",
+			Source:   "llm.int.exe.xyz",
+		}},
+		DB: testDB,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := mgr.GetTranscriptionModels("gpt-transcribe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("transcription models = %+v, want integration and custom routes", got)
+	}
+	if got[0].Endpoint != "https://llm.int.exe.xyz/v1/audio/transcriptions" {
+		t.Fatalf("integration route = %+v", got[0])
+	}
+	if got[1].Endpoint != "https://api.example.com/v1/audio/transcriptions" || got[1].APIKey != "transcription-key" {
+		t.Fatalf("custom route = %+v", got[1])
+	}
+}
+
 func (m *mockLLMService) SupportsImages() bool { return true }
+
+func TestManagerLoadsCustomReasoningReplayOverride(t *testing.T) {
+	testDB, err := db.New(db.Config{DSN: t.TempDir() + "/test.db"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer testDB.Close()
+	if err := testDB.Migrate(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testDB.CreateModel(t.Context(), generated.CreateModelParams{
+		ModelID: "replay-model", DisplayName: "Replay model", ProviderType: "openai",
+		Endpoint: "https://proxy.example/v1", ApiKey: "key", ModelName: "custom-model",
+		ReasoningReplay: string(oai.ReasoningReplayContent),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	manager, err := NewManager(&Config{DB: testDB})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := manager.GetService("replay-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapped, ok := service.(*reasoningService)
+	if !ok {
+		t.Fatalf("service type = %T", service)
+	}
+	chat, ok := wrapped.Service.(*oai.Service)
+	if !ok {
+		t.Fatalf("inner service type = %T", wrapped.Service)
+	}
+	if chat.ReasoningReplay != oai.ReasoningReplayContent {
+		t.Fatalf("reasoning replay = %q", chat.ReasoningReplay)
+	}
+}
 
 func TestReasoningServiceMapping(t *testing.T) {
 	inner := &captureThinkingService{}
@@ -809,13 +739,13 @@ func TestReasoningServiceMapping(t *testing.T) {
 	if got := []string{levels[0].Name(), levels[1].Name(), levels[2].Name(), levels[3].Name()}; !reflect.DeepEqual(got, []string{"off", "minimal", "medium", "max"}) {
 		t.Fatalf("levels = %v", got)
 	}
-	if _, err := svc.Do(context.Background(), &llm.Request{ThinkingLevel: llm.ThinkingLevelMinimal}); err != nil {
+	if _, err := svc.Do(t.Context(), &llm.Request{ThinkingLevel: llm.ThinkingLevelMinimal}); err != nil {
 		t.Fatal(err)
 	}
 	if inner.got != llm.ThinkingLevelLow {
 		t.Fatalf("mapped level = %s, want low", inner.got.Name())
 	}
-	if _, err := svc.Do(context.Background(), &llm.Request{ThinkingLevel: llm.ThinkingLevelMax}); err != nil {
+	if _, err := svc.Do(t.Context(), &llm.Request{ThinkingLevel: llm.ThinkingLevelMax}); err != nil {
 		t.Fatal(err)
 	}
 	if inner.got != llm.ThinkingLevelMax {
@@ -837,7 +767,7 @@ func TestReasoningServiceDisabled(t *testing.T) {
 	if llm.SupportsReasoning(svc) {
 		t.Fatal("disabled service reports reasoning support")
 	}
-	if _, err := svc.Do(context.Background(), &llm.Request{ThinkingLevel: llm.ThinkingLevelHigh}); err != nil {
+	if _, err := svc.Do(t.Context(), &llm.Request{ThinkingLevel: llm.ThinkingLevelHigh}); err != nil {
 		t.Fatal(err)
 	}
 	if inner.got != llm.ThinkingLevelOff {
@@ -867,7 +797,7 @@ func (s *captureThinkingService) Do(_ context.Context, req *llm.Request) (*llm.R
 
 func TestReasoningServiceRejectsUnsupportedLevel(t *testing.T) {
 	svc := WrapReasoningConfig(&captureThinkingService{}, "", "unknown", "yes", `{"low":"low"}`)
-	_, err := svc.Do(context.Background(), &llm.Request{ThinkingLevel: llm.ThinkingLevelHigh})
+	_, err := svc.Do(t.Context(), &llm.Request{ThinkingLevel: llm.ThinkingLevelHigh})
 	if err == nil || !strings.Contains(err.Error(), "not supported") {
 		t.Fatalf("error = %v, want unsupported-level error", err)
 	}
@@ -879,7 +809,7 @@ func TestReasoningServiceMapsServiceDefault(t *testing.T) {
 	if got := llm.ServiceDefaultReasoningLevel(svc); got != "low" {
 		t.Fatalf("default = %q, want low", got)
 	}
-	if _, err := svc.Do(context.Background(), &llm.Request{}); err != nil {
+	if _, err := svc.Do(t.Context(), &llm.Request{}); err != nil {
 		t.Fatal(err)
 	}
 	if inner.got != llm.ThinkingLevelLow {

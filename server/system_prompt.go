@@ -95,7 +95,11 @@ func GenerateSystemPrompt(workingDir string, opts ...SystemPromptOption) (string
 }
 
 func generateSystemPrompt(workingDir string, opts ...SystemPromptOption) (string, []skills.Skill, error) {
-	data, err := collectSystemData(workingDir)
+	return generateSystemPromptWithIntegrationSkills(workingDir, nil, opts...)
+}
+
+func generateSystemPromptWithIntegrationSkills(workingDir string, integrationSkills []skills.Skill, opts ...SystemPromptOption) (string, []skills.Skill, error) {
+	data, err := collectSystemData(workingDir, integrationSkills)
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to collect system data: %w", err)
 	}
@@ -646,7 +650,7 @@ func runHookIn(hooksDir, name, prompt string) (string, error) {
 	return result, nil
 }
 
-func collectSystemData(workingDir string) (*SystemPromptData, error) {
+func collectSystemData(workingDir string, integrationSkills []skills.Skill) (*SystemPromptData, error) {
 	wd := workingDir
 	if wd == "" {
 		var err error
@@ -693,7 +697,7 @@ func collectSystemData(workingDir string) (*SystemPromptData, error) {
 	}()
 	go func() {
 		defer wg.Done()
-		foundSkills = collectSkills(wd, gitRoot, skills.Env{ExeDev: data.IsExeDev})
+		foundSkills = collectSkills(wd, gitRoot, integrationSkills, skills.Env{ExeDev: data.IsExeDev})
 	}()
 
 	// Run the remaining cheap synchronous probes while the walks are in flight.
@@ -747,28 +751,23 @@ func collectCodebaseInfo(wd string, gitInfo *GitInfo) (*CodebaseInfo, error) {
 	seenFiles := make(map[string]bool)
 	seenContents := make(map[string]bool)
 
-	// Check for user-level agent instructions in ~/.config/AGENTS.md, ~/.config/shelley/AGENTS.md, and ~/.shelley/AGENTS.md
-	if home, err := os.UserHomeDir(); err == nil {
-		userAgentsFiles := []string{
-			filepath.Join(home, ".config", "AGENTS.md"),
-			filepath.Join(home, ".config", "shelley", "AGENTS.md"),
-			filepath.Join(home, ".shelley", "AGENTS.md"),
+	// Check for user-level agent instructions at the candidate user-level
+	// AGENTS.md locations (see userAgentsMdCandidates); nil if there is no
+	// home directory, in which case the loop simply doesn't run.
+	for _, f := range userAgentsMdCandidates() {
+		canonical := resolveAndNormalize(f)
+		if seenFiles[canonical] {
+			continue
 		}
-		for _, f := range userAgentsFiles {
-			canonical := resolveAndNormalize(f)
-			if seenFiles[canonical] {
+		if content, err := os.ReadFile(f); err == nil && len(content) > 0 {
+			contentKey := string(content)
+			if seenContents[contentKey] {
 				continue
 			}
-			if content, err := os.ReadFile(f); err == nil && len(content) > 0 {
-				contentKey := string(content)
-				if seenContents[contentKey] {
-					continue
-				}
-				info.InjectFiles = append(info.InjectFiles, f)
-				info.InjectFileContents[f] = contentKey
-				seenFiles[canonical] = true
-				seenContents[contentKey] = true
-			}
+			info.InjectFiles = append(info.InjectFiles, f)
+			info.InjectFileContents[f] = contentKey
+			seenFiles[canonical] = true
+			seenContents[contentKey] = true
 		}
 	}
 
@@ -938,10 +937,11 @@ func exeDevDefaultPortIn(env exeenv.Environment) int {
 }
 
 // collectSkills discovers skills from default directories, project .skills dirs,
-// the project tree, and built-in skills. See skills.ListAll for precedence rules.
-// Skills with a `when:` clause are filtered against env.
-func collectSkills(workingDir, gitRoot string, env skills.Env) []skills.Skill {
-	return skills.Filter(skills.ListAll(workingDir, gitRoot), env)
+// the project tree, integration-discovered skills, and built-in skills. See
+// skills.ListAllWithIntegrations for precedence rules. Skills with a `when:`
+// clause are filtered against env.
+func collectSkills(workingDir, gitRoot string, integrationSkills []skills.Skill, env skills.Env) []skills.Skill {
+	return skills.Filter(skills.ListAllWithIntegrations(workingDir, gitRoot, integrationSkills), env)
 }
 
 // resolveAndNormalize returns a canonical lowercase path for dedup.
@@ -964,18 +964,26 @@ type SubagentSystemPromptData struct {
 	WorkingDirectory string
 	GitInfo          *GitInfo
 	ShelleyDBPath    string
-	ConversationID   string // Parent conversation ID for querying user messages
+	ConversationID   string
 	SkillsXML        string // XML block for available skills
 	Skills           []skills.Skill
 }
 
 // GenerateSubagentSystemPrompt generates a minimal system prompt for subagent conversations.
 func GenerateSubagentSystemPrompt(workingDir, parentConversationID string) (string, error) {
-	prompt, _, err := generateSubagentSystemPrompt(workingDir, parentConversationID)
+	prompt, _, err := generateSubagentSystemPromptData(workingDir, parentConversationID, nil)
 	return prompt, err
 }
 
-func generateSubagentSystemPrompt(workingDir, parentConversationID string) (string, []skills.Skill, error) {
+func generateSubagentSystemPrompt(workingDir string) (string, []skills.Skill, error) {
+	return generateSubagentSystemPromptWithIntegrationSkills(workingDir, nil)
+}
+
+func generateSubagentSystemPromptWithIntegrationSkills(workingDir string, integrationSkills []skills.Skill) (string, []skills.Skill, error) {
+	return generateSubagentSystemPromptData(workingDir, "", integrationSkills)
+}
+
+func generateSubagentSystemPromptData(workingDir, parentConversationID string, integrationSkills []skills.Skill) (string, []skills.Skill, error) {
 	wd := workingDir
 	if wd == "" {
 		var err error
@@ -1002,7 +1010,7 @@ func generateSubagentSystemPrompt(workingDir, parentConversationID string) (stri
 	if gitInfo != nil {
 		gitRoot = gitInfo.Root
 	}
-	data.Skills = collectSkills(wd, gitRoot, skills.Env{ExeDev: isExeDev()})
+	data.Skills = collectSkills(wd, gitRoot, integrationSkills, skills.Env{ExeDev: isExeDev()})
 	data.SkillsXML = skills.ToPromptXML(data.Skills)
 
 	tmpl, err := template.New("subagent_system_prompt").Parse(subagentSystemPromptTemplate)

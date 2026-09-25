@@ -1,7 +1,6 @@
 package llmhttp
 
 import (
-	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -25,12 +24,19 @@ func requireIdleStall(t *testing.T, err error) llm.RequestErrorInfo {
 }
 
 func TestContextFunctions(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Test ConversationID
 	ctx = WithConversationID(ctx, "conv-123")
 	if got := ConversationIDFromContext(ctx); got != "conv-123" {
 		t.Errorf("ConversationIDFromContext() = %q, want %q", got, "conv-123")
+	}
+	if got := PromptCacheKeyFromContext(ctx); got != "conv-123" {
+		t.Errorf("PromptCacheKeyFromContext() = %q, want conversation fallback", got)
+	}
+	ctx = WithPromptCacheKey(ctx, "shared-prefix")
+	if got := PromptCacheKeyFromContext(ctx); got != "shared-prefix" {
+		t.Errorf("PromptCacheKeyFromContext() = %q, want explicit key", got)
 	}
 
 	// Test ModelID
@@ -46,7 +52,7 @@ func TestContextFunctions(t *testing.T) {
 	}
 
 	// Test empty context
-	emptyCtx := context.Background()
+	emptyCtx := t.Context()
 	if got := ConversationIDFromContext(emptyCtx); got != "" {
 		t.Errorf("ConversationIDFromContext(empty) = %q, want empty", got)
 	}
@@ -71,7 +77,7 @@ func TestTransportAddsHeaders(t *testing.T) {
 	client := NewClient(nil)
 
 	// Make a request with conversation ID in context
-	ctx := WithConversationID(context.Background(), "test-conv-id")
+	ctx := WithConversationID(t.Context(), "test-conv-id")
 	req, _ := http.NewRequestWithContext(ctx, "GET", server.URL, nil)
 
 	resp, err := client.Do(req)
@@ -94,40 +100,45 @@ func TestTransportAddsHeaders(t *testing.T) {
 	if got := receivedHeaders.Get("x-session-affinity"); got != "" {
 		t.Errorf("x-session-affinity = %q, want empty for non-fireworks", got)
 	}
+	if got := receivedHeaders.Get("session-id"); got != "" {
+		t.Errorf("session-id = %q, want empty for non-openai", got)
+	}
 }
 
-func TestTransportAddsSessionAffinityForFireworks(t *testing.T) {
-	// Create a test server that echoes request headers
+// TestTransportProviderCacheAffinityHeaders covers the per-provider prompt-cache
+// affinity headers: x-session-affinity for Fireworks, and session-id for the
+// ChatGPT Codex backend, which otherwise ignores the body's prompt_cache_key and
+// mints a fresh cache key per request.
+func TestTransportProviderCacheAffinityHeaders(t *testing.T) {
 	var receivedHeaders http.Header
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		receivedHeaders = r.Header.Clone()
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok"))
 	}))
 	defer server.Close()
 
-	client := NewClient(nil)
-
-	// Make a request with conversation ID and provider=fireworks in context
-	ctx := context.Background()
-	ctx = WithConversationID(ctx, "test-conv-id")
-	ctx = WithProvider(ctx, "fireworks")
-	req, _ := http.NewRequestWithContext(ctx, "GET", server.URL, nil)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		t.Fatalf("Request failed: %v", err)
+	tests := []struct {
+		provider, sessionAffinity, sessionID string
+	}{
+		{"fireworks", "shared-prefix", ""},
+		{"openai", "", "shared-prefix"},
+		{"anthropic", "", ""},
 	}
-	resp.Body.Close()
-
-	// Verify x-session-affinity header was added for fireworks
-	if got := receivedHeaders.Get("x-session-affinity"); got != "test-conv-id" {
-		t.Errorf("x-session-affinity = %q, want %q", got, "test-conv-id")
-	}
-
-	// Verify Shelley-Conversation-Id header was also added
-	if got := receivedHeaders.Get("Shelley-Conversation-Id"); got != "test-conv-id" {
-		t.Errorf("Shelley-Conversation-Id = %q, want %q", got, "test-conv-id")
+	for _, tt := range tests {
+		t.Run(tt.provider, func(t *testing.T) {
+			ctx := WithProvider(WithPromptCacheKey(t.Context(), "shared-prefix"), tt.provider)
+			req, _ := http.NewRequestWithContext(ctx, "POST", server.URL, nil)
+			resp, err := NewClient(nil).Do(req)
+			if err != nil {
+				t.Fatalf("Request failed: %v", err)
+			}
+			resp.Body.Close()
+			if got := receivedHeaders.Get("x-session-affinity"); got != tt.sessionAffinity {
+				t.Errorf("x-session-affinity = %q, want %q", got, tt.sessionAffinity)
+			}
+			if got := receivedHeaders.Get("session-id"); got != tt.sessionID {
+				t.Errorf("session-id = %q, want %q", got, tt.sessionID)
+			}
+		})
 	}
 }
 
@@ -285,7 +296,7 @@ func TestRequestTraceCapturesIDs(t *testing.T) {
 	defer server.Close()
 
 	client := NewClient(nil)
-	ctx, trace := llm.WithRequestTrace(context.Background())
+	ctx, trace := llm.WithRequestTrace(t.Context())
 	req, _ := http.NewRequestWithContext(ctx, "GET", server.URL, nil)
 	resp, err := client.Do(req)
 	if err != nil {
@@ -325,7 +336,7 @@ func TestRequestTraceHasShelleyIDOnStall(t *testing.T) {
 	defer close(release)
 
 	client := NewClientWithIdleTimeout(nil, 100*time.Millisecond)
-	ctx, trace := llm.WithRequestTrace(context.Background())
+	ctx, trace := llm.WithRequestTrace(t.Context())
 	req, _ := http.NewRequestWithContext(ctx, "GET", server.URL, nil)
 	resp, err := client.Do(req)
 	if err == nil {
@@ -349,7 +360,7 @@ func TestRequestTraceHonorsExistingID(t *testing.T) {
 	defer server.Close()
 
 	client := NewClient(nil)
-	ctx, trace := llm.WithRequestTrace(context.Background())
+	ctx, trace := llm.WithRequestTrace(t.Context())
 	req, _ := http.NewRequestWithContext(ctx, "GET", server.URL, nil)
 	req.Header.Set("Shelley-Request-Id", "preset-id")
 	resp, err := client.Do(req)
@@ -377,7 +388,7 @@ func TestRequestTraceCapturesIDOnErrorResponse(t *testing.T) {
 	defer server.Close()
 
 	client := NewClient(nil)
-	ctx, trace := llm.WithRequestTrace(context.Background())
+	ctx, trace := llm.WithRequestTrace(t.Context())
 	req, _ := http.NewRequestWithContext(ctx, "GET", server.URL, nil)
 	resp, err := client.Do(req)
 	if err != nil {
@@ -401,7 +412,7 @@ func TestRequestTraceCapturesIDWhenIdleDisabled(t *testing.T) {
 	defer server.Close()
 
 	client := NewClientWithIdleTimeout(nil, 0)
-	ctx, trace := llm.WithRequestTrace(context.Background())
+	ctx, trace := llm.WithRequestTrace(t.Context())
 	req, _ := http.NewRequestWithContext(ctx, "GET", server.URL, nil)
 	resp, err := client.Do(req)
 	if err != nil {

@@ -36,6 +36,7 @@
       :plain-text="collapsedPlainText"
       body-class="tool-details"
     >
+      <RunningToolTime v-if="isRunning && isExpanded" :start-time="toolInvokedAt" />
       <div class="tool-section">
         <div class="tool-label">Action:</div>
         <pre class="tool-code">{{ action || "(none)" }}</pre>
@@ -84,7 +85,9 @@ import type { LLMContent } from "../../../types";
 import { useToolExpanded } from "../../composables/toolDetail";
 import ToolAccessibleBody from "./ToolAccessibleBody.vue";
 import ToolChevron from "./ToolChevron.vue";
+import RunningToolTime from "./RunningToolTime.vue";
 import ToolStatusIcon from "./ToolStatusIcon.vue";
+import { toolOutcomeSuffix } from "../../utils/toolStatus";
 
 interface ProfileInput {
   action?: string;
@@ -94,6 +97,7 @@ interface ProfileInput {
 const props = defineProps<{
   toolInput?: unknown;
   isRunning?: boolean;
+  toolInvokedAt?: string | null;
   toolResult?: LLMContent[];
   hasError?: boolean;
   executionTime?: string;
@@ -132,10 +136,12 @@ const speedscopeUrl = computed(() =>
     : "",
 );
 const outputLabel = computed(() => `Browser profile: ${summary.value}`);
-const toggleLabel = computed(() =>
-  isExpanded.value
-    ? `Collapse browser profile: ${summary.value}`
-    : `Expand browser profile: ${summary.value}`,
+const toggleLabel = computed(
+  () =>
+    (isExpanded.value
+      ? `Collapse browser profile: ${summary.value}`
+      : `Expand browser profile: ${summary.value}`) +
+    toolOutcomeSuffix(isComplete.value, props.hasError),
 );
 const collapsedPlainText = computed(() => {
   const parts = [`Action:\n${action.value || "(none)"}`];

@@ -240,6 +240,7 @@ import CloseIcon from "./terminalIcons/CloseIcon.vue";
 import ChevronUpIcon from "./terminalIcons/ChevronUpIcon.vue";
 import ChevronDownIcon from "./terminalIcons/ChevronDownIcon.vue";
 import { announceA11y } from "../../services/a11yAnnouncer";
+import { isMac } from "../../utils/menuShortcuts";
 import PinIcon from "./terminalIcons/PinIcon.vue";
 
 // Re-export EphemeralTerminal so importers can keep importing it from this
@@ -715,6 +716,8 @@ function onTabKeydown(e: KeyboardEvent, id: string, idx: number) {
   }
 }
 
+const TERMINAL_MINIMIZE_CODE = isMac ? "KeyM" : "Backquote";
+
 // Global chords while any terminal exists. Shift+Ctrl avoids clobbering shell
 // readline (Ctrl+W = kill-word, Ctrl+[ = esc, etc.).
 function onPanelShortcut(e: KeyboardEvent) {
@@ -722,8 +725,9 @@ function onPanelShortcut(e: KeyboardEvent) {
   const tabs = visible.value;
   if (tabs.length === 0) return;
   if (e.type !== "keydown") return;
-  // Need Ctrl (or Meta on Mac for consistency we accept both) + Shift.
-  if (!e.shiftKey || !(e.ctrlKey || e.metaKey) || e.altKey) return;
+  // Literal Control+Shift only: Cmd+Shift chords belong to the browser and the
+  // app menu (e.g. Cmd+Shift+M records audio on Mac).
+  if (!e.shiftKey || !e.ctrlKey || e.metaKey || e.altKey) return;
 
   const key = e.key;
   // Next / previous tab
@@ -746,8 +750,8 @@ function onPanelShortcut(e: KeyboardEvent) {
     handleCloseActive();
     return;
   }
-  // Minimize / expand
-  if (key === "m" || key === "M") {
+  // Minimize / expand. Off-Mac, Ctrl+Shift+M records audio, so use Ctrl+Shift+`.
+  if (e.code === TERMINAL_MINIMIZE_CODE) {
     e.preventDefault();
     e.stopPropagation();
     toggleMinimized();

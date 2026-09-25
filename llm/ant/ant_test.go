@@ -596,6 +596,37 @@ func TestFromLLMToolChoice(t *testing.T) {
 	}
 }
 
+func TestAdaptiveThinkingOmitsForcedToolChoice(t *testing.T) {
+	tests := []struct {
+		name       string
+		level      llm.ThinkingLevel
+		choice     llm.ToolChoice
+		wantType   string
+		wantChoice bool
+	}{
+		{name: "auto remains", level: llm.ThinkingLevelMedium, choice: llm.ToolChoice{Type: llm.ToolChoiceTypeAuto}, wantType: "auto", wantChoice: true},
+		{name: "any omitted", level: llm.ThinkingLevelMedium, choice: llm.ToolChoice{Type: llm.ToolChoiceTypeAny}},
+		{name: "specific tool omitted", level: llm.ThinkingLevelMedium, choice: llm.ToolChoice{Type: llm.ToolChoiceTypeTool, Name: "bash"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := (&Service{Model: Claude55Opus, ThinkingLevel: tt.level}).fromLLMRequest(&llm.Request{
+				Messages:   []llm.Message{llm.UserStringMessage("hi")},
+				ToolChoice: &tt.choice,
+			})
+			if !tt.wantChoice {
+				if got.ToolChoice != nil {
+					t.Fatalf("ToolChoice = %+v, want nil", got.ToolChoice)
+				}
+				return
+			}
+			if got.ToolChoice == nil || got.ToolChoice.Type != tt.wantType {
+				t.Fatalf("ToolChoice = %+v, want type %q", got.ToolChoice, tt.wantType)
+			}
+		})
+	}
+}
+
 func TestFromLLMTool(t *testing.T) {
 	tool := &llm.Tool{
 		Name:        "bash",
@@ -718,11 +749,11 @@ func abs(x float64) float64 {
 	return x
 }
 
-func TestFromLLMRequestStripsOldThinkingBlocks(t *testing.T) {
+func TestFromLLMRequestPreservesOldThinkingBlocks(t *testing.T) {
 	s := &Service{Model: Claude46Opus, ThinkingLevel: llm.ThinkingLevelMedium}
 
 	// Simulate a conversation with multiple assistant turns containing thinking blocks.
-	// Only the last assistant turn's thinking should be preserved.
+	// Every valid signed or redacted block should be preserved.
 	req := s.fromLLMRequest(&llm.Request{
 		Messages: []llm.Message{
 			{Role: llm.MessageRoleUser, Content: []llm.Content{
@@ -759,19 +790,14 @@ func TestFromLLMRequestStripsOldThinkingBlocks(t *testing.T) {
 		t.Fatalf("expected 7 messages, got %d", len(req.Messages))
 	}
 
-	// First assistant (index 1): thinking should be stripped, only text remains
 	firstAssistant := req.Messages[1]
-	if len(firstAssistant.Content) != 1 {
-		t.Errorf("first assistant: expected 1 content block, got %d", len(firstAssistant.Content))
+	if len(firstAssistant.Content) != 2 || firstAssistant.Content[0].Signature != "old-sig-1" {
+		t.Fatal("first assistant thinking was not preserved")
 	}
-	if firstAssistant.Content[0].Type != "text" {
-		t.Errorf("first assistant content[0]: expected text, got %s", firstAssistant.Content[0].Type)
-	}
-
-	// Second assistant (index 3): thinking + redacted_thinking stripped, only text remains
 	secondAssistant := req.Messages[3]
-	if len(secondAssistant.Content) != 1 {
-		t.Errorf("second assistant: expected 1 content block, got %d", len(secondAssistant.Content))
+	if len(secondAssistant.Content) != 3 || secondAssistant.Content[0].Signature != "old-sig-2" ||
+		secondAssistant.Content[1].Type != "redacted_thinking" || secondAssistant.Content[1].Data != "redacted" {
+		t.Fatal("older signed/redacted thinking was not preserved")
 	}
 
 	// Last assistant (index 5): thinking preserved
@@ -899,19 +925,29 @@ func TestMaxOutputTokensCapping(t *testing.T) {
 	if got4.MaxTokens != 128000 {
 		t.Errorf("Sonnet 4.6 capped: MaxTokens = %d, want 128000", got4.MaxTokens)
 	}
-	// Fable 5.1 has a 128k limit and uses adaptive thinking.
-	s5 := &Service{Model: ClaudeFable51, MaxTokens: 200000, ThinkingLevel: llm.ThinkingLevelMedium}
+	// Opus 5.5 has a 128k limit and uses adaptive thinking.
+	s5 := &Service{Model: Claude55Opus, MaxTokens: 200000, ThinkingLevel: llm.ThinkingLevelMedium}
 	got5 := s5.fromLLMRequest(simpleReq)
 	if got5.MaxTokens != 128000 {
-		t.Errorf("Fable 5.1 capped: MaxTokens = %d, want 128000", got5.MaxTokens)
+		t.Errorf("Opus 5.5 capped: MaxTokens = %d, want 128000", got5.MaxTokens)
 	}
 	if got5.Thinking == nil || got5.Thinking.Type != "adaptive" {
-		t.Errorf("Fable 5.1 thinking = %+v, want adaptive", got5.Thinking)
+		t.Errorf("Opus 5.5 thinking = %+v, want adaptive", got5.Thinking)
+	}
+
+	// Fable 5.1 has a 128k limit and uses adaptive thinking.
+	s6 := &Service{Model: ClaudeFable51, MaxTokens: 200000, ThinkingLevel: llm.ThinkingLevelMedium}
+	got6 := s6.fromLLMRequest(simpleReq)
+	if got6.MaxTokens != 128000 {
+		t.Errorf("Fable 5.1 capped: MaxTokens = %d, want 128000", got6.MaxTokens)
+	}
+	if got6.Thinking == nil || got6.Thinking.Type != "adaptive" {
+		t.Errorf("Fable 5.1 thinking = %+v, want adaptive", got6.Thinking)
 	}
 
 	// The embedded snapshot, not a handwritten Claude table, sets Sonnet 5.
-	s6 := &Service{Model: Claude5Sonnet, MaxTokens: 200000}
-	if got := s6.fromLLMRequest(simpleReq); got.MaxTokens != 128000 {
+	s7 := &Service{Model: Claude5Sonnet, MaxTokens: 200000}
+	if got := s7.fromLLMRequest(simpleReq); got.MaxTokens != 128000 {
 		t.Errorf("Sonnet 5: MaxTokens = %d, want 128000", got.MaxTokens)
 	}
 }
@@ -946,8 +982,8 @@ func TestRequestMaxTokensCeiling(t *testing.T) {
 			if got := s.fromLLMRequest(simpleReq); got.MaxTokens != tt.want {
 				t.Errorf("fromLLMRequest MaxTokens = %d, want %d", got.MaxTokens, tt.want)
 			}
-			if got := s.fromLLMRequestStrippingAllThinking(simpleReq); got.MaxTokens != tt.want {
-				t.Errorf("fromLLMRequestStrippingAllThinking MaxTokens = %d, want %d", got.MaxTokens, tt.want)
+			if got := s.buildRequest(simpleReq, true); got.MaxTokens != tt.want {
+				t.Errorf("buildRequest MaxTokens = %d, want %d", got.MaxTokens, tt.want)
 			}
 		})
 	}
@@ -1092,7 +1128,7 @@ func TestDo(t *testing.T) {
 	}
 
 	// Call Do
-	resp, err := s.Do(context.Background(), req)
+	resp, err := s.Do(t.Context(), req)
 	if err != nil {
 		t.Fatalf("Do() error = %v, want nil", err)
 	}
@@ -1808,7 +1844,7 @@ func TestDoRetriesOnInvalidThinkingSignature(t *testing.T) {
 		},
 	}
 
-	resp, err := s.Do(context.Background(), req)
+	resp, err := s.Do(t.Context(), req)
 	if err != nil {
 		t.Fatalf("Do() error = %v, want nil", err)
 	}
@@ -1862,7 +1898,7 @@ func TestDoClientError(t *testing.T) {
 	}
 
 	// Call Do - should fail immediately
-	resp, err := s.Do(context.Background(), req)
+	resp, err := s.Do(t.Context(), req)
 	if err == nil {
 		t.Fatalf("Do() error = nil, want error")
 	}
@@ -1960,7 +1996,7 @@ func TestDoStartTimeEndTime(t *testing.T) {
 	}
 
 	// Call Do
-	resp, err := s.Do(context.Background(), req)
+	resp, err := s.Do(t.Context(), req)
 	if err != nil {
 		t.Fatalf("Do() error = %v, want nil", err)
 	}
@@ -2027,7 +2063,7 @@ func TestLiveAnthropicModels(t *testing.T) {
 				ThinkingLevel: llm.ThinkingLevelMedium,
 			}
 
-			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
 			defer cancel()
 
 			resp, err := svc.Do(ctx, req)
@@ -2225,7 +2261,7 @@ func TestDoRetriesOnTruncatedStream(t *testing.T) {
 		}},
 	}
 
-	resp, err := s.Do(context.Background(), req)
+	resp, err := s.Do(t.Context(), req)
 	if err != nil {
 		t.Fatalf("Do() error = %v, want nil (expected retry to succeed)", err)
 	}
@@ -2262,7 +2298,7 @@ func TestDoStopsRetryingOnContextCancel(t *testing.T) {
 	}
 
 	// Cancel context after first attempt completes
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
 	defer cancel()
 
 	start := time.Now()
@@ -2311,7 +2347,7 @@ func TestDoFailsAfterMaxRetriesOnTruncatedStream(t *testing.T) {
 		}},
 	}
 
-	_, err := s.Do(context.Background(), req)
+	_, err := s.Do(t.Context(), req)
 	if err == nil {
 		t.Fatal("Do() expected error after max retries on truncated stream")
 	}
@@ -2936,6 +2972,7 @@ func TestUseAdaptiveThinking(t *testing.T) {
 		model string
 		want  bool
 	}{
+		{Claude55Opus, true},
 		{Claude48Opus, true},
 		{Claude47Opus, true},
 		{Claude5Opus, true},
@@ -2981,6 +3018,7 @@ func TestSupportedReasoningLevels(t *testing.T) {
 		model string
 		want  string
 	}{
+		{Claude55Opus, "low,medium,high,xhigh,max"},
 		{Claude48Opus, "low,medium,high,xhigh,max"},
 		{ClaudeFable51, "low,medium,high,xhigh,max"},
 	}
@@ -3010,6 +3048,7 @@ func TestFromLLMRequestThinkingLevels(t *testing.T) {
 		wantEffort      string
 		wantBudgetGreat int // wantBudgetGreat: BudgetTokens must equal this when set
 	}{
+		{name: "adaptive opus 5.5 default medium", model: Claude55Opus, svcLevel: llm.ThinkingLevelMedium, wantType: "adaptive", wantEffort: "medium"},
 		{name: "adaptive default medium", model: Claude47Opus, svcLevel: llm.ThinkingLevelMedium, wantType: "adaptive", wantEffort: "medium"},
 		{name: "adaptive fable 5.1 default medium", model: ClaudeFable51, svcLevel: llm.ThinkingLevelMedium, wantType: "adaptive", wantEffort: "medium"},
 		{name: "adaptive req xhigh", model: Claude47Opus, svcLevel: llm.ThinkingLevelMedium, reqLevel: llm.ThinkingLevelXHigh, wantType: "adaptive", wantEffort: "xhigh"},
@@ -3279,7 +3318,7 @@ func TestServerToolBlocksLiveAnthropic(t *testing.T) {
 				{Role: llm.MessageRoleUser, Content: []llm.Content{text("Actually, what's 2+2?")}},
 			},
 		}
-		resp, err := s.Do(context.Background(), ir)
+		resp, err := s.Do(t.Context(), ir)
 		if err != nil {
 			t.Fatalf("sanitized request rejected: %v", err)
 		}
@@ -3315,7 +3354,7 @@ func TestServerToolBlocksLiveAnthropic(t *testing.T) {
 				{Role: llm.MessageRoleUser, Content: []llm.Content{text("what's a hashline anchor?")}},
 			},
 		}
-		resp, err := s.Do(context.Background(), ir)
+		resp, err := s.Do(t.Context(), ir)
 		if err != nil {
 			t.Fatalf("split history rejected after sanitize: %v", err)
 		}
@@ -3338,7 +3377,7 @@ func postRawAnthropic(t *testing.T, apiKey string, req *request) error {
 	if err != nil {
 		t.Fatal(err)
 	}
-	httpReq, err := http.NewRequestWithContext(context.Background(), "POST", DefaultURL, strings.NewReader(string(payload)))
+	httpReq, err := http.NewRequestWithContext(t.Context(), "POST", DefaultURL, strings.NewReader(string(payload)))
 	if err != nil {
 		t.Fatal(err)
 	}

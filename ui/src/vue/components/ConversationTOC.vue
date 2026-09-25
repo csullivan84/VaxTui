@@ -1,4 +1,4 @@
-<!-- Vue port of components/ConversationTOC.tsx. Floating table-of-contents
+<!-- Vue port of components/ConversationTOC.tsx. Status-row table-of-contents
      button + popover, backed by PrimeVue Popover (outside-click dismissal,
      Escape, viewport-aware positioning come for free — the manual
      getBoundingClientRect math and document listeners are gone). Preserves the
@@ -84,6 +84,7 @@ import { computed, inject, nextTick, onUnmounted, ref, watch } from "vue";
 import Popover from "primevue/popover";
 import { isCompactionCarried, type Message, type LLMMessage, type LLMContent } from "../../types";
 import { perfCount, perfWrap } from "../../utils/perf";
+import { replaceLocationFragment } from "../../utils/locationFragment";
 import { chunkMountKey } from "./chunkMount";
 
 interface TOCThumbnail {
@@ -682,11 +683,7 @@ function syncFragmentNavigation(): FragmentNavigation {
 
 function replaceFragment(fragment: string) {
   cancelFragmentNavigation();
-  history.replaceState(
-    null,
-    "",
-    `${window.location.pathname}${window.location.search}${fragment ? `#${fragment}` : ""}`,
-  );
+  replaceLocationFragment(fragment);
   // replaceState does not emit hashchange; the direct TOC jump already landed.
   syncFragmentNavigation().resolved = true;
 }

@@ -37,13 +37,27 @@
           </div>
           <div v-else class="conversation-title">
             <em v-if="!conversation.slug">untitled</em>
-            <template v-else>{{ conversation.slug }}</template>
+            <template v-else>
+              <template
+                v-for="(seg, i) in highlightSearchMatches(conversation.slug, ctx.searchText.value)"
+                :key="i"
+              >
+                <mark v-if="seg.mark" class="conversation-snippet-mark">{{ seg.text }}</mark>
+                <template v-else>{{ seg.text }}</template>
+              </template>
+            </template>
           </div>
         </div>
         <span
           v-if="convState.working"
           class="working-indicator drawer-working-indicator"
           :title="ctx.t('agentIsWorking')"
+        />
+        <span
+          v-else-if="convState.turn_interrupted && !conversation.parent_conversation_id"
+          class="drawer-interrupted-indicator"
+          title="Interrupted — open to continue"
+          aria-hidden="true"
         />
         <div
           v-if="!isDraft && !itemArchived"
@@ -387,6 +401,7 @@ import type { MenuItem } from "primevue/menuitem";
 import OverflowDotsIcon from "./OverflowDotsIcon.vue";
 import type { Conversation, ConversationWithState } from "../../types";
 import { isImeComposing } from "../../utils/imeComposing";
+import { highlightSearchMatches } from "../../utils/searchHighlight";
 import {
   DrawerCtxKey,
   parseTags,
@@ -537,7 +552,12 @@ const conversationAriaLabel = computed(() => {
   const slug = isDraft.value
     ? ctx.draftLabels.value[props.conversation.conversation_id] || "draft"
     : props.conversation.slug || "untitled";
-  return `${slug}, ${convState.value.working ? "working" : "idle"}${
+  const status = convState.value.working
+    ? "working"
+    : convState.value.turn_interrupted && !props.conversation.parent_conversation_id
+      ? "interrupted"
+      : "idle";
+  return `${slug}, ${status}${
     isNew.value ? ", unread" : ""
   }, model ${props.conversation.model || "unknown"}`;
 });

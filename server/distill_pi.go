@@ -262,18 +262,25 @@ func extractPiFileOps(messages []llm.Message) (readFiles, modifiedFiles []string
 			if err := json.Unmarshal(c.ToolInput, &args); err != nil {
 				continue
 			}
-			path := jsonStringField(args, "path")
-			if path == "" {
-				continue
-			}
-			// Shelley tool names that carry a "path" argument. There is no
-			// plain "read" tool (file reads go through bash); "patch" is the
-			// only file-mutating tool with a path.
 			switch c.ToolName {
 			case "read_image":
-				read[path] = true
+				if path := jsonStringField(args, "path"); path != "" {
+					read[path] = true
+				}
 			case "patch":
-				modified[path] = true
+				if path := jsonStringField(args, "path"); path != "" {
+					modified[path] = true
+				}
+			case "apply_patch":
+				for _, line := range strings.Split(jsonStringField(args, "input"), "\n") {
+					line = strings.TrimSuffix(line, "\r")
+					for _, prefix := range []string{"*** Add File: ", "*** Update File: ", "*** Move to: ", "*** Delete File: "} {
+						if path, ok := strings.CutPrefix(line, prefix); ok && path != "" {
+							modified[path] = true
+							break
+						}
+					}
+				}
 			}
 		}
 	}
@@ -484,8 +491,10 @@ func (s *Server) generatePiSummary(ctx context.Context, svc llm.Service, older [
 // bumped before summarization runs, so a failure would otherwise leave the
 // conversation on an EMPTY new generation — silently wiping its working
 // context and making forks of it empty. Rolling back keeps the old (intact)
-// generation active; the error message (inserted after the rollback, so it
-// lands in the restored generation) tells the user compaction failed. The
+// generation active; the interrupted-turn bit is restored with it so a failed
+// compaction cannot discard the user's Continue affordance. The error message
+// (inserted after the rollback, so it lands in the restored generation) tells
+// the user compaction failed. The
 // already-written new-generation rows (the "Distilling…" status and a fresh
 // system prompt) are left in place: messages are append-only, and they are
 // invisible to context once current_generation points back at the old
@@ -497,10 +506,11 @@ func (s *Server) generatePiSummary(ctx context.Context, svc llm.Service, older [
 // abandoned generation's rows are not deleted — a later retry re-increments
 // into the same generation number and Hydrate's hasSystemMessage guard
 // prevents a duplicate system prompt.
-func (s *Server) rollbackCompactionFailure(ctx context.Context, logger *slog.Logger, conversationID, errMsg string, sourceGeneration int64) {
+func (s *Server) rollbackCompactionFailure(ctx context.Context, logger *slog.Logger, conversationID, errMsg string, sourceGeneration int64, sourceTurnInterrupted bool) {
 	if err := s.db.QueriesTx(ctx, func(q *generated.Queries) error {
 		_, err := q.SetConversationGeneration(ctx, generated.SetConversationGenerationParams{
 			CurrentGeneration: sourceGeneration,
+			TurnInterrupted:   sourceTurnInterrupted,
 			ConversationID:    conversationID,
 		})
 		return err
@@ -522,7 +532,7 @@ func (s *Server) rollbackCompactionFailure(ctx context.Context, logger *slog.Log
 // performPiDistillation summarizes older history and copies recent messages
 // verbatim into the conversation's (already-incremented) new generation. It is
 // the pi-algorithm counterpart to performDistillation.
-func (s *Server) performPiDistillation(ctx context.Context, conversationID, sourceSlug, modelID, instructions string, sourceGeneration int64, messages []generated.Message) string {
+func (s *Server) performPiDistillation(ctx context.Context, conversationID, sourceSlug, modelID, instructions string, sourceGeneration int64, sourceTurnInterrupted bool, messages []generated.Message) string {
 	logger := s.logger.With("conversationID", conversationID, "sourceSlug", sourceSlug, "method", "compact")
 
 	// Tag the ctx so the summarization calls' usage is collected (and so the
@@ -538,7 +548,7 @@ func (s *Server) performPiDistillation(ctx context.Context, conversationID, sour
 		logger.Error("Failed to get LLM service for pi distillation", "model", modelID, "error", err)
 		// The generation was already incremented; roll back so the old
 		// (intact) generation stays active (see rollbackCompactionFailure).
-		s.rollbackCompactionFailure(ctx, logger, conversationID, fmt.Sprintf("Compaction failed: model %q unavailable: %v", modelID, err), sourceGeneration)
+		s.rollbackCompactionFailure(ctx, logger, conversationID, fmt.Sprintf("Compaction failed: model %q unavailable: %v", modelID, err), sourceGeneration, sourceTurnInterrupted)
 		return ""
 	}
 
@@ -556,6 +566,16 @@ func (s *Server) performPiDistillation(ctx context.Context, conversationID, sour
 	llmMsgs := make([]llm.Message, len(ctxMsgs))
 	for i, entry := range ctxMsgs {
 		llmMsgs[i] = entry.llm
+		if entry.source.Type == string(db.MessageTypeUser) && entry.source.UserData != nil {
+			wrapped, wrapErr := messageWithSenderProvenance(llmMsgs[i], []byte(*entry.source.UserData))
+			if wrapErr != nil {
+				errMsg := fmt.Sprintf("Compaction failed: invalid sender provenance on message %s: %v", entry.source.MessageID, wrapErr)
+				logger.Error("failed to apply sender provenance for compaction cut", "messageID", entry.source.MessageID, "error", wrapErr)
+				s.rollbackCompactionFailure(ctx, logger, conversationID, errMsg, sourceGeneration, sourceTurnInterrupted)
+				return ""
+			}
+			llmMsgs[i] = wrapped
+		}
 	}
 	cut := findPiCutPoint(llmMsgs, keepRecentTokens)
 	older := ctxMsgs[:cut]
@@ -568,6 +588,16 @@ func (s *Server) performPiDistillation(ctx context.Context, conversationID, sour
 	olderMsgs := make([]llm.Message, len(older))
 	for i, entry := range older {
 		olderMsgs[i] = resolvePiSummarizationText(logger, entry)
+		if entry.source.Type == string(db.MessageTypeUser) && entry.source.UserData != nil {
+			wrapped, wrapErr := messageWithSenderProvenance(olderMsgs[i], []byte(*entry.source.UserData))
+			if wrapErr != nil {
+				errMsg := fmt.Sprintf("Compaction failed: invalid sender provenance on message %s: %v", entry.source.MessageID, wrapErr)
+				logger.Error("failed to apply sender provenance for compaction summary", "messageID", entry.source.MessageID, "error", wrapErr)
+				s.rollbackCompactionFailure(ctx, logger, conversationID, errMsg, sourceGeneration, sourceTurnInterrupted)
+				return ""
+			}
+			olderMsgs[i] = wrapped
+		}
 	}
 
 	var summary string
@@ -604,7 +634,7 @@ func (s *Server) performPiDistillation(ctx context.Context, conversationID, sour
 			// the conversation's context (and any fork of it) would be wiped.
 			// Roll back to the old generation so the failure is loud but
 			// harmless.
-			s.rollbackCompactionFailure(ctx, logger, conversationID, fmt.Sprintf("Compaction failed: %v", err), sourceGeneration)
+			s.rollbackCompactionFailure(ctx, logger, conversationID, fmt.Sprintf("Compaction failed: %v", err), sourceGeneration, sourceTurnInterrupted)
 			return ""
 		}
 	}
@@ -692,7 +722,7 @@ func (s *Server) performPiDistillation(ctx context.Context, conversationID, sour
 	if rerr := s.recordMessages(ctx, conversationID, batch); rerr != nil {
 		logger.Error("Failed to record compaction messages", "error", rerr)
 		// Same empty-new-generation hazard as a summarization failure.
-		s.rollbackCompactionFailure(ctx, logger, conversationID, fmt.Sprintf("Compaction failed: could not record messages: %v", rerr), sourceGeneration)
+		s.rollbackCompactionFailure(ctx, logger, conversationID, fmt.Sprintf("Compaction failed: could not record messages: %v", rerr), sourceGeneration, sourceTurnInterrupted)
 		return ""
 	}
 	if !foldedStatus {

@@ -30,7 +30,10 @@
   />
 
   <!-- Loading gate -->
-  <div v-else-if="workspaceLoading || (loading && conversations.length === 0)" class="loading-container">
+  <div
+    v-else-if="workspaceLoading || (loading && conversations.length === 0)"
+    class="loading-container"
+  >
     <div class="loading-content">
       <div class="spinner" style="margin: 0 auto 1rem" />
       <p class="text-secondary">{{ t("loading") }}</p>
@@ -92,6 +95,7 @@
           @open-diff="diffViewerTrigger++"
         >
           <ChatInterface
+            ref="chatInterfaceRef"
             :conversation-id="currentConversationId"
             :workspace-id="currentWorkspace?.id"
             :stream-status="streamStatus"
@@ -158,6 +162,9 @@
         :current-conversation="currentConversation || null"
         :cwd="workspaceCwd"
         :has-cwd="commandPaletteHasCwd"
+        :can-record-audio="chatInterfaceRef?.canRecordAudio ?? false"
+        :can-record-screen="chatInterfaceRef?.canRecordScreen ?? false"
+        @record="beginRecording"
         @close="onCommandPaletteClose"
         @new-conversation="
           () => {
@@ -283,6 +290,9 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, provide, ref, watch } from "vue";
 import ChatInterface from "./components/ChatInterface.vue";
+import type { RecordingMode } from "./components/recordingDestination";
+import { isImeComposing } from "../utils/imeComposing";
+import { comboMatches, isMac, MENU_COMBOS } from "../utils/menuShortcuts";
 import ConversationDrawer from "./components/ConversationDrawer.vue";
 import CommandPalette from "./components/CommandPalette.vue";
 import HerdsPage from "./components/HerdsPage.vue";
@@ -384,7 +394,11 @@ function navigateHerd(id: string | null) {
 function leaveHerds() {
   herdsRouteActive.value = false;
   herdsRouteId.value = null;
-  window.history.pushState({}, "", currentWorkspace.value ? `/${currentWorkspace.value.slug}` : "/");
+  window.history.pushState(
+    {},
+    "",
+    currentWorkspace.value ? `/${currentWorkspace.value.slug}` : "/",
+  );
   updatePageTitle(currentConversation.value);
 }
 
@@ -458,7 +472,7 @@ const terminalTrigger = ref(0);
 const modelsModalOpen = ref(false);
 const notificationsModalOpen = ref(false);
 const featureFlagsModalOpen = ref(false);
-// Fuzzy file finder (Cmd/Ctrl+Shift+P) + the generic editor it opens.
+// Fuzzy file finder (Cmd/Ctrl+P) + the generic editor it opens.
 const fileFinderOpen = ref(false);
 const workspaceOpenRequest = ref<{ path: string; nonce: number } | null>(null);
 const workspacePane = ref<"chat" | "files" | "workbench">("chat");
@@ -565,8 +579,7 @@ const currentConversation = computed<ConversationWithState | undefined>(() => {
 // supersedes workspace placement until the terminal is detached from the herd.
 const conversationTerminals = computed(() =>
   ephemeralTerminals.value.filter(
-    (terminal) =>
-      !terminal.herdId && terminal.workspaceId === currentWorkspace.value?.id,
+    (terminal) => !terminal.herdId && terminal.workspaceId === currentWorkspace.value?.id,
   ),
 );
 
@@ -908,7 +921,9 @@ function setCurrentWorkspace(workspace: Workspace, navigate: boolean) {
   localStorage.setItem("shelley_selected_workspace", workspace.slug);
   const index = workspaces.value.findIndex((item) => item.id === workspace.id);
   if (index >= 0) {
-    workspaces.value = workspaces.value.map((item) => (item.id === workspace.id ? workspace : item));
+    workspaces.value = workspaces.value.map((item) =>
+      item.id === workspace.id ? workspace : item,
+    );
   } else {
     workspaces.value = [workspace, ...workspaces.value];
   }
@@ -1008,6 +1023,14 @@ async function handleDistillNewGeneration(
   }
 }
 
+const chatInterfaceRef = ref<InstanceType<typeof ChatInterface> | null>(null);
+function beginRecording(mode: RecordingMode) {
+  // The palette can open over another modal; don't hide a live recorder behind it.
+  if (document.querySelector('[role="dialog"], [role="alertdialog"]')) return;
+  commandPaletteOpen.value = false;
+  void chatInterfaceRef.value?.beginRecording(mode);
+}
+
 // ---- global keyboard shortcuts (incl. Ctrl+M chord) ----
 let chordPending = false;
 let chordTimer: number | null = null;
@@ -1018,9 +1041,21 @@ function clearChord() {
     chordTimer = null;
   }
 }
-const isMac = navigator.platform.toUpperCase().includes("MAC");
 
 function handleKeyDown(e: KeyboardEvent) {
+  const recordingMode = comboMatches(e, MENU_COMBOS.recordAudio)
+    ? "microphone"
+    : comboMatches(e, MENU_COMBOS.recordScreen)
+      ? "screen"
+      : null;
+  if (recordingMode) {
+    if (e.defaultPrevented || isImeComposing(e)) return;
+    e.preventDefault();
+    clearChord();
+    if (!e.repeat) beginRecording(recordingMode);
+    return;
+  }
+
   if (chordPending) {
     clearChord();
     if (e.key === "n" || e.key === "N") {
@@ -1052,9 +1087,9 @@ function handleKeyDown(e: KeyboardEvent) {
     return;
   }
 
-  // Cmd/Ctrl+Shift+P opens the fuzzy file finder. `e.key` is "P" (uppercase)
-  // when Shift is held; also accept "p" defensively across layouts.
-  if (modifierPressed && e.shiftKey && (e.key === "p" || e.key === "P")) {
+  // Cmd/Ctrl+P opens the fuzzy file finder (overrides the browser's print
+  // shortcut, which all major browsers let us preventDefault).
+  if (comboMatches(e, MENU_COMBOS.editFile)) {
     e.preventDefault();
     fileFinderOpen.value = true;
     return;

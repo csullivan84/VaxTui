@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"io"
@@ -13,7 +12,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"shelley.exe.dev/committour"
@@ -46,20 +44,8 @@ type GitFileInfo struct {
 	IsGenerated bool   `json:"isGenerated"`
 }
 
-func validCommitHash(hash string) bool {
-	if len(hash) < 4 || len(hash) > 64 {
-		return false
-	}
-	for _, c := range hash {
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
-			return false
-		}
-	}
-	return true
-}
-
 func resolveCommit(ctx context.Context, gitRoot, hash string) (string, error) {
-	if !validCommitHash(hash) {
+	if !validCommitTourHash(hash) {
 		return "", errors.New("invalid commit hash")
 	}
 	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", hash+"^{commit}")
@@ -69,48 +55,6 @@ func resolveCommit(ctx context.Context, gitRoot, hash string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
-}
-
-type verifiedTourCacheEntry struct {
-	noteHash [sha256.Size]byte
-	resolved json.RawMessage
-}
-
-var verifiedTourCache = struct {
-	sync.Mutex
-	entries map[string]verifiedTourCacheEntry
-}{entries: make(map[string]verifiedTourCacheEntry)}
-
-func cachedVerifiedTour(gitRoot, fullHash string, note []byte) (json.RawMessage, error) {
-	key := gitRoot + "\x00" + fullHash
-	noteHash := sha256.Sum256(note)
-	verifiedTourCache.Lock()
-	entry, ok := verifiedTourCache.entries[key]
-	verifiedTourCache.Unlock()
-	if ok && entry.noteHash == noteHash {
-		return entry.resolved, nil
-	}
-	tour, err := committour.ParseTour(note)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := committour.Verify(gitRoot, fullHash, tour); err != nil {
-		return nil, err
-	}
-	resolved, err := json.Marshal(tour)
-	if err != nil {
-		return nil, err
-	}
-	verifiedTourCache.Lock()
-	if len(verifiedTourCache.entries) >= 256 {
-		for oldKey := range verifiedTourCache.entries {
-			delete(verifiedTourCache.entries, oldKey)
-			break
-		}
-	}
-	verifiedTourCache.entries[key] = verifiedTourCacheEntry{noteHash: noteHash, resolved: resolved}
-	verifiedTourCache.Unlock()
-	return resolved, nil
 }
 
 // GitFileDiff represents the content of a file diff
@@ -442,24 +386,13 @@ func (s *Server) handleGitTour(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "cwd and hash are required", http.StatusBadRequest)
 		return
 	}
-	if fi, err := os.Stat(cwd); err != nil || !fi.IsDir() {
-		http.Error(w, "invalid cwd", http.StatusBadRequest)
-		return
-	}
-	gitRoot, err := getGitRoot(cwd)
+	target, err := resolveCommitTourTarget(cwd, hash)
 	if err != nil {
-		http.Error(w, "not a git repository", http.StatusBadRequest)
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-
-	fullHash, err := resolveCommit(r.Context(), gitRoot, hash)
-	if err != nil {
-		http.Error(w, "invalid hash", http.StatusBadRequest)
-		return
-	}
-
-	note, err := committour.ReadNote(gitRoot, fullHash)
-	if errors.Is(err, committour.ErrNoNote) {
+	resolved, err := verifiedCommitTour(target)
+	if errors.Is(err, errNoVerifiedCommitTour) {
 		writeGitTourNotFound(w)
 		return
 	}
@@ -467,17 +400,12 @@ func (s *Server) handleGitTour(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	resolved, err := cachedVerifiedTour(gitRoot, fullHash, note)
-	if err != nil {
-		writeGitTourNotFound(w)
-		return
-	}
 	if r.Method == http.MethodHead {
 		w.Header().Set("Content-Type", "application/json")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(GitTourResponse{Hash: fullHash, Tour: resolved})
+	json.NewEncoder(w).Encode(GitTourResponse{Hash: target.Hash, Tour: resolved})
 }
 
 func writeGitTourNotFound(w http.ResponseWriter) {
@@ -562,6 +490,10 @@ func (s *Server) handleGitDiffFiles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	diffID := parts[0]
+	if !safeRef(diffID) {
+		http.Error(w, "invalid diff ID", http.StatusBadRequest)
+		return
+	}
 
 	cwd := r.URL.Query().Get("cwd")
 	if cwd == "" {
@@ -722,6 +654,10 @@ func (s *Server) handleGitFileDiff(w http.ResponseWriter, r *http.Request) {
 
 	if diffID == "" || filePath == "" {
 		http.Error(w, "invalid path", http.StatusBadRequest)
+		return
+	}
+	if !safeRef(diffID) {
+		http.Error(w, "invalid diff ID", http.StatusBadRequest)
 		return
 	}
 
@@ -1088,6 +1024,7 @@ type GitGraphCommit struct {
 	Timestamp int64    `json:"timestamp"`
 	Refs      []string `json:"refs"`
 	IsHead    bool     `json:"isHead"`
+	HasTour   bool     `json:"hasTour,omitempty"`
 	// IsMergeBase indicates the commit is the merge-base with @{upstream}.
 	IsMergeBase bool `json:"isMergeBase,omitempty"`
 }
@@ -1134,7 +1071,7 @@ func (s *Server) handleGitGraph(w http.ResponseWriter, r *http.Request) {
 		"-n", strconv.Itoa(limit),
 	}
 	if scope == "all" {
-		logArgs = append(logArgs, "--all")
+		logArgs = append(logArgs, "--exclude=refs/notes/*", "--all")
 	}
 	cmd := exec.Command("git", logArgs...)
 	cmd.Dir = gitRoot
@@ -1152,6 +1089,9 @@ func (s *Server) handleGitGraph(w http.ResponseWriter, r *http.Request) {
 	if out, err := mbCmd.Output(); err == nil {
 		mergeBase = strings.TrimSpace(string(out))
 	}
+
+	// Tour presence is decoration; a notes lookup failure must not break the graph.
+	tours, _ := committour.ListNotes(gitRoot)
 
 	var commits []GitGraphCommit
 	lines := strings.Split(strings.TrimRight(string(output), "\n"), "\n")
@@ -1205,6 +1145,7 @@ func (s *Server) handleGitGraph(w http.ResponseWriter, r *http.Request) {
 			Timestamp:   ts,
 			Refs:        refs,
 			IsHead:      isHead,
+			HasTour:     tours[hash],
 			IsMergeBase: mergeBase != "" && hash == mergeBase,
 		})
 	}

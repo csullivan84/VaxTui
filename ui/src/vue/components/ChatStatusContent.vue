@@ -27,7 +27,8 @@
       :class="['status-message', models.length === 0 ? 'status-no-models' : 'status-error']"
       role="alert"
       aria-live="assertive"
-    >{{ error }}</span>
+      >{{ error }}</span
+    >
     <button class="status-button status-button-text" @click="onClearError">
       <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path
@@ -48,19 +49,44 @@
     role="status"
     aria-label="Agent status"
   >
-    <div class="status-working-group">
-      <AnimatedWorkingStatus />
+    <AnimatedWorkingStatus />
+    <button
+      :disabled="cancelling"
+      class="status-stop-button"
+      v-tooltip.top="'Stop'"
+      :aria-label="cancelling ? 'Cancelling...' : 'Stop'"
+      @click="onCancel"
+    >
+      <svg viewBox="0 0 24 24" fill="currentColor">
+        <rect x="6" y="6" width="12" height="12" rx="1" />
+      </svg>
+      <span class="status-stop-label">{{ cancelling ? "Cancelling..." : "Stop" }}</span>
+    </button>
+    <StatusReadout
+      v-bind="readoutProps"
+      :cwd="cwd"
+      :conversation-id="conversationId"
+      :agent-working="agentWorking"
+    />
+  </div>
+
+  <!-- Interrupted turn awaiting confirmation -->
+  <div
+    v-else-if="interrupted && conversationId"
+    class="status-bar-active"
+    data-testid="conversation-interrupted"
+  >
+    <div class="status-interrupted-group">
+      <span class="status-message">Conversation Interrupted</span>
       <button
-        :disabled="cancelling"
-        class="status-stop-button"
-        v-tooltip.top="'Stop'"
-        :aria-label="cancelling ? 'Cancelling...' : 'Stop'"
-        @click="onCancel"
+        type="button"
+        class="status-button status-interrupted-button"
+        :disabled="resumingInterrupted"
+        data-testid="resume-interrupted-button"
+        v-tooltip.top="'Retries the interrupted turn. An unfinished tool may run again.'"
+        @click="onResumeInterrupted"
       >
-        <svg viewBox="0 0 24 24" fill="currentColor">
-          <rect x="6" y="6" width="12" height="12" rx="1" />
-        </svg>
-        <span class="status-stop-label">{{ cancelling ? "Cancelling..." : "Stop" }}</span>
+        {{ resumingInterrupted ? "Continuing…" : "Continue" }}
       </button>
     </div>
     <StatusReadout
@@ -84,6 +110,7 @@
         :disabled="sending"
         :refreshing="refreshingModels"
         @select-model="onSelectModel"
+        @select-combination="onSelectCombination"
         @thinking-change="onThinkingChange"
         @manage-models="onManageModels"
         @refresh-models="onRefreshModels"
@@ -190,7 +217,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watch, onUnmounted, nextTick } from "vue";
-import type { Conversation, Message } from "../../types";
+import type { Conversation, Message, Model } from "../../types";
 import type { OtherUsageRow, UsageEntry } from "../../utils/tokenCostGraph";
 import { tildifyPath } from "../../utils/tildify";
 import { useI18n } from "../composables/i18n";
@@ -199,17 +226,6 @@ import AnimatedWorkingStatus from "./AnimatedWorkingStatus.vue";
 import ModelPicker from "./ModelPicker.vue";
 import StatusReadout from "./StatusReadout.vue";
 
-type ModelInfo = {
-  id: string;
-  display_name?: string;
-  source?: string;
-  ready: boolean;
-  max_context_tokens?: number;
-  context_pricing_threshold?: number;
-  supports_reasoning?: boolean;
-  reasoning_levels?: Exclude<ThinkingLevel, "default">[];
-  default_reasoning_level?: string;
-};
 type ToolInfo = { name: string; summary: string; default_on: boolean };
 
 const props = defineProps<{
@@ -218,16 +234,17 @@ const props = defineProps<{
   streamStatus: "connected" | "reconnecting" | "disconnected";
   error: string | null;
   agentWorking: boolean;
+  interrupted: boolean;
+  resumingInterrupted: boolean;
   cancelling: boolean;
   selectedCwd: string;
   contextWindowSize: number;
   maxContextTokens: number;
-  contextPricingThreshold: number;
   usageEntries: UsageEntry[];
   otherUsageRows: OtherUsageRow[];
   messages: Message[];
   hostname: string;
-  models: ModelInfo[];
+  models: Model[];
   selectedModel: string;
   sending: boolean;
   refreshingModels: boolean;
@@ -240,14 +257,20 @@ const props = defineProps<{
   onUnarchive: () => void;
   onClearError: () => void;
   onCancel: () => void;
+  onResumeInterrupted: () => void;
   onDistillNewGeneration?: () => Promise<void> | void;
   onStartNewGeneration: () => Promise<void> | void;
   onSelectModel: (model: string) => void;
+  onSelectCombination: (model: string, level: Exclude<ThinkingLevel, "default"> | null) => void;
   /** Model / reasoning-level picks from the status readout, which only renders
    *  for an existing conversation — different operations from onSelectModel and
    *  onThinkingChange, which are client-side only (see sendModelCommand in
    *  ChatInterface). */
   onSwitchConversationModel: (model: string) => void;
+  onSwitchConversationCombination: (
+    model: string,
+    level: Exclude<ThinkingLevel, "default"> | null,
+  ) => void;
   onSwitchConversationThinkingLevel: (level: ThinkingLevel) => void;
   onManageModels: () => void;
   onRefreshModels: () => void;
@@ -271,7 +294,6 @@ const cwd = computed(() => props.currentConversation?.cwd || props.selectedCwd);
 const readoutProps = computed(() => ({
   contextWindowSize: props.contextWindowSize,
   maxContextTokens: props.maxContextTokens,
-  contextPricingThreshold: props.contextPricingThreshold,
   usageEntries: props.usageEntries,
   otherUsageRows: props.otherUsageRows,
   messages: props.messages,
@@ -287,6 +309,7 @@ const readoutProps = computed(() => ({
   // server (see applyPickedCwd in ChatInterface).
   onChangeConversationCwd: props.onOpenDirectoryPicker,
   onSwitchConversationModel: props.onSwitchConversationModel,
+  onSwitchConversationCombination: props.onSwitchConversationCombination,
   onSwitchConversationThinkingLevel: props.onSwitchConversationThinkingLevel,
   onManageModels: props.onManageModels,
   onRefreshModels: props.onRefreshModels,
@@ -325,7 +348,8 @@ function positionPopover() {
   const viewportHeight = document.documentElement.clientHeight;
   const margin = 8;
   const wrapRect = wrapper.getBoundingClientRect();
-  const width = popover.offsetWidth;
+  // Keep both width and offset fractional: rounding either can cross the margin.
+  const width = popover.getBoundingClientRect().width;
   const maxLeft = viewportWidth - margin - width;
   // Prefer aligning the popover's left edge to the gear, clamped into view.
   const desiredLeft = Math.max(margin, Math.min(wrapRect.left, maxLeft));
@@ -340,7 +364,7 @@ function positionPopover() {
   const minHeight = Math.min(POPOVER_MIN_HEIGHT, Math.max(0, viewportHeight - 2 * margin));
   const maxHeight = Math.max(minHeight, spaceAbove);
   const style: Record<string, string> = {
-    left: `${Math.round(desiredLeft - wrapRect.left)}px`,
+    left: `${desiredLeft - wrapRect.left}px`,
     right: "auto",
     // Floored, not rounded: rounding a bound *up* spends a fraction of a pixel
     // more room than there is, putting the popover back over the very edge it

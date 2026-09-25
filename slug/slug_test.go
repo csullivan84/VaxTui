@@ -120,7 +120,7 @@ func (m *MockLLMService) MaxImageBytes() int {
 
 // MockLLMProvider provides a mock LLM provider for testing
 type MockLLMProvider struct {
-	Service *MockLLMService
+	Service llm.Service
 }
 
 func (m *MockLLMProvider) GetWorkhorseService(string) (llm.Service, error) {
@@ -138,7 +138,7 @@ func TestGenerateSlug_DatabaseIntegration(t *testing.T) {
 	defer database.Close()
 
 	// Run migrations
-	ctx := context.Background()
+	ctx := t.Context()
 	if err := database.Migrate(ctx); err != nil {
 		t.Fatalf("Failed to migrate database: %v", err)
 	}
@@ -208,6 +208,70 @@ func TestGenerateSlug_DatabaseIntegration(t *testing.T) {
 	t.Logf("Successfully generated unique slugs: %q, %q, %q", slug1, slug2, slug3)
 }
 
+func TestGenerateSlug_PreservesConcurrentAssignment(t *testing.T) {
+	tempDB := t.TempDir() + "/slug_concurrent_preserve_test.db"
+	database, err := db.New(db.Config{DSN: tempDB})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	ctx := t.Context()
+	if err := database.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	conv, err := database.CreateConversation(ctx, nil, true, nil, nil, db.ConversationOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	provider := &MockLLMProvider{Service: &blockingSlugService{started: started, release: release}}
+	result := make(chan string, 1)
+	errs := make(chan error, 1)
+	go func() {
+		slug, _, err := GenerateSlug(ctx, provider, database, slog.Default(), conv.ConversationID, "new title", "test-model")
+		result <- slug
+		errs <- err
+	}()
+	<-started
+
+	const assigned = "assigned-while-generating"
+	if _, err := database.UpdateConversationSlug(ctx, conv.ConversationID, assigned); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	if err := <-errs; err != nil {
+		t.Fatal(err)
+	}
+	if got := <-result; got != assigned {
+		t.Fatalf("GenerateSlug returned %q, want concurrently assigned %q", got, assigned)
+	}
+	fresh, err := database.GetConversationByID(ctx, conv.ConversationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh.Slug == nil || *fresh.Slug != assigned {
+		t.Fatalf("database slug = %v, want %q", fresh.Slug, assigned)
+	}
+}
+
+type blockingSlugService struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (s *blockingSlugService) Do(context.Context, *llm.Request) (*llm.Response, error) {
+	close(s.started)
+	<-s.release
+	return &llm.Response{Content: []llm.Content{llm.StringContent("generated-title")}}, nil
+}
+
+func (s *blockingSlugService) Provider() string       { return "" }
+func (s *blockingSlugService) MaxImageDimension() int { return 0 }
+func (s *blockingSlugService) MaxImageBytes() int     { return 0 }
+func (s *blockingSlugService) SupportsImages() bool   { return false }
+
 // TestGenerateSlug_PreservesExisting tests that GenerateSlug does not overwrite
 // an existing slug. This matters for flows that look like "first message" but
 // are actually continuations (e.g. starting a new generation after compaction).
@@ -219,7 +283,7 @@ func TestGenerateSlug_PreservesExisting(t *testing.T) {
 	}
 	defer database.Close()
 
-	ctx := context.Background()
+	ctx := t.Context()
 	if err := database.Migrate(ctx); err != nil {
 		t.Fatalf("Failed to migrate database: %v", err)
 	}
@@ -296,7 +360,7 @@ func TestGenerateSlug_LLMError(t *testing.T) {
 	mockLLM := &MockLLMProviderWithServiceError{}
 
 	// Test that LLM error is properly propagated (pass a model ID so we get a service)
-	_, err := generateSlugText(context.Background(), mockLLM, "Test message", "test-model")
+	_, err := generateSlugText(t.Context(), mockLLM, "Test message", "test-model")
 	if err == nil {
 		t.Error("Expected error from LLM service, got nil")
 	}
@@ -310,7 +374,7 @@ func TestGenerateSlug_NoModelsAvailable(t *testing.T) {
 	mockLLM := &MockLLMProviderWithError{}
 
 	// Test that error is returned when no models are available
-	_, err := generateSlugText(context.Background(), mockLLM, "Test message", "")
+	_, err := generateSlugText(t.Context(), mockLLM, "Test message", "")
 	if err == nil {
 		t.Error("Expected error when no models available, got nil")
 	}
@@ -325,7 +389,7 @@ func TestGenerateSlug_EmptyResponse(t *testing.T) {
 	// Mock LLM that returns empty response
 	mockLLM := &MockLLMProviderWithEmptyResponse{}
 
-	_, err := generateSlugText(context.Background(), mockLLM, "Test message", "test-model")
+	_, err := generateSlugText(t.Context(), mockLLM, "Test message", "test-model")
 	if err == nil {
 		t.Error("Expected error for empty LLM response, got nil")
 	}
@@ -369,7 +433,7 @@ func TestGenerateSlug_SanitizationError(t *testing.T) {
 		},
 	}
 
-	_, err := generateSlugText(context.Background(), mockLLM, "Test message", "test-model")
+	_, err := generateSlugText(t.Context(), mockLLM, "Test message", "test-model")
 	if err == nil {
 		t.Error("Expected error for empty slug after sanitization, got nil")
 	}
@@ -399,7 +463,7 @@ func TestGenerateSlug_DatabaseError(t *testing.T) {
 	}()
 
 	// Run migrations
-	ctx := context.Background()
+	ctx := t.Context()
 	if err := database.Migrate(ctx); err != nil {
 		t.Fatalf("Failed to migrate database: %v", err)
 	}
@@ -441,7 +505,7 @@ func TestGenerateSlug_PredictableModel(t *testing.T) {
 	}
 
 	// Test that predictable model is used when conversationModelID is "predictable"
-	slug, err := generateSlugText(context.Background(), mockLLM, "Test message", "predictable")
+	slug, err := generateSlugText(t.Context(), mockLLM, "Test message", "predictable")
 	if err != nil {
 		t.Fatalf("Failed to generate slug with predictable model: %v", err)
 	}
@@ -463,7 +527,7 @@ func TestGenerateSlug_ReasoningModel(t *testing.T) {
 	}
 	defer database.Close()
 
-	ctx := context.Background()
+	ctx := t.Context()
 	if err := database.Migrate(ctx); err != nil {
 		t.Fatalf("Failed to migrate database: %v", err)
 	}
@@ -517,7 +581,7 @@ func (p *recordingProvider) Do(_ context.Context, req *llm.Request) (*llm.Respon
 func TestGenerateSlugTextUsesWorkhorseService(t *testing.T) {
 	provider := &recordingProvider{}
 
-	slug, err := generateSlugText(context.Background(), provider, "some message", "claude-fable-5")
+	slug, err := generateSlugText(t.Context(), provider, "some message", "claude-fable-5")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -561,7 +625,7 @@ func TestGenerateSlug_UsageOnAppendedMarker(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer database.Close()
-	ctx := context.Background()
+	ctx := t.Context()
 	if err := database.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}

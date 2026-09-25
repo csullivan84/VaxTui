@@ -11,90 +11,38 @@ import (
 	"shelley.exe.dev/llm"
 )
 
-func TestNewToolSet(t *testing.T) {
-	provider := &mockLLMProvider{}
+// Mock LLM provider for testing
+type mockLLMProvider struct{}
 
-	cfg := ToolSetConfig{
-		LLMProvider: provider,
-		ModelID:     "test-model",
-		WorkingDir:  "/test",
-	}
+type mockService struct{}
 
-	ctx := context.Background()
-	ts := NewToolSet(ctx, cfg)
-
-	if ts == nil {
-		t.Fatal("NewToolSet returned nil")
-	}
-
-	if ts.wd == nil {
-		t.Error("Working directory not initialized")
-	}
-
-	if ts.tools == nil {
-		t.Error("Tools not initialized")
-	}
+func (m *mockService) Do(ctx context.Context, req *llm.Request) (*llm.Response, error) {
+	return &llm.Response{Content: llm.TextContent("test response")}, nil
 }
 
-func TestToolSet_Tools(t *testing.T) {
-	provider := &mockLLMProvider{}
+func (m *mockService) Provider() string { return "" }
 
-	cfg := ToolSetConfig{
-		LLMProvider: provider,
-		ModelID:     "test-model",
-		WorkingDir:  "/test",
-	}
-
-	ctx := context.Background()
-	ts := NewToolSet(ctx, cfg)
-
-	tools := ts.Tools()
-	if tools == nil {
-		t.Fatal("Tools() returned nil")
-	}
-
-	if len(tools) == 0 {
-		t.Error("expected at least one tool")
-	}
+func (m *mockService) MaxImageDimension() int {
+	return 0
 }
 
-func TestToolSet_WorkingDir(t *testing.T) {
-	provider := &mockLLMProvider{}
-
-	cfg := ToolSetConfig{
-		LLMProvider: provider,
-		ModelID:     "test-model",
-		WorkingDir:  "/test",
-	}
-
-	ctx := context.Background()
-	ts := NewToolSet(ctx, cfg)
-
-	wd := ts.WorkingDir()
-	if wd == nil {
-		t.Fatal("WorkingDir() returned nil")
-	}
-
-	if wd.Get() != "/test" {
-		t.Errorf("expected working dir '/test', got %q", wd.Get())
-	}
+func (m *mockService) MaxImageBytes() int {
+	return 0
 }
 
-func TestToolSet_Cleanup(t *testing.T) {
-	provider := &mockLLMProvider{}
-
-	cfg := ToolSetConfig{
-		LLMProvider: provider,
-		ModelID:     "test-model",
-		WorkingDir:  "/test",
-	}
-
-	ctx := context.Background()
-	ts := NewToolSet(ctx, cfg)
-
-	// Cleanup should not panic
-	ts.Cleanup()
+func (m *mockLLMProvider) GetService(modelID string) (llm.Service, error) {
+	return &mockService{}, nil
 }
+
+func (m *mockLLMProvider) GetAvailableModels() []string {
+	return []string{"test-model"}
+}
+
+func (m *mockLLMProvider) GetWorkhorseService(modelID string) (llm.Service, error) {
+	return m.GetService(modelID)
+}
+
+func (m *mockService) SupportsImages() bool { return true }
 
 func TestNewToolSet_DefaultWorkingDir(t *testing.T) {
 	provider := &mockLLMProvider{}
@@ -106,7 +54,7 @@ func TestNewToolSet_DefaultWorkingDir(t *testing.T) {
 		WorkingDir:  "",
 	}
 
-	ctx := context.Background()
+	ctx := t.Context()
 	ts := NewToolSet(ctx, cfg)
 
 	home, err := os.UserHomeDir()
@@ -116,32 +64,6 @@ func TestNewToolSet_DefaultWorkingDir(t *testing.T) {
 	wd := ts.WorkingDir()
 	if wd.Get() != home {
 		t.Errorf("expected default working dir %q, got %q", home, wd.Get())
-	}
-}
-
-func TestNewToolSet_WithBrowser(t *testing.T) {
-	provider := &mockLLMProvider{}
-
-	cfg := ToolSetConfig{
-		LLMProvider:   provider,
-		ModelID:       "test-model",
-		WorkingDir:    "/test",
-		EnableBrowser: true,
-	}
-
-	ctx := context.Background()
-	ts := NewToolSet(ctx, cfg)
-
-	if ts == nil {
-		t.Fatal("NewToolSet returned nil")
-	}
-
-	if ts.wd == nil {
-		t.Error("Working directory not initialized")
-	}
-
-	if ts.tools == nil {
-		t.Error("Tools not initialized")
 	}
 }
 
@@ -171,7 +93,7 @@ func TestNewToolSet_SubagentDepthLimit(t *testing.T) {
 			SubagentDepth:        0,
 			MaxSubagentDepth:     1,
 		}
-		ts := NewToolSet(context.Background(), cfg)
+		ts := NewToolSet(t.Context(), cfg)
 		if !hasSubagentTool(ts) {
 			t.Error("expected subagent tool at depth 0 with max 1")
 		}
@@ -189,7 +111,7 @@ func TestNewToolSet_SubagentDepthLimit(t *testing.T) {
 			SubagentDepth:        1,
 			MaxSubagentDepth:     1,
 		}
-		ts := NewToolSet(context.Background(), cfg)
+		ts := NewToolSet(t.Context(), cfg)
 		if hasSubagentTool(ts) {
 			t.Error("expected no subagent tool at depth 1 with max 1")
 		}
@@ -207,7 +129,7 @@ func TestNewToolSet_SubagentDepthLimit(t *testing.T) {
 			SubagentDepth:        0,
 			MaxSubagentDepth:     0,
 		}
-		ts := NewToolSet(context.Background(), cfg)
+		ts := NewToolSet(t.Context(), cfg)
 		if !hasSubagentTool(ts) {
 			t.Error("expected subagent tool at depth 0 with unlimited max")
 		}
@@ -225,7 +147,7 @@ func TestNewToolSet_SubagentDepthLimit(t *testing.T) {
 			SubagentDepth:        5,
 			MaxSubagentDepth:     0,
 		}
-		ts := NewToolSet(context.Background(), cfg)
+		ts := NewToolSet(t.Context(), cfg)
 		if !hasSubagentTool(ts) {
 			t.Error("expected subagent tool at depth 5 with unlimited max")
 		}
@@ -241,7 +163,7 @@ func TestNewToolSet_SubagentDepthLimit(t *testing.T) {
 			SubagentDepth:        0,
 			MaxSubagentDepth:     1,
 		}
-		ts := NewToolSet(context.Background(), cfg)
+		ts := NewToolSet(t.Context(), cfg)
 		if hasSubagentTool(ts) {
 			t.Error("expected no subagent tool without runner")
 		}
@@ -259,7 +181,7 @@ func TestNewToolSet_SubagentDepthLimit(t *testing.T) {
 			SubagentDepth:        2,
 			MaxSubagentDepth:     3,
 		}
-		ts := NewToolSet(context.Background(), cfg)
+		ts := NewToolSet(t.Context(), cfg)
 		if !hasSubagentTool(ts) {
 			t.Error("expected subagent tool at depth 2 with max 3")
 		}
@@ -277,7 +199,7 @@ func TestNewToolSet_SubagentDepthLimit(t *testing.T) {
 			SubagentDepth:        3,
 			MaxSubagentDepth:     3,
 		}
-		ts := NewToolSet(context.Background(), cfg)
+		ts := NewToolSet(t.Context(), cfg)
 		if hasSubagentTool(ts) {
 			t.Error("expected no subagent tool at depth 3 with max 3")
 		}
@@ -296,7 +218,7 @@ func TestToolDescriptions(t *testing.T) {
 		SubagentDB:           &mockSubagentDB{},
 		ParentConversationID: "parent-123",
 	}
-	ts := NewToolSet(context.Background(), cfg)
+	ts := NewToolSet(t.Context(), cfg)
 	if len(ts.Tools()) == 0 {
 		t.Fatal("NewToolSet returned no tools")
 	}
@@ -321,7 +243,7 @@ func TestToolDescriptions(t *testing.T) {
 		SubagentDB:           &mockSubagentDB{},
 		ParentConversationID: "parent-123",
 	}
-	noBrowserTS := NewToolSet(context.Background(), noBrowserCfg)
+	noBrowserTS := NewToolSet(t.Context(), noBrowserCfg)
 	for _, tool := range noBrowserTS.Tools() {
 		if tool.Name == "browser" || tool.Name == "read_image" {
 			t.Errorf("browser-disabled config should not include tool %q", tool.Name)
@@ -335,7 +257,7 @@ func TestToolDescriptions(t *testing.T) {
 		WorkingDir:    "/test",
 		EnableBrowser: true,
 	}
-	noSubagentTS := NewToolSet(context.Background(), noSubagentCfg)
+	noSubagentTS := NewToolSet(t.Context(), noSubagentCfg)
 	for _, tool := range noSubagentTS.Tools() {
 		if tool.Name == "subagent" {
 			t.Error("subagent-disabled config should not include subagent tool")
@@ -370,34 +292,34 @@ func TestNewToolSet_BuildAvailableModelsFreshOnEachCall(t *testing.T) {
 		},
 	}
 
-	findSubagent := func(ts *ToolSet) string {
+	findSubagentSchema := func(ts *ToolSet) string {
 		for _, tool := range ts.Tools() {
 			if tool.Name == "subagent" {
-				return tool.Description
+				return string(tool.InputSchema)
 			}
 		}
 		return ""
 	}
 
-	ts1 := NewToolSet(context.Background(), cfg)
-	desc1 := findSubagent(ts1)
-	if desc1 == "" {
+	ts1 := NewToolSet(t.Context(), cfg)
+	schema1 := findSubagentSchema(ts1)
+	if schema1 == "" {
 		t.Fatal("expected subagent tool in first ToolSet")
 	}
-	if !strings.Contains(desc1, "model-a") {
-		t.Errorf("expected first description to mention model-a, got: %s", desc1)
+	if !strings.Contains(schema1, "model-a") {
+		t.Errorf("expected first schema to include model-a, got: %s", schema1)
 	}
 
 	// Simulate a custom model being added at runtime.
 	models = append(models, AvailableModel{ID: "model-b", DisplayName: "Model B"})
 
-	ts2 := NewToolSet(context.Background(), cfg)
-	desc2 := findSubagent(ts2)
-	if desc2 == "" {
+	ts2 := NewToolSet(t.Context(), cfg)
+	schema2 := findSubagentSchema(ts2)
+	if schema2 == "" {
 		t.Fatal("expected subagent tool in second ToolSet")
 	}
-	if !strings.Contains(desc2, "model-b") {
-		t.Errorf("expected second description to pick up model-b, got: %s", desc2)
+	if !strings.Contains(schema2, "model-b") {
+		t.Errorf("expected second schema to include model-b, got: %s", schema2)
 	}
 	if calls != 2 {
 		t.Errorf("expected BuildAvailableModels to be invoked once per ToolSet, got %d calls", calls)
@@ -406,15 +328,13 @@ func TestNewToolSet_BuildAvailableModelsFreshOnEachCall(t *testing.T) {
 	// When BuildAvailableModels is nil, fall back to LLMProvider.GetAvailableModels.
 	cfgNoBuilder := cfg
 	cfgNoBuilder.BuildAvailableModels = nil
-	ts3 := NewToolSet(context.Background(), cfgNoBuilder)
-	desc3 := findSubagent(ts3)
-	if desc3 == "" {
+	ts3 := NewToolSet(t.Context(), cfgNoBuilder)
+	schema3 := findSubagentSchema(ts3)
+	if schema3 == "" {
 		t.Fatal("expected subagent tool when falling back to LLMProvider")
 	}
-	// mockLLMProvider.GetAvailableModels returns nothing useful by default,
-	// but the description should at least be non-empty and not panic.
-	if !strings.Contains(desc3, "subagent") {
-		t.Errorf("expected fallback description to mention subagents, got: %s", desc3)
+	if !strings.Contains(schema3, "test-model") {
+		t.Errorf("expected fallback schema to include the provider's model, got: %s", schema3)
 	}
 }
 
@@ -523,7 +443,7 @@ func TestNewToolSet_WebSearchForAnthropicModels(t *testing.T) {
 				ModelID:     modelID,
 				WorkingDir:  "/test",
 			}
-			ts := NewToolSet(context.Background(), cfg)
+			ts := NewToolSet(t.Context(), cfg)
 			if !hasWebSearchToolOfType(ts, "web_search_20250305") {
 				t.Errorf("expected anthropic web_search tool for %s", modelID)
 			}
@@ -538,7 +458,7 @@ func TestNewToolSet_WebSearchForAnthropicModels(t *testing.T) {
 			ModelID:     "gpt-5.3-codex",
 			WorkingDir:  "/test",
 		}
-		ts := NewToolSet(context.Background(), cfg)
+		ts := NewToolSet(t.Context(), cfg)
 		if !hasWebSearchToolOfType(ts, "web_search") {
 			t.Error("expected web_search tool for OpenAI Responses model")
 		}
@@ -555,7 +475,7 @@ func TestNewToolSet_WebSearchForAnthropicModels(t *testing.T) {
 			ModelID:     "openai-chat",
 			WorkingDir:  "/test",
 		}
-		ts := NewToolSet(context.Background(), cfg)
+		ts := NewToolSet(t.Context(), cfg)
 		if hasWebSearchTool(ts) {
 			t.Error("expected no web_search tool for a chat-completions openai service")
 		}
@@ -572,7 +492,7 @@ func TestNewToolSet_WebSearchForAnthropicModels(t *testing.T) {
 			ModelID:     "third-party-model",
 			WorkingDir:  "/test",
 		}
-		ts := NewToolSet(context.Background(), cfg)
+		ts := NewToolSet(t.Context(), cfg)
 		if hasWebSearchTool(ts) {
 			t.Error("expected no web_search tool for a non-Claude anthropic-protocol service")
 		}
@@ -585,7 +505,7 @@ func TestNewToolSet_WebSearchForAnthropicModels(t *testing.T) {
 			ModelID:     "unknown-model",
 			WorkingDir:  "/test",
 		}
-		ts := NewToolSet(context.Background(), cfg)
+		ts := NewToolSet(t.Context(), cfg)
 		if hasWebSearchTool(ts) {
 			t.Error("expected no web_search tool for unknown model")
 		}
@@ -598,7 +518,7 @@ func TestNewToolSet_WebSearchForAnthropicModels(t *testing.T) {
 			ModelID:     "",
 			WorkingDir:  "/test",
 		}
-		ts := NewToolSet(context.Background(), cfg)
+		ts := NewToolSet(t.Context(), cfg)
 		if hasWebSearchTool(ts) {
 			t.Error("expected no web_search tool for empty model ID")
 		}
@@ -611,7 +531,7 @@ func TestNewToolSet_WebSearchForAnthropicModels(t *testing.T) {
 			ModelID:     "claude-sonnet-4.5",
 			WorkingDir:  "/test",
 		}
-		ts := NewToolSet(context.Background(), cfg)
+		ts := NewToolSet(t.Context(), cfg)
 		if hasWebSearchTool(ts) {
 			t.Error("expected no web_search tool with nil provider")
 		}
@@ -624,7 +544,7 @@ func TestNewToolSet_WebSearchForAnthropicModels(t *testing.T) {
 			ModelID:     "claude-sonnet-4.5",
 			WorkingDir:  "/test",
 		}
-		ts := NewToolSet(context.Background(), cfg)
+		ts := NewToolSet(t.Context(), cfg)
 		for _, tool := range ts.Tools() {
 			if tool.Name == "web_search" {
 				if tool.Run != nil {
@@ -659,29 +579,28 @@ func (p *rawPatchProvider) GetWorkhorseService(modelID string) (llm.Service, err
 	return p.GetService(modelID)
 }
 
-func TestNewToolSetPatchStrategyFlags(t *testing.T) {
+func TestNewToolSetPatchStrategy(t *testing.T) {
 	boolFn := func(value bool) func() bool { return func() bool { return value } }
 	for _, tt := range []struct {
-		name, want  string
-		simple, raw bool
+		name, want string
+		simple     bool
 	}{
-		{name: "both off uses full nested", want: "patch"},
-		{name: "simple on uses simplified nested", simple: true, want: "patch"},
-		{name: "raw overrides full nested", raw: true, want: "apply_patch"},
-		{name: "raw overrides simple", simple: true, raw: true, want: "apply_patch"},
+		{name: "capable service uses apply_patch", want: "apply_patch"},
+		{name: "capable service overrides simple", simple: true, want: "apply_patch"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			ts := NewToolSet(context.Background(), ToolSetConfig{
-				LLMProvider:           &rawPatchProvider{},
-				ModelID:               "test",
-				PatchSimpleEnabled:    boolFn(tt.simple),
-				PatchOpenAIRawEnabled: boolFn(tt.raw),
+			ts := NewToolSet(t.Context(), ToolSetConfig{
+				LLMProvider:        &rawPatchProvider{},
+				ModelID:            "test",
+				PatchSimpleEnabled: boolFn(tt.simple),
 			})
 			var patch *llm.Tool
 			for _, tool := range ts.Tools() {
 				if tool.Name == "patch" || tool.Name == "apply_patch" {
+					if patch != nil {
+						t.Fatal("multiple patch tools exposed")
+					}
 					patch = tool
-					break
 				}
 			}
 			if patch == nil || patch.Name != tt.want {
@@ -703,28 +622,72 @@ func TestNewToolSetPatchStrategyFlags(t *testing.T) {
 	}
 }
 
-func TestNewToolSetRawFlagDoesNotOverrideUnsupportedService(t *testing.T) {
-	ts := NewToolSet(context.Background(), ToolSetConfig{
-		LLMProvider:           &mockLLMProvider{},
-		ModelID:               "test-model",
-		PatchOpenAIRawEnabled: func() bool { return true },
-	})
-	for _, tool := range ts.Tools() {
-		if tool.Name == "apply_patch" {
-			t.Fatal("unsupported service received raw apply_patch")
-		}
-		if tool.Name == "patch" {
-			var schema struct {
-				Properties map[string]json.RawMessage `json:"properties"`
+func TestNewToolSetPatchStrategyUnsupportedService(t *testing.T) {
+	for _, tt := range []struct {
+		name, property string
+		simple         bool
+	}{
+		{name: "nested", property: "patches"},
+		{name: "simple", property: "edits", simple: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ts := NewToolSet(t.Context(), ToolSetConfig{
+				LLMProvider:        &mockLLMProvider{},
+				ModelID:            "test-model",
+				PatchSimpleEnabled: func() bool { return tt.simple },
+			})
+			for _, tool := range ts.Tools() {
+				if tool.Name == "apply_patch" {
+					t.Fatal("unsupported service received apply_patch")
+				}
+				if tool.Name == "patch" {
+					var schema struct {
+						Properties map[string]json.RawMessage `json:"properties"`
+					}
+					if err := json.Unmarshal(tool.InputSchema, &schema); err != nil {
+						t.Fatal(err)
+					}
+					if _, ok := schema.Properties[tt.property]; !ok {
+						t.Fatalf("unsupported service missing %q patch schema", tt.property)
+					}
+					return
+				}
 			}
-			if err := json.Unmarshal(tool.InputSchema, &schema); err != nil {
-				t.Fatal(err)
-			}
-			if _, ok := schema.Properties["patches"]; !ok {
-				t.Fatal("raw flag changed unsupported service from nested strategy")
-			}
-			return
-		}
+			t.Fatal("patch tool not found")
+		})
 	}
-	t.Fatal("patch tool not found")
+}
+
+func TestNewToolSetApplyPatchRespectsOverrides(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		overrides  map[string]string
+		disableAll bool
+		want       bool
+	}{
+		{name: "patch off", overrides: map[string]string{"patch": "off"}},
+		{name: "disable all", disableAll: true},
+		{name: "patch on overrides disable all", overrides: map[string]string{"patch": "on"}, disableAll: true, want: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ts := NewToolSet(t.Context(), ToolSetConfig{
+				LLMProvider:     &rawPatchProvider{},
+				ModelID:         "test",
+				ToolOverrides:   tt.overrides,
+				DisableAllTools: tt.disableAll,
+			})
+			defer ts.Cleanup()
+			for _, tool := range ts.Tools() {
+				if tool.Name == "apply_patch" {
+					if !tt.want {
+						t.Fatal("apply_patch exposed despite patch being disabled")
+					}
+					return
+				}
+			}
+			if tt.want {
+				t.Fatal("apply_patch missing despite patch being enabled")
+			}
+		})
+	}
 }

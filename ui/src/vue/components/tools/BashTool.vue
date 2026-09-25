@@ -76,7 +76,7 @@
       v-if="isComplete && !isExpanded"
       class="sr-only"
       role="region"
-      :aria-label="outputLabel"
+      :aria-label="regionLabel"
       data-testid="bash-tool-output-sr"
     >
       <pre class="bash-tool-code">{{ accessibleOutput }}</pre>
@@ -87,9 +87,10 @@
       :id="detailsId"
       class="bash-tool-details"
       role="region"
-      :aria-label="outputLabel"
+      :aria-label="regionLabel"
       data-testid="bash-tool-details"
     >
+      <RunningToolTime v-if="isRunning && isExpanded" :start-time="toolInvokedAt" />
       <div v-if="displayData?.workingDir" class="bash-tool-section">
         <div class="bash-tool-label" :id="cwdLabelId">Working Directory:</div>
         <pre class="bash-tool-code bash-tool-code-cwd" :aria-labelledby="cwdLabelId">{{
@@ -119,7 +120,7 @@
 
       <div v-if="isComplete" class="bash-tool-section">
         <div class="bash-tool-label" :id="outputLabelId">
-          {{ hasError ? "Output (Error)" : "Output" }}:
+          {{ outputLabel }}:
           <span v-if="executionTime" class="bash-tool-time">{{ executionTime }}</span>
         </div>
         <AnsiText
@@ -137,7 +138,7 @@ import { computed, nextTick, ref, watch, useId } from "vue";
 import type { LLMContent } from "../../../types";
 import HighlightedCode from "../HighlightedCode.vue";
 import AnsiText from "./AnsiText.vue";
-import { useToolExpanded, useInToolDetail } from "../../composables/toolDetail";
+import { useToolExpanded } from "../../composables/toolDetail";
 import { useScreenReaderMode } from "../../composables/screenReaderMode";
 import { announceToolA11y } from "../../../services/a11yAnnouncer";
 import {
@@ -147,16 +148,19 @@ import {
   terminalToggleLabel,
 } from "./bashToolA11y";
 import ToolChevron from "./ToolChevron.vue";
+import RunningToolTime from "./RunningToolTime.vue";
 import ToolStatusIcon from "./ToolStatusIcon.vue";
-import { isCancelledToolResult } from "../../utils/toolStatus";
+import { isCancelledToolResult, toolOutcomeSuffix } from "../../utils/toolStatus";
 
 interface BashDisplayData {
   workingDir: string;
+  exitCode?: number;
 }
 
 const props = defineProps<{
   toolInput?: unknown;
   isRunning?: boolean;
+  toolInvokedAt?: string | null;
   toolResult?: LLMContent[];
   hasError?: boolean;
   executionTime?: string;
@@ -176,39 +180,27 @@ const outputLabelId = `bash-out-label-${uid}`;
 
 const { screenReaderMode } = useScreenReaderMode();
 
-// Details panel — collapsed by default (expanded inside the detail modal, or SR mode).
+// Details panel — collapsed by default (expanded in screen-reader mode).
 const isExpanded = useToolExpanded();
-if (screenReaderMode.value) {
-  isExpanded.value = true;
-}
 // Streaming preview — expanded to show full streaming output.
 const previewExpanded = ref(false);
 const previewRef = ref<InstanceType<typeof AnsiText> | null>(null);
 const expandedStreamRef = ref<InstanceType<typeof AnsiText> | null>(null);
-const inToolDetail = useInToolDetail();
 
 function toggleExpanded() {
   isExpanded.value = !isExpanded.value;
 }
 
-// Collapse details when the tool completes (skip inside detail modal / SR mode).
+// Collapse details when the tool completes (stay expanded in screen-reader mode).
 watch(
   () => props.isRunning,
   (running, prevRunning) => {
-    if (prevRunning && !running && !inToolDetail && !screenReaderMode.value) {
-      isExpanded.value = false;
+    if (prevRunning && !running) {
+      isExpanded.value = screenReaderMode.value;
       previewExpanded.value = false;
-    }
-    if (prevRunning && !running && screenReaderMode.value) {
-      isExpanded.value = true;
     }
   },
 );
-
-// Prefer expanded when user turns on screen-reader mode mid-session.
-watch(screenReaderMode, (on) => {
-  if (on) isExpanded.value = true;
-});
 
 // Announce completion once via the app-level live region (not a per-card
 // role=status that would linger in the transcript for Safari VO Shift+Tab).
@@ -270,6 +262,13 @@ const accessibleOutput = computed(() => output.value || "(no output)");
 
 const isCancelled = computed(() => props.hasError && isCancelledToolResult(output.value));
 
+const outputLabel = computed(() => {
+  if (isCancelled.value) return "Output (cancelled)";
+  const exitCode = displayData.value?.exitCode;
+  if (typeof exitCode === "number") return `Output (exit code ${exitCode})`;
+  return props.hasError ? "Output (Error)" : "Output";
+});
+
 const displayCommand = computed(() => {
   const cmd = command.value;
   const maxLen = 300;
@@ -278,8 +277,14 @@ const displayCommand = computed(() => {
 
 const isComplete = computed(() => !props.isRunning && props.toolResult !== undefined);
 
-const outputLabel = computed(() => terminalOutputLabel(command.value));
-const toggleLabel = computed(() => terminalToggleLabel(isExpanded.value, command.value));
+const regionLabel = computed(() => terminalOutputLabel(command.value));
+const toggleLabel = computed(() => {
+  const label = terminalToggleLabel(isExpanded.value, command.value);
+  if (isComplete.value && isCancelled.value) return `${label}, cancelled`;
+  const exitCode = displayData.value?.exitCode;
+  const exit = props.hasError && typeof exitCode === "number" ? `, exit code ${exitCode}` : "";
+  return `${label}${toolOutcomeSuffix(isComplete.value, props.hasError)}${exit}`;
+});
 
 const visibleStreaming = computed(() => {
   if (!props.streamingOutput) return "";

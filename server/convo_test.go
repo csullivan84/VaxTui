@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -11,8 +10,50 @@ import (
 	"shelley.exe.dev/claudetool"
 	"shelley.exe.dev/db"
 	"shelley.exe.dev/db/generated"
+	"shelley.exe.dev/llm"
 	"shelley.exe.dev/skills"
 )
+
+func TestPendingDrainCoalescesWakeup(t *testing.T) {
+	manager := &ConversationManager{pendingBatches: []pendingBatch{{Kind: pendingBatchUser}}}
+	owner, done := manager.beginPendingDrain()
+	if !owner {
+		t.Fatal("first drain did not claim ownership")
+	}
+	secondOwner, secondDone := manager.beginPendingDrain()
+	if secondOwner {
+		t.Fatal("concurrent drain claimed duplicate ownership")
+	}
+	if secondDone != done {
+		t.Fatal("concurrent drain did not return the active completion token")
+	}
+	if !manager.finishPendingDrainPass(done) {
+		t.Fatal("concurrent wakeup did not request another drain pass")
+	}
+	select {
+	case <-done:
+		t.Fatal("drain completed before the coalesced pass")
+	default:
+	}
+	if manager.finishPendingDrainPass(done) {
+		t.Fatal("drain requested an extra pass without another wakeup")
+	}
+	<-done
+}
+
+func TestSubagentPromptCacheKeyUsesPromptAndModel(t *testing.T) {
+	system := []llm.SystemContent{{Type: "text", Text: "stable prompt"}}
+	first := subagentPromptCacheKey(system, "model-a")
+	if first != subagentPromptCacheKey(system, "model-a") {
+		t.Fatal("identical prompts and models produced different cache keys")
+	}
+	if first == subagentPromptCacheKey([]llm.SystemContent{{Type: "text", Text: "changed prompt"}}, "model-a") {
+		t.Fatal("different prompts unexpectedly share a cache key")
+	}
+	if first == subagentPromptCacheKey(system, "model-b") {
+		t.Fatal("different models unexpectedly share a cache key")
+	}
+}
 
 func TestSystemPromptDisplayDataIncludesSourceMetadata(t *testing.T) {
 	t.Parallel()
@@ -71,7 +112,7 @@ func TestSystemPromptDisplayDataIncludesSourceMetadata(t *testing.T) {
 func TestHydrateGeneratesSystemPromptWithSubagentTool(t *testing.T) {
 	t.Parallel()
 	h := NewTestHarness(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Create a new conversation
 	h.NewConversation("Hello", "")
@@ -149,8 +190,8 @@ func TestHydrateSystemPromptDisplayDataRespectsToolOverrides(t *testing.T) {
 		t.Fatalf("parse response: %v", err)
 	}
 
-	messages, err := db.WithTxRes(h.db, context.Background(), func(q *generated.Queries) ([]generated.Message, error) {
-		return q.ListMessages(context.Background(), resp.ConversationID)
+	messages, err := db.WithTxRes(h.db, t.Context(), func(q *generated.Queries) ([]generated.Message, error) {
+		return q.ListMessages(t.Context(), resp.ConversationID)
 	})
 	if err != nil {
 		t.Fatalf("list messages: %v", err)
@@ -193,5 +234,33 @@ func TestHydrateSystemPromptDisplayDataRespectsToolOverrides(t *testing.T) {
 	}
 	if !hasShell {
 		t.Fatalf("display data should include enabled shell tool: %+v", displayData.Tools)
+	}
+}
+
+func TestSystemPromptDisplayDataUsesIntegrationSkillMetadata(t *testing.T) {
+	t.Parallel()
+	displayData := systemPromptDisplayData(claudetool.ToolSetConfig{DisableAllTools: true}, []skills.Skill{{
+		Name:        "remote-skill",
+		Description: "Remote.",
+		Activate:    "curl -fsS https://remote.int.example/",
+		Source:      "https://remote.int.example/",
+		Origin:      "Integration",
+	}})
+	encoded, err := json.Marshal(displayData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Skills []struct {
+			Activate   string `json:"activate"`
+			SourcePath string `json:"source_path"`
+			Origin     string `json:"origin"`
+		} `json:"skills"`
+	}
+	if err := json.Unmarshal(encoded, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Skills) != 1 || got.Skills[0].Activate != "curl -fsS https://remote.int.example/" || got.Skills[0].SourcePath != "https://remote.int.example/" || got.Skills[0].Origin != "Integration" {
+		t.Fatalf("integration skill metadata = %+v", got.Skills)
 	}
 }

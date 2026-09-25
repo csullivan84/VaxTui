@@ -1721,6 +1721,7 @@ onUnmounted(() => {
 provide(DrawerCtxKey, {
   t,
   currentConversationId: computed(() => props.currentConversationId),
+  searchText,
   showParticipantBadges: multipleParticipantsAvailable,
   terminalCounts: computed(() => {
     const counts: Record<string, number> = {};

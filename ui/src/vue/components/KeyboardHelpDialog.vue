@@ -116,6 +116,10 @@ const shortcuts = [
     keys: "Control or Command+K",
     action: "Open the command palette, including on mobile with an external keyboard",
   },
+  { keys: "Control or Command+P", action: "Open a file for editing" },
+  { keys: "Control or Command+Shift+X", action: "Archive the current conversation" },
+  { keys: "Control or Command+Shift+M", action: "Record audio" },
+  { keys: "Control or Command+Alt+Shift+M", action: "Record screen and audio" },
   { keys: "Control or Command+Arrow Down", action: "Move to the end of the transcript" },
   { keys: "Escape", action: "Close the active dialog" },
   { keys: "Up or Down", action: "Move between commits in the Git graph" },
@@ -136,7 +140,7 @@ const shortcuts = [
     action: "Jump to terminal tab by number",
   },
   {
-    keys: "Control+Shift+M",
+    keys: "Control+Shift+M on Mac, Control+Shift+` elsewhere",
     action: "Minimize or expand the terminal panel",
   },
   {

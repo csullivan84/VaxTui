@@ -1,5 +1,5 @@
 <!-- Vue port of components/MessageInput.tsx. The composer: textarea,
-     send/queue split button, attach, drag/paste upload, voice (SpeechRecognition).
+     send/queue split button, attach, drag/paste upload, inline recording.
      PRESERVES EXACTLY the e2e contract (file-upload.spec, queue-messages.spec,
      smoke, conversation): data-testid message-input, send-button,
      send-options-button, queue-option, queued-badge, cancel-queued,
@@ -27,7 +27,7 @@
        use the `:on-send` / `:on-queue` function props. -->
 <template>
   <div
-    :class="`message-input-container ${isDraggingOver ? 'drag-over' : ''} ${isShellMode ? 'shell-mode' : ''} ${showSlashMenu ? 'slash-menu-open' : ''}`"
+    :class="`message-input-container ${isDraggingOver ? 'drag-over' : ''} ${isShellMode ? 'shell-mode' : ''} ${showSlashMenu || showFileMenu ? 'slash-menu-open' : ''}`"
     @dragover="handleDragOver"
     @dragenter="handleDragEnter"
     @dragleave="handleDragLeave"
@@ -36,7 +36,51 @@
     <div v-if="isDraggingOver" class="drag-overlay">
       <div class="drag-overlay-content">{{ t("dropFilesHere") }}</div>
     </div>
-    <form class="message-input-form" @submit="handleSubmit">
+    <!-- Teleport moves the same recorder; navigation must never remount it. -->
+    <Teleport to="body" :disabled="!recordingFloating">
+      <div
+        v-if="recordingActive"
+        :class="{ 'recording-floating': recordingFloating }"
+        :data-testid="recordingFloating ? 'recording-floating' : 'recording-inline'"
+      >
+        <button
+          v-if="recordingFloating"
+          type="button"
+          class="recording-return"
+          data-testid="recording-return-button"
+          @click="recordingSubmission?.destination?.returnTo()"
+        >
+          <svg
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+            width="16"
+            height="16"
+            aria-hidden="true"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="m9 10-5-5 5-5M4 5h10a6 6 0 0 1 0 12h-3"
+            />
+          </svg>
+          {{ t("recordingReturn") }}
+        </button>
+        <RecordingPanel
+          :initial-mode="recordingSubmission!.mode"
+          :initial-screen="recordingSubmission?.screen"
+          :preserved-text="recordingSubmission?.message"
+          :on-complete="handleRecordingComplete"
+          @close="closeRecording"
+        />
+      </div>
+    </Teleport>
+    <form
+      v-if="!recordingActive || recordingFloating"
+      class="message-input-form"
+      @submit="handleSubmit"
+    >
       <input
         ref="fileInputRef"
         type="file"
@@ -97,6 +141,83 @@
         </div>
       </div>
       <div class="textarea-wrapper">
+        <div
+          v-if="showFileMenu"
+          ref="fileMenuRef"
+          class="slash-command-menu file-completion-menu"
+          data-testid="file-completion-menu"
+        >
+          <div
+            v-if="fileError || (fileLoading && !fileMatches.length)"
+            class="file-completion-status"
+            role="status"
+          >
+            {{ fileError || "Searching files and folders…" }}
+          </div>
+          <div
+            :id="fileMenuId"
+            class="file-completion-list"
+            role="listbox"
+            aria-label="Files and folders"
+          >
+            <button
+              v-for="(item, index) in fileMatches"
+              :id="`${fileMenuId}-${index}`"
+              :key="item.path"
+              type="button"
+              :class="`file-completion-item grp-row${index === fileSelected ? ' grp-row-active' : ''}`"
+              role="option"
+              :aria-selected="index === fileSelected"
+              :aria-label="item.is_dir ? `${item.path} (folder)` : item.path"
+              :data-kind="item.is_dir ? 'folder' : 'file'"
+              :title="item.path"
+              @mousedown.prevent
+              @mouseenter="fileSelected = index"
+              @click="chooseFile(index)"
+            >
+              <svg
+                class="grp-icon"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.5"
+                aria-hidden="true"
+              >
+                <path
+                  v-if="item.is_dir"
+                  d="M3 7V5a2 2 0 0 1 2-2h5l3 3h6a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"
+                />
+                <path
+                  v-else
+                  d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9l-6-6Zm0 0v6h6"
+                />
+              </svg>
+              <span class="grp-main">
+                <span class="grp-path">
+                  <HighlightedText :text="item.path" :positions="item.matched_indexes" />
+                </span>
+                <span v-if="item.snippet" class="ff-snippet" :title="item.snippet">
+                  <span class="ff-snippet-line">{{ item.line }}:</span>
+                  <HighlightedText :text="item.snippet" :positions="item.snippet_matched_indexes" />
+                </span>
+              </span>
+            </button>
+          </div>
+          <div
+            v-if="fileGrepPending && !fileLoading && !fileError"
+            class="ff-grep-pending file-completion-grep-pending"
+            role="status"
+          >
+            Searching file contents…
+          </div>
+          <div
+            v-else-if="!fileLoading && !fileMatches.length && !fileError"
+            class="file-completion-status"
+            role="status"
+          >
+            No matching files or folders
+          </div>
+        </div>
         <div
           v-if="showSlashMenu"
           ref="slashMenuRef"
@@ -162,6 +283,9 @@
             <line x1="12" y1="19" x2="20" y2="19" />
           </svg>
         </div>
+        <div class="sr-only" role="status" aria-live="polite" aria-atomic="true">
+          {{ fileAnnouncement }}
+        </div>
         <textarea
           ref="textareaRef"
           :value="message"
@@ -172,7 +296,16 @@
           id="shelley-message-input"
           aria-label="Message input"
           data-testid="message-input"
+          :aria-autocomplete="showFileMenu ? 'list' : undefined"
+          :aria-controls="showFileMenu ? fileMenuId : undefined"
+          :aria-activedescendant="
+            showFileMenu && fileMatches.length ? `${fileMenuId}-${fileSelected}` : undefined
+          "
           @input="onTextareaInput"
+          @select="syncFileSelection"
+          @click="syncFileSelection"
+          @keyup="syncFileSelection"
+          @blur="fileFocused = false"
           @keydown="handleKeyDown"
           @paste="handlePaste"
           @focus="onTextareaFocus"
@@ -204,21 +337,51 @@
           </svg>
         </button>
         <button
-          v-if="speechRecognitionAvailable"
+          v-if="recordingSubmission && !recordingActive"
           type="button"
-          :disabled="isDisabled"
-          :class="`message-voice-btn ${isListening ? 'listening' : ''}`"
-          :aria-label="isListening ? t('stopVoiceInput') : t('startVoiceInput')"
-          data-testid="voice-button"
-          @click="toggleListening"
+          class="btn btn-secondary"
+          data-testid="recording-pending-cancel-button"
+          @click="closeRecording"
         >
-          <svg v-if="isListening" fill="currentColor" viewBox="0 0 24 24" width="20" height="20">
-            <circle cx="12" cy="12" r="6" />
+          {{ t("cancel") }}
+        </button>
+        <button
+          v-if="mediaRecordingAvailable"
+          type="button"
+          :disabled="!canRecordAudio"
+          :aria-busy="!!recordingSubmission && !recordingActive"
+          class="message-voice-btn"
+          :aria-label="t('recordingTitle')"
+          :title="`${t('recordingTitle')} (${menuShortcutLabel('recordAudio')})`"
+          data-testid="voice-button"
+          @click="beginRecording('microphone')"
+        >
+          <span v-if="recordingSubmission && !recordingActive" class="spinner spinner-small" />
+          <svg
+            v-else-if="screenRecordingAvailable"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            viewBox="0 0 24 24"
+            width="20"
+            height="20"
+            data-testid="voice-video-icon"
+          >
+            <rect x="3" y="5" width="13" height="14" rx="2" />
+            <path stroke-linecap="round" stroke-linejoin="round" d="m16 10 5-3v10l-5-3z" />
           </svg>
-          <svg v-else fill="currentColor" viewBox="0 0 24 24" width="20" height="20">
-            <path
-              d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm-1-9c0-.55.45-1 1-1s1 .45 1 1v6c0 .55-.45 1-1 1s-1-.45-1-1V5zm6 6c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"
-            />
+          <svg
+            v-else
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            viewBox="0 0 24 24"
+            width="20"
+            height="20"
+            data-testid="voice-microphone-icon"
+          >
+            <rect x="9" y="3" width="6" height="11" rx="3" />
+            <path stroke-linecap="round" d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3M9 21h6" />
           </svg>
         </button>
         <div ref="queueMenuRef" class="message-send-wrapper">
@@ -231,12 +394,33 @@
               type="submit"
               :disabled="!canSubmit"
               class="send-split-main"
-              :aria-label="autoQueue ? 'Queue message' : t('sendMessage')"
+              :aria-label="
+                autoQueue
+                  ? 'Queue message'
+                  : preferCompactAndSend
+                    ? 'Compact and send'
+                    : t('sendMessage')
+              "
               data-testid="send-button"
             >
               <div v-if="isDisabled || submitting" class="flex items-center justify-center">
                 <div class="spinner spinner-small message-send-spinner-white"></div>
               </div>
+              <svg
+                v-else-if="preferCompactAndSend"
+                class="compact-send-icon"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                viewBox="0 0 24 24"
+                width="18"
+                height="18"
+              >
+                <polyline points="4 14 10 14 10 20" />
+                <polyline points="20 10 14 10 14 4" />
+                <line x1="14" y1="10" x2="21" y2="3" />
+                <line x1="3" y1="21" x2="10" y2="14" />
+              </svg>
               <svg v-else fill="currentColor" viewBox="0 0 24 24" width="18" height="18">
                 <path d="M12 4l-1.41 1.41L16.17 11H4v2h12.17l-5.58 5.59L12 20l8-8z" />
               </svg>
@@ -255,6 +439,18 @@
               </svg>
             </button>
             <div v-if="showQueueMenu && (canQueue || autoQueue || canCompact)" class="queue-menu">
+              <button
+                v-if="preferCompactAndSend"
+                type="button"
+                class="queue-menu-item"
+                data-testid="send-option"
+                @click="handleSelectSend"
+              >
+                <svg fill="currentColor" viewBox="0 0 24 24" width="16" height="16">
+                  <path d="M12 4l-1.41 1.41L16.17 11H4v2h12.17l-5.58 5.59L12 20l8-8z" />
+                </svg>
+                Send
+              </button>
               <button
                 v-if="canQueue || autoQueue"
                 type="button"
@@ -288,7 +484,7 @@
               <!-- Compact the conversation, then queue this message to run once
                    compaction finishes. -->
               <button
-                v-if="canCompact"
+                v-if="canCompact && !preferCompactAndSend"
                 type="button"
                 class="queue-menu-item"
                 data-testid="compact-and-send-option"
@@ -334,9 +530,12 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, useId, watch } from "vue";
+import { useFileCompletion } from "../composables/fileCompletion";
 import { useI18n } from "../composables/i18n";
 import { pickPlaceholderHint } from "../../utils/placeholderHints";
+import HighlightedText from "./HighlightedText.vue";
+import type { ContextUsageLevel } from "../../utils/contextUsage";
 import { SLASH_COMMANDS, slashCommandsForConversation } from "../../utils/slashCommands";
 import {
   composerDispatch,
@@ -346,49 +545,15 @@ import {
 } from "./composerDispatch";
 import { isImeComposing } from "../../utils/imeComposing";
 import { getSendKeystroke, type SendKeystroke } from "../../services/a11yPreferences";
+import RecordingPanel from "./RecordingPanel.vue";
+import type { RecordingDestination, RecordingMode } from "./recordingDestination";
+import { focusMessageInputIfUnfocused } from "../../utils/focusMessageInput";
+import { menuShortcutLabel } from "../../utils/menuShortcuts";
 import {
   CONCRETE_THINKING_LEVELS,
   supportedThinkingLevels,
   type ReasoningModelCapabilities,
 } from "./thinkingLevel";
-
-// Web Speech API types
-interface SpeechRecognitionEvent extends Event {
-  results: SpeechRecognitionResultList;
-  resultIndex: number;
-}
-interface SpeechRecognitionResultList {
-  length: number;
-  item(index: number): SpeechRecognitionResult;
-  [index: number]: SpeechRecognitionResult;
-}
-interface SpeechRecognitionResult {
-  isFinal: boolean;
-  length: number;
-  item(index: number): SpeechRecognitionAlternative;
-  [index: number]: SpeechRecognitionAlternative;
-}
-interface SpeechRecognitionAlternative {
-  transcript: string;
-  confidence: number;
-}
-interface SpeechRecognition extends EventTarget {
-  continuous: boolean;
-  interimResults: boolean;
-  lang: string;
-  onresult: ((event: SpeechRecognitionEvent) => void) | null;
-  onerror: ((event: Event & { error: string }) => void) | null;
-  onend: (() => void) | null;
-  start(): void;
-  stop(): void;
-  abort(): void;
-}
-declare global {
-  interface Window {
-    SpeechRecognition: new () => SpeechRecognition;
-    webkitSpeechRecognition: new () => SpeechRecognition;
-  }
-}
 
 interface Attachment {
   id: string;
@@ -402,10 +567,18 @@ interface Attachment {
   error?: string;
 }
 
+interface AttachmentSession {
+  attachments: Attachment[];
+}
+
 const props = withDefaults(
   defineProps<{
     /** Async send handler (awaited). Mirrors React's onSend prop. */
     onSend: (message: string) => Promise<void> | void;
+    /** Reserve the original destination before acquiring media. */
+    onStartRecording: (text: string) => Promise<RecordingDestination>;
+    /** Archived conversations hide the composer, but not an active recording. */
+    recordingInlineAvailable?: boolean;
     /** Async queue handler (awaited). Mirrors React's onQueue prop. */
     onQueue?: (message: string) => Promise<void> | void;
     /** Async compaction handler (awaited). When provided, the send-options
@@ -418,6 +591,8 @@ const props = withDefaults(
     canQueue?: boolean;
     /** Auto-queue instead of sending (e.g. when distilling) */
     autoQueue?: boolean;
+    /** Context usage level; "" means plain Send. */
+    compactSendLevel?: ContextUsageLevel;
     disabled?: boolean;
     autoFocus?: boolean;
     injectedText?: string;
@@ -430,18 +605,9 @@ const props = withDefaults(
      * draft-change emit instead. */
     draftSeed?: { value: string } | null;
     initialRows?: number;
-    /** Id of the focused conversation. MessageInput is intentionally NOT keyed
-     * by this in the parent (remounting would break the first-message
-     * conversationId flip), so we watch it here to reset per-conversation
-     * transient state — chiefly pending attachments — that React got for free
-     * via its keyed remount. Without this, a file attached but not sent in one
-     * conversation would be carried into (and sent to) the next. */
+    /** Id of the focused conversation, used to scope pending attachments. */
     conversationId?: string | null;
-    /** Id of a lazily-created draft for the *current* input session. When a
-     * new conversation auto-saves a draft, conversationId flips null→draftId
-     * mid-typing; that is the same session, not a switch, so we must NOT clear
-     * attachments. React encodes this exact carve-out in its key:
-     * `(conversationId === lazyDraftId ? null : conversationId) || "new"`. */
+    /** Id assigned while the current new-conversation session is being saved. */
     lazyDraftId?: string | null;
     /** Ready models (id + reasoning capabilities), used to autocomplete the
      * /model command arguments with only the levels the target model accepts. */
@@ -449,13 +615,17 @@ const props = withDefaults(
     /** Currently selected model id; the levels offered for "/model <level>"
      * (no model argument) are the ones this model accepts. */
     currentModelId?: string;
+    /** Working directory for server-side @ filename completion. */
+    cwd?: string;
     /** Child conversations cannot start nested BTW readers. */
     isChildConversation?: boolean;
   }>(),
   {
+    recordingInlineAvailable: true,
     showQueueOption: false,
     canQueue: false,
     autoQueue: false,
+    compactSendLevel: "",
     disabled: false,
     autoFocus: false,
     initialRows: 1,
@@ -477,9 +647,27 @@ const hasQueueHandler = computed(() => props.onQueue !== undefined);
 // The "Compact and send" option is available whenever a compaction handler is
 // wired and we're not already mid-compaction (autoQueue signals distilling).
 const canCompact = computed(() => props.onCompact !== undefined && !props.autoQueue);
+const sendSelectedLevel = ref<ContextUsageLevel>("");
 
 const message = ref(props.draftSeed?.value ?? "");
 const sendKeystroke = ref<SendKeystroke>(getSendKeystroke());
+type RecordingSubmission = {
+  mode: RecordingMode;
+  screen?: Promise<MediaStream>;
+  destination?: RecordingDestination;
+  message: string;
+  context: string;
+  attachmentIDs: string[];
+  attachmentSession: AttachmentSession;
+};
+const recordingSubmission = shallowRef<RecordingSubmission | null>(null);
+const recordingActive = computed(() => !!recordingSubmission.value?.destination);
+const recordingFloating = computed(
+  () =>
+    recordingActive.value &&
+    (props.conversationId !== recordingSubmission.value?.destination?.conversationId ||
+      !props.recordingInlineAvailable),
+);
 // setMessage mirrors the React controlled-value path: surfaces every change via
 // draft-change so the parent can persist it.
 function setMessage(next: string | ((prev: string) => string)) {
@@ -498,7 +686,10 @@ watch(
 );
 
 const submitting = ref(false);
-const attachments = ref<Attachment[]>([]);
+const attachmentSessions = new Map<string | null, AttachmentSession>();
+let activeAttachmentSession: AttachmentSession = { attachments: [] };
+attachmentSessions.set(props.conversationId ?? null, activeAttachmentSession);
+const attachments = ref<Attachment[]>(activeAttachmentSession.attachments);
 const uploadsInProgress = computed(
   () => attachments.value.filter((a) => a.status === "uploading").length,
 );
@@ -506,7 +697,6 @@ const readyAttachments = computed(() =>
   attachments.value.filter((a) => a.status === "ready" && a.path),
 );
 const dragCounter = ref(0);
-const isListening = ref(false);
 const isSmallScreen = ref(typeof window !== "undefined" ? window.innerWidth < 480 : false);
 const showQueueMenu = ref(false);
 const slashMenuSelectedIndex = ref(0);
@@ -520,13 +710,12 @@ const queueMenuRef = ref<HTMLDivElement | null>(null);
 const slashMenuRef = ref<HTMLDivElement | null>(null);
 const textareaRef = ref<HTMLTextAreaElement | null>(null);
 const fileInputRef = ref<HTMLInputElement | null>(null);
-let recognition: SpeechRecognition | null = null;
-// Track the base text (before speech recognition started) and finalized speech text
-let baseText = "";
-let finalizedText = "";
-
-const speechRecognitionAvailable =
-  typeof window !== "undefined" && !!(window.SpeechRecognition || window.webkitSpeechRecognition);
+const screenRecordingAvailable =
+  typeof navigator !== "undefined" && typeof navigator.mediaDevices?.getDisplayMedia === "function";
+const mediaRecordingAvailable =
+  typeof window !== "undefined" &&
+  typeof window.MediaRecorder === "function" &&
+  typeof navigator.mediaDevices?.getUserMedia === "function";
 
 // Pick a placeholder hint per mount; re-pick when the platform flips.
 const hint = ref(pickPlaceholderHint(isSmallScreen.value));
@@ -546,59 +735,95 @@ function handleResize() {
   isSmallScreen.value = window.innerWidth < 480;
 }
 
-function stopListening() {
-  if (recognition) {
-    recognition.stop();
-    recognition = null;
-  }
-  isListening.value = false;
+const canRecordAudio = computed(
+  () =>
+    mediaRecordingAvailable &&
+    props.recordingInlineAvailable &&
+    !isDisabled.value &&
+    !submitting.value &&
+    uploadsInProgress.value === 0 &&
+    !recordingSubmission.value,
+);
+const canRecordScreen = computed(() => canRecordAudio.value && screenRecordingAvailable);
+
+defineExpose({ canRecordAudio, canRecordScreen, beginRecording });
+
+// Before the panel mounts, the composer owns the requested screen stream.
+function releasePendingScreen(submission: RecordingSubmission) {
+  if (submission.destination || !submission.screen) return;
+  void submission.screen.then(
+    (stream) => stream.getTracks().forEach((track) => track.stop()),
+    () => {}, // A rejected picker owns no media.
+  );
+  submission.screen = undefined;
 }
 
-function startListening() {
-  if (!speechRecognitionAvailable) return;
-  const SpeechRecognitionClass = window.SpeechRecognition || window.webkitSpeechRecognition;
-  const rec = new SpeechRecognitionClass();
-  rec.continuous = true;
-  rec.interimResults = true;
-  rec.lang = navigator.language || "en-US";
-
-  // Capture current message as base text
-  baseText = message.value;
-  finalizedText = "";
-
-  rec.onresult = (event: SpeechRecognitionEvent) => {
-    let finalTranscript = "";
-    let interimTranscript = "";
-    for (let i = event.resultIndex; i < event.results.length; i++) {
-      const transcript = event.results[i][0].transcript;
-      if (event.results[i].isFinal) {
-        finalTranscript += transcript;
-      } else {
-        interimTranscript += transcript;
-      }
+async function beginRecording(mode: RecordingMode) {
+  if (!(mode === "screen" ? canRecordScreen.value : canRecordAudio.value)) return;
+  const submission: RecordingSubmission = {
+    mode,
+    message: message.value,
+    context: composeMessageWithAttachments(message.value),
+    attachmentIDs: readyAttachments.value.map(({ id }) => id),
+    attachmentSession: activeAttachmentSession,
+  };
+  recordingSubmission.value = submission;
+  try {
+    if (mode === "screen") {
+      // Keep the picker in the initiating key/click handler, before draft I/O.
+      submission.screen = navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+      // The panel presents picker failures after the destination is ready.
+      void submission.screen.catch(() => {});
     }
-    if (finalTranscript) finalizedText += finalTranscript;
-    const base = baseText;
-    const needsSpace = base.length > 0 && !/\s$/.test(base);
-    const spacer = needsSpace ? " " : "";
-    setMessage(base + spacer + finalizedText + interimTranscript);
-  };
-  rec.onerror = (event) => {
-    console.error("Speech recognition error:", event.error);
-    stopListening();
-  };
-  rec.onend = () => {
-    isListening.value = false;
-    recognition = null;
-  };
-  recognition = rec;
-  rec.start();
-  isListening.value = true;
+    const destination = await props.onStartRecording(submission.message);
+    if (recordingSubmission.value !== submission) {
+      releasePendingScreen(submission);
+      return;
+    }
+    // A new draft may have finished creating after navigation away from /new.
+    if (attachmentSessions.get(null) === submission.attachmentSession) {
+      attachmentSessions.delete(null);
+    }
+    attachmentSessions.set(destination.conversationId, submission.attachmentSession);
+    recordingSubmission.value = { ...submission, destination };
+  } catch {
+    // The parent surfaces destination-creation errors. Release any selected screen.
+    releasePendingScreen(submission);
+    if (recordingSubmission.value === submission) recordingSubmission.value = null;
+    if (![...attachmentSessions.values()].includes(submission.attachmentSession)) {
+      clearAttachments(submission.attachmentSession);
+    }
+  }
 }
 
-function toggleListening() {
-  if (isListening.value) stopListening();
-  else startListening();
+function handleRecordingComplete(path: string) {
+  const submission = recordingSubmission.value;
+  if (!submission?.destination) throw new Error("recording completed without a destination");
+  // On failure retain the source draft and attachments. The parent surfaces
+  // the uploaded media path and original destination for recovery.
+  const destination = submission.destination;
+  void destination
+    .complete(path, submission.context)
+    .then(() => {
+      if (
+        props.conversationId === destination.conversationId &&
+        message.value === submission.message
+      ) {
+        setMessage("");
+      }
+      for (const id of submission.attachmentIDs) {
+        removeAttachment(id, submission.attachmentSession);
+      }
+    })
+    .catch(() => {});
+}
+
+async function closeRecording() {
+  const wasInline = !recordingFloating.value;
+  if (recordingSubmission.value) releasePendingScreen(recordingSubmission.value);
+  recordingSubmission.value = null;
+  await nextTick();
+  if (wasInline) textareaRef.value?.focus();
 }
 
 // Close queue menu on click outside
@@ -621,13 +846,14 @@ watch(
 );
 
 async function uploadFile(file: File) {
+  const session = activeAttachmentSession;
   const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const isImage = file.type.startsWith("image/");
   const previewUrl = isImage ? URL.createObjectURL(file) : undefined;
-  attachments.value = [
-    ...attachments.value,
+  updateAttachments(session, (current) => [
+    ...current,
     { id, name: file.name, isImage, previewUrl, status: "uploading" },
-  ];
+  ]);
 
   try {
     const formData = new FormData();
@@ -649,22 +875,30 @@ async function uploadFile(file: File) {
       throw new Error(`Upload failed: ${msg}`);
     }
     const data = await response.json();
-    attachments.value = attachments.value.map((a) =>
-      a.id === id ? { ...a, status: "ready", path: data.path } : a,
+    updateAttachments(session, (current) =>
+      current.map((a) => (a.id === id ? { ...a, status: "ready", path: data.path } : a)),
     );
   } catch (error) {
     console.error("Failed to upload file:", error);
     const msg = error instanceof Error ? error.message : "unknown error";
-    attachments.value = attachments.value.map((a) =>
-      a.id === id ? { ...a, status: "error", error: msg } : a,
+    updateAttachments(session, (current) =>
+      current.map((a) => (a.id === id ? { ...a, status: "error", error: msg } : a)),
     );
   }
 }
 
-function removeAttachment(id: string) {
-  const found = attachments.value.find((a) => a.id === id);
+function updateAttachments(
+  session: AttachmentSession,
+  update: (current: Attachment[]) => Attachment[],
+) {
+  session.attachments = update(session.attachments);
+  if (session === activeAttachmentSession) attachments.value = session.attachments;
+}
+
+function removeAttachment(id: string, session = activeAttachmentSession) {
+  const found = session.attachments.find((a) => a.id === id);
   if (found?.previewUrl) URL.revokeObjectURL(found.previewUrl);
-  attachments.value = attachments.value.filter((a) => a.id !== id);
+  updateAttachments(session, (current) => current.filter((a) => a.id !== id));
 }
 
 /** Compose final message text by appending `[path]` tokens for ready attachments. */
@@ -675,28 +909,33 @@ function composeMessageWithAttachments(text: string): string {
   return trimmed.length > 0 ? `${trimmed} ${tokens}` : tokens;
 }
 
-function clearAttachments() {
-  attachments.value.forEach((a) => {
+function clearAttachments(session = activeAttachmentSession) {
+  session.attachments.forEach((a) => {
     if (a.previewUrl) URL.revokeObjectURL(a.previewUrl);
   });
-  attachments.value = [];
+  updateAttachments(session, () => []);
 }
 
-// Reset pending attachments when the focused conversation changes. React gets
-// this for free by keying MessageInput on conversationId (the keyed remount
-// throws away component state); Vue keeps a single instance alive across
-// switches, so without this an unsent attachment would leak into — and be sent
-// to — the next conversation.
-//
-// Mirror React's key carve-out for lazy drafts: when a brand-new conversation
-// auto-saves a draft, conversationId flips null→draftId mid-typing. That is the
-// same input session (React keeps the key "new", so no remount), and the user
-// may have already attached a file they're about to send — don't clear it.
 watch(
   () => props.conversationId,
-  (newId) => {
-    if (newId != null && newId === props.lazyDraftId) return;
-    if (attachments.value.length > 0) clearAttachments();
+  (newId, oldId) => {
+    const key = newId ?? null;
+    if (newId != null && newId === props.lazyDraftId) {
+      attachmentSessions.delete(oldId ?? null);
+      attachmentSessions.set(key, activeAttachmentSession);
+      return;
+    }
+
+    if (oldId == null && newId != null) {
+      const abandoned = attachmentSessions.get(null);
+      if (abandoned && abandoned !== recordingSubmission.value?.attachmentSession) {
+        clearAttachments(abandoned);
+      }
+      attachmentSessions.delete(null);
+    }
+    activeAttachmentSession = attachmentSessions.get(key) ?? { attachments: [] };
+    attachmentSessions.set(key, activeAttachmentSession);
+    attachments.value = activeAttachmentSession.attachments;
   },
 );
 
@@ -791,6 +1030,76 @@ const canSubmit = computed(
 );
 const isDraggingOver = computed(() => dragCounter.value > 0);
 const isShellMode = computed(() => message.value.trimStart().startsWith("!"));
+const isCommand = computed(() => /^[!/]/.test(message.value.trimStart()));
+const preferCompactAndSend = computed(
+  () =>
+    canCompact.value &&
+    hasQueueHandler.value &&
+    !isCommand.value &&
+    props.compactSendLevel !== "" &&
+    sendSelectedLevel.value !== props.compactSendLevel,
+);
+
+// --- @ filename autocomplete --------------------------------------------
+const fileMenuId = useId();
+const fileMenuRef = ref<HTMLDivElement | null>(null);
+const {
+  visible: showFileMenu,
+  matches: fileMatches,
+  selected: fileSelected,
+  loading: fileLoading,
+  grepPending: fileGrepPending,
+  error: fileError,
+  focused: fileFocused,
+  updateSelection: updateFileSelection,
+  dismiss: dismissFiles,
+  choose: completeFile,
+} = useFileCompletion({
+  message,
+  cwd: () => props.cwd ?? "",
+  session: composerSession,
+  enabled: () => !isDisabled.value && !isShellMode.value,
+});
+
+const fileAnnouncement = computed(() => {
+  if (!showFileMenu.value) return "";
+  if (fileError.value) return fileError.value;
+  const count = fileMatches.value.length;
+  if (count) {
+    return `${count} file suggestion${count === 1 ? "" : "s"}. Up and Down to choose, Enter or Tab to insert, Escape to dismiss.`;
+  }
+  return fileLoading.value ? "Searching files and folders…" : "No matching files or folders";
+});
+
+function syncFileSelection() {
+  const textarea = textareaRef.value;
+  if (textarea) updateFileSelection(textarea.selectionStart, textarea.selectionEnd);
+}
+
+async function chooseFile(index: number) {
+  const replacement = completeFile(index);
+  if (!replacement) return;
+  setMessage(replacement.text);
+  await nextTick();
+  textareaRef.value?.focus();
+  textareaRef.value?.setSelectionRange(replacement.cursor, replacement.cursor);
+  syncFileSelection();
+}
+
+function onFileMenuOutside(e: MouseEvent) {
+  if (fileMenuRef.value?.contains(e.target as Node) || e.target === textareaRef.value) return;
+  dismissFiles();
+}
+
+watch(showFileMenu, (open) => {
+  if (open) document.addEventListener("mousedown", onFileMenuOutside);
+  else document.removeEventListener("mousedown", onFileMenuOutside);
+});
+watch(fileSelected, async () => {
+  await nextTick();
+  fileMenuRef.value?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" });
+});
+
 const slashQuery = computed(() => {
   const match = message.value.match(/^\/[a-zA-Z0-9_-]*$/);
   return match ? match[0].slice(1).toLowerCase() : null;
@@ -978,11 +1287,17 @@ watch(composerSession, () => {
   submissionGeneration++;
   submitting.value = false;
 });
+watch([composerSession, () => props.compactSendLevel], () => {
+  sendSelectedLevel.value = "";
+});
 
 async function handleSubmit(e: Event) {
   e.preventDefault();
   if (hasContent.value && !props.disabled && !submitting.value && uploadsInProgress.value === 0) {
-    if (isListening.value) stopListening();
+    if (preferCompactAndSend.value) {
+      await handleCompactAndSend();
+      return;
+    }
 
     // Auto-queue when distilling or when explicitly requested.
     const intent: ComposerSubmissionIntent = props.autoQueue ? "auto-queue" : "send";
@@ -1002,6 +1317,7 @@ async function handleSubmit(e: Event) {
     }
 
     const messageToSend = composeMessageWithAttachments(message.value);
+    const attachmentSession = activeAttachmentSession;
     // Pause autosave before awaiting onSend so a trailing PUT can't race the
     // chat POST. Don't clear the draft yet — if send fails the textarea stays.
     emit("draft-send-started");
@@ -1010,12 +1326,13 @@ async function handleSubmit(e: Event) {
     submitting.value = true;
     try {
       await props.onSend(messageToSend);
+      clearAttachments(attachmentSession);
       guardComposerClear(origin, composerOrigin, () => {
         setMessage("");
-        clearAttachments();
         emit("draft-cleared");
         // Sending never moves keyboard or screen-reader focus into the transcript.
-        requestAnimationFrame(() => textareaRef.value?.focus());
+        // Touch devices skip this so the soft keyboard doesn't pop back up.
+        if (!("ontouchstart" in window)) requestAnimationFrame(() => textareaRef.value?.focus());
       });
     } catch {
       // Keep the message on error so user can retry.
@@ -1032,7 +1349,6 @@ async function handleQueueMessage() {
     return;
   }
   if (hasContent.value && props.onQueue) {
-    if (isListening.value) stopListening();
     const messageToQueue = composeMessageWithAttachments(message.value).trim();
     const origin = composerOrigin();
     setMessage("");
@@ -1047,6 +1363,11 @@ async function handleQueueMessage() {
   }
 }
 
+async function handleSelectSend() {
+  sendSelectedLevel.value = props.compactSendLevel;
+  await handleSendNow();
+}
+
 /** Compact the conversation, then queue the composed message so it runs once
  * compaction completes. Kicks off compaction and queues in one gesture. */
 async function handleCompactAndSend() {
@@ -1056,7 +1377,6 @@ async function handleCompactAndSend() {
     return;
   }
   if (hasContent.value && props.onCompact && props.onQueue) {
-    if (isListening.value) stopListening();
     const messageToQueue = composeMessageWithAttachments(message.value).trim();
     const origin = composerOrigin();
     setMessage("");
@@ -1078,7 +1398,6 @@ async function handleCompactAndSend() {
 async function handleSendNow() {
   if (hasContent.value && !props.disabled && !submitting.value && uploadsInProgress.value === 0) {
     const dispatch = composerDispatch(message.value, { intent: "send-now" });
-    if (isListening.value) stopListening();
     const composed = composeMessageWithAttachments(message.value);
     const messageToSend = dispatch.route === "btw" ? composed : composed.trim();
     setMessage("");
@@ -1100,9 +1419,12 @@ async function handleSendNow() {
 
 function onTextareaInput(e: Event) {
   setMessage((e.target as HTMLTextAreaElement).value);
+  syncFileSelection();
 }
 
 function onTextareaFocus() {
+  fileFocused.value = true;
+  syncFileSelection();
   // Scroll to bottom after keyboard animation settles
   requestAnimationFrame(() => requestAnimationFrame(() => emit("focus")));
 }
@@ -1110,6 +1432,34 @@ function onTextareaFocus() {
 function handleKeyDown(e: KeyboardEvent) {
   // Don't submit while IME is composing.
   if (isImeComposing(e)) return;
+  if (showFileMenu.value) {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      dismissFiles();
+      return;
+    }
+    if (fileMatches.value.length && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+      e.preventDefault();
+      fileSelected.value =
+        (fileSelected.value + (e.key === "ArrowDown" ? 1 : -1) + fileMatches.value.length) %
+        fileMatches.value.length;
+      return;
+    }
+    if (
+      (fileLoading.value || fileGrepPending.value || fileMatches.value.length > 0) &&
+      !e.shiftKey &&
+      !e.ctrlKey &&
+      !e.metaKey &&
+      (e.key === "Enter" || e.key === "Tab")
+    ) {
+      // Don't accidentally send while either search phase is loading; settled
+      // empty/error searches leave normal typing, submission and focus navigation alone.
+      e.preventDefault();
+      void chooseFile(fileSelected.value);
+      return;
+    }
+  }
   if (showSlashMenu.value) {
     if (e.key === "ArrowDown") {
       e.preventDefault();
@@ -1204,10 +1554,7 @@ watch(
   () => [props.autoFocus, props.disabled] as const,
   ([af, dis]) => {
     if (af && !dis && textareaRef.value) {
-      setTimeout(() => {
-        if (document.activeElement?.closest('[aria-modal="true"]')) return;
-        textareaRef.value?.focus();
-      }, 0);
+      focusMessageInputIfUnfocused();
     }
   },
   { immediate: true },
@@ -1231,6 +1578,8 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  if (recordingSubmission.value) releasePendingScreen(recordingSubmission.value);
+  recordingSubmission.value = null;
   window.removeEventListener("resize", handleResize);
   window.removeEventListener("shelley:send-keystroke-change", onSendKeystrokeChange);
   if (typeof window !== "undefined" && window.visualViewport) {
@@ -1238,9 +1587,7 @@ onUnmounted(() => {
   }
   document.removeEventListener("mousedown", onQueueMenuOutside);
   document.removeEventListener("mousedown", onSlashMenuOutside);
-  if (recognition) recognition.abort();
-  attachments.value.forEach((a) => {
-    if (a.previewUrl) URL.revokeObjectURL(a.previewUrl);
-  });
+  document.removeEventListener("mousedown", onFileMenuOutside);
+  for (const session of new Set(attachmentSessions.values())) clearAttachments(session);
 });
 </script>

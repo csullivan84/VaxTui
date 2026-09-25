@@ -131,6 +131,19 @@
                     merge-base
                   </span>
                 </span>
+                <a
+                  v-if="c.hasTour"
+                  v-tooltip.top="'Open guided commit tour'"
+                  :class="`git-graph-tour-link${!canOpenDiff ? ' git-graph-tour-link-disabled' : ''}`"
+                  data-testid="git-graph-tour-link"
+                  :href="canOpenDiff ? diffHref(c.hash) : undefined"
+                  :aria-disabled="!canOpenDiff"
+                  :tabindex="canOpenDiff ? undefined : -1"
+                  :aria-label="`Tour: open guided tour for ${c.subject}`"
+                  @click.stop="onOpenCommitClick($event, c.hash)"
+                >
+                  tour
+                </a>
                 <span class="git-graph-subject">{{ c.subject }}</span>
               </span>
               <span class="git-graph-author">{{ c.author }}</span>
@@ -201,12 +214,43 @@
             <div class="git-graph-detail-actions">
               <a
                 :class="`git-graph-open-diff${!canOpenDiff ? ' git-graph-open-diff-disabled' : ''}`"
-                :href="openDiffHref"
+                :href="canOpenDiff ? openDiffHref : undefined"
                 :aria-disabled="!canOpenDiff"
-                @click="onOpenDiffClick"
+                :tabindex="canOpenDiff ? undefined : -1"
+                @click="onOpenCommitClick($event, selectedCommit.hash)"
               >
-                Open diff →
+                {{ tourStatus?.status === "present" || selectedCommit.hasTour ? "Open tour" : "Open diff" }}
+                <span aria-hidden="true">→</span>
               </a>
+              <a
+                v-if="tourStatus?.status === 'building' && tourStatus.worker_slug"
+                class="git-graph-tour-action"
+                :href="`/c/${tourStatus.worker_slug}`"
+                @click="onWorkerLinkClick"
+              >
+                <span class="spinner spinner-small" aria-hidden="true" />
+                Building tour <span aria-hidden="true">↗</span>
+              </a>
+              <span
+                v-else-if="tourStatus?.status === 'building'"
+                class="git-graph-tour-action"
+                tabindex="-1"
+              >
+                <span class="spinner spinner-small" aria-hidden="true" />
+                Building tour
+              </span>
+              <button
+                v-else-if="canRequestTour && (tourStatus?.status === 'absent' || tourStatus?.status === 'failed')"
+                type="button"
+                class="git-graph-tour-action"
+                :disabled="requestingTour"
+                :title="tourStatus?.error"
+                @click="requestTour"
+              >
+                <span v-if="requestingTour" class="spinner spinner-small" aria-hidden="true" />
+                {{ requestingTour ? "Building tour" : "Build tour" }}
+              </button>
+
               <a
                 v-if="data?.githubBase"
                 v-tooltip.top="'View on GitHub'"
@@ -288,10 +332,7 @@
               <DiffstatList
                 :files="detail.files"
                 :file-href="(path) => diffHref(selectedCommit!.hash, path)"
-                @open="
-                  (path) =>
-                    canOpenDiff && emit('open-diff', selectedCommit!.hash, cwd, path)
-                "
+                @open="(path) => canOpenDiff && emit('open-diff', selectedCommit!.hash, cwd, path)"
               />
             </div>
             <div v-if="detailLoading && !detail" class="git-graph-detail-loading">Loading…</div>
@@ -304,8 +345,14 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref, watch } from "vue";
-import { api } from "../../services/api";
+import { api, type GitTourBuildStatus } from "../../services/api";
+import {
+  loadCommitTourStatus,
+  requestCommitTour,
+  subscribeCommitTourStatus,
+} from "../../services/commitTourStatus";
 import type { GitGraphResponse, GitCommitDetail } from "../../types";
+import { navigateToConversationSlug } from "../composables/subagentLive";
 import GitRepoPicker from "./GitRepoPicker.vue";
 import RefBadge from "./gitGraph/RefBadge.vue";
 import CopyButton from "./gitGraph/CopyButton.vue";
@@ -345,6 +392,8 @@ const props = withDefaults(
     // Mirrors the presence of React's optional onOpenDiff callback, which
     // gates whether "Open diff" is enabled.
     canOpenDiff?: boolean;
+    conversationId?: string | null;
+    canRequestTour?: boolean;
   }>(),
   { covered: false },
 );
@@ -362,6 +411,8 @@ const data = ref<GitGraphResponse | null>(null);
 const loading = ref(false);
 const error = ref<string | null>(null);
 const selected = ref<string | null>(null);
+const tourStatus = ref<GitTourBuildStatus | null>(null);
+const requestingTour = ref(false);
 const limit = ref(INITIAL_LIMIT);
 const scope = ref<Scope>(loadScope());
 function setScope(s: Scope) {
@@ -592,7 +643,11 @@ watch(
 // Arrow/j/k/Enter navigation (React effect on
 // [isOpen, commits, selected, selectCommit, onOpenDiff, cwd]).
 function onNavKey(e: KeyboardEvent) {
-  if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+  const target = e.target;
+  if (target instanceof Element) {
+    if (target.closest("input, textarea, select")) return;
+    if (e.key === "Enter" && target.closest("a, button")) return;
+  }
   if (!commits.value.length) return;
   const idx = commits.value.findIndex((c) => c.hash === selected.value);
   if (e.key === "ArrowDown" || e.key === "j") {
@@ -609,10 +664,10 @@ function onNavKey(e: KeyboardEvent) {
   }
 }
 watch(
-  () => props.isOpen,
-  (open) => {
+  [() => props.isOpen, () => props.covered],
+  ([open, covered]) => {
     window.removeEventListener("keydown", onNavKey);
-    if (open) window.addEventListener("keydown", onNavKey);
+    if (open && !covered) window.addEventListener("keydown", onNavKey);
   },
   { immediate: true },
 );
@@ -622,6 +677,68 @@ onUnmounted(() => {
 });
 
 const selectedCommit = computed(() => commits.value.find((c) => c.hash === selected.value) || null);
+
+watch(
+  [() => props.isOpen, cwd, selected],
+  ([open, dir, hash], _, onCleanup) => {
+    tourStatus.value = null;
+    if (!open || !dir || !hash) return;
+    let active = true;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const update = (status: GitTourBuildStatus) => {
+      if (!active) return;
+      tourStatus.value = status;
+      const commit = data.value?.commits.find((candidate) => candidate.hash === hash);
+      if (commit && status.status === "present") commit.hasTour = true;
+      if (timer) clearTimeout(timer);
+      timer = status.status === "building" ? setTimeout(() => void probe(), 2_000) : null;
+    };
+    const probe = async () => {
+      try {
+        update(await loadCommitTourStatus(dir, hash, true));
+      } catch (error) {
+        if (active) {
+          console.error("Failed to check commit tour:", error);
+          if (timer) clearTimeout(timer);
+          timer = setTimeout(() => void probe(), 2_000);
+        }
+      }
+    };
+    const unsubscribe = subscribeCommitTourStatus(dir, hash, update);
+    void probe();
+    onCleanup(() => {
+      active = false;
+      unsubscribe();
+      if (timer) clearTimeout(timer);
+    });
+  },
+  { immediate: true },
+);
+
+async function requestTour() {
+  const hash = selected.value;
+  const dir = cwd.value;
+  if (!hash || !dir || !props.conversationId || !props.canRequestTour || requestingTour.value) return;
+  const actions = document.activeElement?.closest(".git-graph-detail-actions");
+  requestingTour.value = true;
+  try {
+    await requestCommitTour(props.conversationId, dir, hash);
+  } catch (error) {
+    if (selected.value === hash && cwd.value === dir) {
+      tourStatus.value = {
+        status: "failed",
+        hash,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  } finally {
+    requestingTour.value = false;
+  }
+  // The Build tour button unmounts once building starts; keep keyboard focus.
+  if (!actions) return;
+  await nextTick();
+  actions.querySelector<HTMLElement>(".git-graph-tour-action, .git-graph-open-diff")?.focus();
+}
 
 // Scroll the selected row into view (React effect on [selected]).
 const rowRefs = new Map<string, HTMLElement>();
@@ -649,16 +766,26 @@ const openDiffHref = computed(() =>
   selectedCommit.value ? diffHref(selectedCommit.value.hash) : "#",
 );
 
-function onOpenDiffClick(e: MouseEvent) {
+function onOpenCommitClick(e: MouseEvent, hash: string) {
   // Let the browser handle modifier/middle-click so users can open the diff
   // in a new tab/window.
   if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) {
     return;
   }
   e.preventDefault();
-  if (props.canOpenDiff && selectedCommit.value) {
-    emit("open-diff", selectedCommit.value.hash, cwd.value);
-  }
+  if (!props.canOpenDiff) return;
+  // Keep the graph selection in sync without opening the mobile detail sheet
+  // behind the diff viewer.
+  selected.value = hash;
+  emit("open-diff", hash, cwd.value);
+}
+
+function onWorkerLinkClick(e: MouseEvent) {
+  if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+  const slug = tourStatus.value?.worker_slug;
+  if (!slug) return;
+  e.preventDefault();
+  navigateToConversationSlug(slug);
 }
 
 function onGravatarError(e: Event) {

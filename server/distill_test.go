@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 	"testing/synctest"
-	"time"
 
 	"shelley.exe.dev/db"
 	"shelley.exe.dev/llm"
@@ -19,7 +18,7 @@ func TestStartNewGenerationFiltersContext(t *testing.T) {
 		h := NewTestHarness(t)
 		h.NewConversation("old context", "")
 		h.WaitResponse()
-		ctx := context.Background()
+		ctx := t.Context()
 		convID := h.convID
 
 		oldMsgs, err := h.db.ListMessagesForContext(ctx, convID)
@@ -79,68 +78,43 @@ func TestStartNewGenerationFiltersContext(t *testing.T) {
 	})
 }
 
-// TestStartNewGenerationPreservesSlug verifies that starting a new generation
-// does NOT cause the conversation's slug to be regenerated/overwritten.
-// The slug is part of the conversation's identity (URL etc.) and should be
-// stable across compaction.
+// TestStartNewGenerationPreservesSlug verifies that the actual post-generation
+// chat path cannot replace the conversation's existing slug.
 func TestStartNewGenerationPreservesSlug(t *testing.T) {
-	h := NewTestHarness(t)
-	h.NewConversation("first message", "")
-	h.WaitResponse()
-	ctx := context.Background()
-	convID := h.convID
-
-	// Pin a known slug so we can detect any overwrite. Real first-message
-	// flow generates one asynchronously, but we want a deterministic value.
-	pinned := "pinned-slug"
-	if _, err := h.db.UpdateConversationSlug(ctx, convID, pinned); err != nil {
-		t.Fatalf("failed to set slug: %v", err)
-	}
-
-	// Bump generation, as the UI "compact" / "new generation" button does.
-	if _, err := h.server.startNewGeneration(ctx, convID); err != nil {
-		t.Fatalf("startNewGeneration: %v", err)
-	}
-
-	// Send a message after the generation bump. The handler will see this
-	// as a "first message" (hasConversationEvents was cleared by ResetLoop)
-	// and kick off async slug generation. The slug must not change.
-	h.Chat("new gen first message")
-	h.WaitResponse()
-
-	// Poll briefly to give the async slug goroutine a chance to (incorrectly)
-	// overwrite the slug. The slug-generation goroutine has a 15s timeout and
-	// runs asynchronously; polling is the same pattern used elsewhere here.
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		fresh, err := h.db.GetConversationByID(ctx, convID)
+	synctest.Test(t, func(t *testing.T) {
+		h := NewTestHarness(t)
+		defer stopActiveConversationLoops(h.server)
+		ctx := t.Context()
+		pinned := "pinned-slug"
+		model := "predictable"
+		conversation, err := h.db.CreateConversation(ctx, &pinned, true, nil, &model, db.ConversationOptions{})
 		if err != nil {
-			t.Fatalf("GetConversationByID: %v", err)
+			t.Fatal(err)
 		}
-		if fresh.Slug != nil && *fresh.Slug != pinned {
-			t.Fatalf("slug after new generation = %q, want %q (slug must be preserved across generations)", *fresh.Slug, pinned)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		h.convID = conversation.ConversationID
 
-	fresh, err := h.db.GetConversationByID(ctx, convID)
-	if err != nil {
-		t.Fatalf("GetConversationByID: %v", err)
-	}
-	if fresh.Slug == nil || *fresh.Slug != pinned {
-		got := "<nil>"
-		if fresh.Slug != nil {
-			got = *fresh.Slug
+		if _, err := h.server.startNewGeneration(ctx, h.convID); err != nil {
+			t.Fatalf("startNewGeneration: %v", err)
 		}
-		t.Errorf("slug after new generation = %q, want %q", got, pinned)
-	}
+		h.Chat("new gen first message")
+		h.WaitResponse()
+		synctest.Wait()
+
+		fresh, err := h.db.GetConversationByID(ctx, h.convID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fresh.Slug == nil || *fresh.Slug != pinned {
+			t.Fatalf("slug after new generation = %v, want %q", fresh.Slug, pinned)
+		}
+	})
 }
 
 func TestChatDuringDistillationQueuesEvenWithoutClientQueueFlag(t *testing.T) {
 	h := NewTestHarness(t)
 	h.NewConversation("before distill", "")
 	h.WaitResponse()
-	ctx := context.Background()
+	ctx := t.Context()
 
 	manager, err := h.server.getOrCreateConversationManager(ctx, h.convID, "")
 	if err != nil {
@@ -249,7 +223,7 @@ func TestDistillNewGenerationResetsContextWindow(t *testing.T) {
 // message in the conversation, in sequence order.
 func distillStatusMessages(t *testing.T, h *TestHarness, convID string) []map[string]string {
 	t.Helper()
-	msgs, err := h.db.ListMessages(context.Background(), convID)
+	msgs, err := h.db.ListMessages(t.Context(), convID)
 	if err != nil {
 		t.Fatalf("ListMessages: %v", err)
 	}
@@ -367,7 +341,7 @@ func TestStartNewGenerationSurvivesClientDisconnect(t *testing.T) {
 
 		// A context already cancelled, standing in for a client that
 		// disconnected between the bump and hydration.
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
 
 		conversation, err := h.server.startNewGeneration(ctx, convID)
@@ -380,7 +354,7 @@ func TestStartNewGenerationSurvivesClientDisconnect(t *testing.T) {
 
 		// The new generation must have its system prompt, or the next turn runs
 		// without one.
-		msgs, err := h.db.ListMessagesForContext(context.Background(), convID)
+		msgs, err := h.db.ListMessagesForContext(t.Context(), convID)
 		if err != nil {
 			t.Fatalf("failed to list context: %v", err)
 		}

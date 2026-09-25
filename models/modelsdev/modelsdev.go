@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"net/url"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 
@@ -21,9 +22,10 @@ import (
 var apiJSON []byte
 
 type modelEntry struct {
-	Reasoning        bool              `json:"reasoning"`
-	ReasoningOptions []reasoningOption `json:"reasoning_options"`
-	ReleaseDate      string            `json:"release_date"`
+	Reasoning        bool                `json:"reasoning"`
+	ReasoningOptions []reasoningOption   `json:"reasoning_options"`
+	Interleaved      interleavedMetadata `json:"interleaved"`
+	ReleaseDate      string              `json:"release_date"`
 	Limit            struct {
 		Context int `json:"context"`
 		Output  int `json:"output"`
@@ -38,6 +40,29 @@ type modelEntry struct {
 type reasoningOption struct {
 	Type   string   `json:"type"`
 	Values []string `json:"values"`
+}
+
+type interleavedMetadata struct {
+	Supported bool
+	Field     string
+}
+
+func (m *interleavedMetadata) UnmarshalJSON(data []byte) error {
+	*m = interleavedMetadata{}
+	var supported bool
+	if err := json.Unmarshal(data, &supported); err == nil {
+		m.Supported = supported
+		return nil
+	}
+	var value struct {
+		Field string `json:"field"`
+	}
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	m.Supported = true
+	m.Field = value.Field
+	return nil
 }
 
 // ReasoningCapabilities describes the reasoning controls models.dev records
@@ -73,6 +98,9 @@ func (c Cost) isZero() bool {
 }
 
 type providerEntry struct {
+	// ID is the stable models.dev provider key. It is populated after decoding
+	// and used to make same-host path ties deterministic.
+	ID string `json:"-"`
 	// API is the provider's base URL (the "api" field in models.dev), e.g.
 	// "https://opencode.ai/zen/v1". Used to match custom models by their
 	// configured endpoint instead of by Shelley's internal provider name.
@@ -97,7 +125,9 @@ func load() map[string]providerEntry {
 			panic("modelsdev: failed to parse embedded api.json: " + err.Error())
 		}
 		hostIndex = make(map[string][]providerEntry)
-		for _, p := range parsed {
+		for id, p := range parsed {
+			p.ID = id
+			parsed[id] = p
 			if h := hostOf(p.API); h != "" {
 				hostIndex[h] = append(hostIndex[h], p)
 			}
@@ -189,6 +219,13 @@ func LookupReasoningCapabilities(endpoint, modelName string) (ReasoningCapabilit
 		return ReasoningCapabilities{}, false
 	}
 	return parseReasoningCapabilities(m), true
+}
+
+// LookupInterleavedReasoningField returns the named assistant-message field
+// when models.dev records one for this model.
+func LookupInterleavedReasoningField(endpoint, modelName string) (string, bool) {
+	m, found := lookupInterleaved(endpoint, modelName)
+	return m.Interleaved.Field, found && m.Interleaved.Supported && m.Interleaved.Field != ""
 }
 
 func parseReasoningCapabilities(m modelEntry) (caps ReasoningCapabilities) {
@@ -303,29 +340,92 @@ func LookupOutputLimit(endpoint, modelName string) (int, bool) {
 	return m.Limit.Output, found
 }
 
-// LookupContextLimit reports the model's hard context window.
+// LookupContextLimit reports the models.dev context window for a model,
+// clamped to the smallest "context" pricing tier when one exists. The tier is
+// a pricing cliff (e.g. gpt-5.6 lists a 1,050,000 window but doubles its price
+// past 272,000), not a hard limit; the UI uses this value as the denominator of
+// its context usage readout, so the clamp keeps the readout honest about where
+// a conversation gets expensive.
 func LookupContextLimit(endpoint, modelName string) (int, bool) {
 	m, found := lookupBroad(endpoint, modelName, func(m modelEntry) bool { return m.Limit.Context > 0 })
 	if !found {
 		return 0, false
 	}
-	return m.Limit.Context, true
-}
-
-// LookupContextPricingThreshold reports the first prompt-size pricing cliff.
-// This is deliberately separate from the hard context window.
-func LookupContextPricingThreshold(endpoint, modelName string) (int, bool) {
-	m, found := lookupBroad(endpoint, modelName, func(m modelEntry) bool { return m.Limit.Context > 0 })
-	if !found {
-		return 0, false
-	}
-	threshold := 0
+	limit := m.Limit.Context
 	for _, t := range m.Cost.Tiers {
-		if t.Tier.Type == "context" && t.Tier.Size > 0 && (threshold == 0 || t.Tier.Size < threshold) {
-			threshold = t.Tier.Size
+		if t.Tier.Type == "context" && t.Tier.Size > 0 && t.Tier.Size < limit {
+			limit = t.Tier.Size
 		}
 	}
-	return threshold, threshold > 0
+	return limit, true
+}
+
+func lookupInterleaved(endpoint, modelName string) (modelEntry, bool) {
+	data := load()
+	names := modelNames(modelName)
+	endpointProviders := hostIndex[hostOf(endpoint)]
+	endpointSegs := pathSegments(endpoint)
+
+	// A full ID identifies the model more precisely than a trailing path
+	// segment, regardless of which catalog contains it.
+	for _, name := range names {
+		if p, ok := bestProviderForPathMatching(endpointProviders, endpointSegs, name, lookupExactInProvider); ok {
+			return lookupExactInProvider(p, name)
+		}
+		if m, ok := lookupInterleavedAcross(data, name, lookupExactInProvider); ok {
+			return m, true
+		}
+	}
+
+	// Once no catalog has a full-ID match, prefer the endpoint's own catalog.
+	for _, name := range names {
+		if p, ok := bestProviderForPathMatching(endpointProviders, endpointSegs, name, lookupTailInProvider); ok {
+			return lookupTailInProvider(p, name)
+		}
+	}
+
+	// Fireworks' public shorthand is an established alias for its native
+	// accounts/fireworks/models IDs, rather than a generic vendor slug.
+	for _, name := range names {
+		if strings.HasPrefix(strings.ToLower(name), "fireworks/") {
+			if p, ok := data["fireworks-ai"]; ok {
+				if m, ok := lookupTailInProvider(p, name); ok {
+					return m, true
+				}
+			}
+		}
+	}
+
+	// Bare tail matches are useful for gateways, but only when every matching
+	// fallback catalog agrees on the interleaved capability and field.
+	for _, name := range names {
+		if m, ok := lookupInterleavedAcross(data, name, lookupTailInProvider); ok {
+			return m, true
+		}
+	}
+	return modelEntry{}, false
+}
+
+func lookupInterleavedAcross(data map[string]providerEntry, modelName string, match func(providerEntry, string) (modelEntry, bool)) (modelEntry, bool) {
+	providers := append(append([]string(nil), firstPartyProviders...), "openrouter")
+	var result modelEntry
+	found := false
+	for _, provider := range providers {
+		p, ok := data[provider]
+		if !ok {
+			continue
+		}
+		m, ok := match(p, modelName)
+		if !ok {
+			continue
+		}
+		if found && m.Interleaved != result.Interleaved {
+			return modelEntry{}, false
+		}
+		result = m
+		found = true
+	}
+	return result, found
 }
 
 // lookupBroad resolves models that may be reached through gateway hosts absent
@@ -402,19 +502,27 @@ func lookup(endpoint, modelName string) (modelEntry, bool) {
 // worse-path provider that has it. Returns ok=false if no provider carries
 // the model.
 func bestProviderForPath(providers []providerEntry, endpointSegs []string, modelName string) (providerEntry, bool) {
+	return bestProviderForPathMatching(providers, endpointSegs, modelName, lookupInProvider)
+}
+
+func bestProviderForPathMatching(providers []providerEntry, endpointSegs []string, modelName string, match func(providerEntry, string) (modelEntry, bool)) (providerEntry, bool) {
 	var best providerEntry
 	bestScore := -1
 	found := false
 	for _, p := range providers {
-		if _, hit := lookupInProvider(p, modelName); !hit {
+		if _, hit := match(p, modelName); !hit {
 			continue
 		}
 		score := commonPrefixLen(pathSegments(p.API), endpointSegs)
-		if score > bestScore {
+		if score > bestScore || score == bestScore && providerStableKey(p) < providerStableKey(best) {
 			best, bestScore, found = p, score, true
 		}
 	}
 	return best, found
+}
+
+func providerStableKey(p providerEntry) string {
+	return p.ID + "\x00" + p.API
 }
 
 // pathSegments splits a URL's path into non-empty, lowercased segments.
@@ -455,29 +563,72 @@ func commonPrefixLen(a, b []string) int {
 // lookupInProvider tries exact, case-insensitive, and last-segment matches
 // for modelName within p.Models.
 func lookupInProvider(p providerEntry, modelName string) (modelEntry, bool) {
+	if m, ok := lookupExactInProvider(p, modelName); ok {
+		return m, true
+	}
+	return lookupTailInProvider(p, modelName)
+}
+
+func lookupExactInProvider(p providerEntry, modelName string) (modelEntry, bool) {
 	if m, ok := p.Models[modelName]; ok {
 		return m, true
 	}
 	lower := strings.ToLower(modelName)
-	for id, entry := range p.Models {
+	for _, id := range sortedModelIDs(p) {
 		if strings.ToLower(id) == lower {
-			return entry, true
-		}
-	}
-	// Try the last "/"-separated segment (e.g. "openai/gpt-4o" -> "gpt-4o").
-	if i := strings.LastIndex(modelName, "/"); i >= 0 && i+1 < len(modelName) {
-		tail := modelName[i+1:]
-		if m, ok := p.Models[tail]; ok {
-			return m, true
-		}
-		tailLower := strings.ToLower(tail)
-		for id, entry := range p.Models {
-			if strings.ToLower(id) == tailLower {
-				return entry, true
-			}
+			return p.Models[id], true
 		}
 	}
 	return modelEntry{}, false
+}
+
+func lookupTailInProvider(p providerEntry, modelName string) (modelEntry, bool) {
+	// Match the final path segment on both sides (e.g. "glm-5p2" or
+	// "fireworks/glm-5p2" -> "accounts/fireworks/models/glm-5p2").
+	// Refuse ambiguous matches instead of depending on map iteration order.
+	tail := modelName
+	if i := strings.LastIndex(modelName, "/"); i >= 0 && i+1 < len(modelName) {
+		tail = modelName[i+1:]
+	}
+	if tail == "" {
+		return modelEntry{}, false
+	}
+	if m, ok := p.Models[tail]; ok {
+		return m, true
+	}
+	tailLower := strings.ToLower(tail)
+	ids := sortedModelIDs(p)
+	for _, id := range ids {
+		if strings.ToLower(id) == tailLower {
+			return p.Models[id], true
+		}
+	}
+	var match modelEntry
+	found := false
+	for _, id := range ids {
+		idTail := id
+		if j := strings.LastIndex(id, "/"); j >= 0 && j+1 < len(id) {
+			idTail = id[j+1:]
+		}
+		if strings.ToLower(idTail) != tailLower {
+			continue
+		}
+		if found {
+			return modelEntry{}, false
+		}
+		match = p.Models[id]
+		found = true
+	}
+	return match, found
+}
+
+func sortedModelIDs(p providerEntry) []string {
+	ids := make([]string, 0, len(p.Models))
+	for id := range p.Models {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 func entryHasImage(m modelEntry) bool {

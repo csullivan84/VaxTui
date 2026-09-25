@@ -3,11 +3,52 @@ package models
 import "testing"
 
 func TestAssignTiers(t *testing.T) {
-	t.Run("Astra and Sol remain peers", func(t *testing.T) {
-		tiers := AssignTiers([]string{"gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"})
-		for _, id := range []string{"gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"} {
+	t.Run("opus 5.5 shadows older Opus and Sonnet 5", func(t *testing.T) {
+		ids := []string{"claude-opus-5.5", "claude-opus-5", "claude-opus-4.8", "claude-opus-4.7", "claude-opus-4.6", "claude-sonnet-5"}
+		tiers := AssignTiers(ids)
+		if tiers["claude-opus-5.5"] != Tier1 {
+			t.Errorf("opus-5.5 tier = %d, want %d", tiers["claude-opus-5.5"], Tier1)
+		}
+		for _, id := range ids[1:] {
+			if tiers[id] != Tier2 {
+				t.Errorf("%s tier = %d, want %d", id, tiers[id], Tier2)
+			}
+		}
+	})
+
+	t.Run("GPT-6 Sol shadows its superseded lineage", func(t *testing.T) {
+		ids := []string{"gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra"}
+		tiers := AssignTiers(ids)
+		for _, id := range []string{"gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-terra"} {
 			if tiers[id] != Tier1 {
 				t.Errorf("%s tier = %d, want %d", id, tiers[id], Tier1)
+			}
+		}
+		if tiers["gpt-5.6-sol"] != Tier2 {
+			t.Errorf("gpt-5.6-sol tier = %d, want %d", tiers["gpt-5.6-sol"], Tier2)
+		}
+	})
+
+	t.Run("Luna generations remain peers while subscription access lags", func(t *testing.T) {
+		tiers := AssignTiers([]string{"gpt-6-luna", "gpt-5.6-luna"})
+		for _, id := range []string{"gpt-6-luna", "gpt-5.6-luna"} {
+			if tiers[id] != Tier1 {
+				t.Errorf("%s tier = %d, want %d", id, tiers[id], Tier1)
+			}
+		}
+	})
+
+	t.Run("GPT-6 variants directly shadow older models without intermediates", func(t *testing.T) {
+		ids := []string{"gpt-6-sol", "gpt-5.5", "gpt-5.4", "gpt-6-luna", "gpt-5.4-nano", "gpt-5.3-codex", "claude-haiku-4.5"}
+		tiers := AssignTiers(ids)
+		for _, id := range []string{"gpt-6-sol", "gpt-6-luna"} {
+			if tiers[id] != Tier1 {
+				t.Errorf("%s tier = %d, want %d", id, tiers[id], Tier1)
+			}
+		}
+		for _, id := range []string{"gpt-5.5", "gpt-5.4", "gpt-5.4-nano", "gpt-5.3-codex", "claude-haiku-4.5"} {
+			if tiers[id] != Tier2 {
+				t.Errorf("%s tier = %d, want %d", id, tiers[id], Tier2)
 			}
 		}
 	})
@@ -73,6 +114,16 @@ func TestAssignTiers(t *testing.T) {
 			if tiers[worse] != Tier2 {
 				t.Errorf("%s tier = %d, want %d", worse, tiers[worse], Tier2)
 			}
+		}
+	})
+
+	t.Run("deepseek v4.1 flash shadows 0731 flash", func(t *testing.T) {
+		tiers := AssignTiers([]string{"deepseek-v4.1-flash-fireworks", "deepseek-v4-flash-0731-fireworks"})
+		if tiers["deepseek-v4.1-flash-fireworks"] != Tier1 {
+			t.Errorf("v4.1 flash tier = %d, want %d", tiers["deepseek-v4.1-flash-fireworks"], Tier1)
+		}
+		if tiers["deepseek-v4-flash-0731-fireworks"] != Tier2 {
+			t.Errorf("0731 flash tier = %d, want %d", tiers["deepseek-v4-flash-0731-fireworks"], Tier2)
 		}
 	})
 

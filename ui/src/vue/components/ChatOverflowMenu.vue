@@ -11,7 +11,7 @@
     - <SelectButton> the screen-reader segmented toggle
     - Native icon groups / cycle buttons for compact view, theme, notifications
     - Command palette action
-    - <Select>      the language picker
+    - <Modal>       language choices, opened by a compact menu action
 
   The e2e DOM/ARIA contract is preserved so the shared Playwright specs keep
   passing in BOTH worlds:
@@ -29,6 +29,7 @@
 <template>
   <div class="chat-overflow-menu-wrapper">
     <Button
+      ref="triggerRef"
       class="btn-icon"
       text
       severity="secondary"
@@ -140,6 +141,11 @@
           ><kbd>{{ menuShortcutLabel("terminal") }}</kbd></span
         >
       </button>
+      <button v-if="showDirectory" class="overflow-menu-item" @click="onDirectory">
+        <i class="pi pi-folder chat-menu-icon" aria-hidden="true" />
+        {{ t("directory") }}
+        <span class="overflow-menu-cwd" :title="cwd">{{ tildifyPath(cwd) }}</span>
+      </button>
 
       <!-- Custom server-provided links (icon is a raw SVG path) -->
       <button
@@ -195,10 +201,7 @@
       <button class="overflow-menu-item" @click="onEditFile">
         <i class="pi pi-file-edit chat-menu-icon" aria-hidden="true" />
         {{ t("editFile") }}
-        <span
-          v-tooltip.bottom="editFileShortcutTooltip"
-          class="overflow-menu-shortcut"
-          :class="{ 'overflow-menu-shortcut-inert': isFirefox }"
+        <span class="overflow-menu-shortcut" v-tooltip.bottom="t('editFileShortcut')"
           ><kbd>{{ menuShortcutLabel("editFile") }}</kbd></span
         >
       </button>
@@ -330,38 +333,52 @@
 
       <!-- Language -->
       <div class="overflow-menu-divider" />
-      <div class="overflow-menu-control">
-        <div class="md-toggle-label">{{ t("language") }}</div>
-        <Select
-          v-model="lang"
-          :options="languageOptions"
-          option-label="label"
-          option-value="locale"
-          :aria-label="t('switchLanguage')"
-          class="overflow-language-select"
-          append-to="self"
-          @update:model-value="onLangChange"
-        >
-          <template #value="{ value }">
-            <span class="language-dropdown-flag">{{ languageFor(value).flag }}</span>
-            <span>{{ languageFor(value).label }}</span>
-          </template>
-          <template #option="{ option }">
-            <span class="language-dropdown-flag">{{ option.flag }}</span>
-            <span>{{ option.label }}</span>
-          </template>
-        </Select>
-      </div>
+      <button class="overflow-menu-item" aria-haspopup="dialog" @click="onLanguagePicker">
+        <i class="pi pi-globe chat-menu-icon" aria-hidden="true" />
+        {{ t("switchLanguage") }}
+        <span class="overflow-menu-language">{{ currentLanguage.label }}</span>
+      </button>
     </Popover>
+
+    <Modal
+      :is-open="languagePickerOpen"
+      :title="t('switchLanguage')"
+      class-name="language-picker-modal"
+      @close="languagePickerOpen = false"
+    >
+      <div
+        ref="languageOptionsRef"
+        class="language-picker-options"
+        role="group"
+        :aria-label="t('language')"
+      >
+        <button
+          v-for="option in languageOptions"
+          :key="option.locale"
+          type="button"
+          class="language-picker-option"
+          :aria-pressed="locale === option.locale"
+          @click="onLangChange(option.locale)"
+        >
+          <span class="language-dropdown-flag" aria-hidden="true">{{ option.flag }}</span>
+          <span>{{ option.label }}</span>
+          <i
+            v-if="locale === option.locale"
+            class="pi pi-check language-picker-check"
+            aria-hidden="true"
+          />
+        </button>
+      </div>
+    </Modal>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, nextTick, ref } from "vue";
 import Popover from "primevue/popover";
 import Button from "primevue/button";
-import Select from "primevue/select";
 import SelectButton from "primevue/selectbutton";
+import Modal from "./Modal.vue";
 import OverflowDotsIcon from "./OverflowDotsIcon.vue";
 import type { Link } from "../../types";
 import type { Locale } from "../../i18n/types";
@@ -369,7 +386,8 @@ import { useI18n } from "../composables/i18n";
 import { useScreenReaderMode } from "../composables/screenReaderMode";
 import { announceA11y } from "../../services/a11yAnnouncer";
 import { useConversationView } from "../composables/conversationView";
-import { menuShortcutLabel, isFirefox } from "../../utils/menuShortcuts";
+import { menuShortcutLabel } from "../../utils/menuShortcuts";
+import { tildifyPath } from "../../utils/tildify";
 import { type ThemeMode, getStoredTheme, setStoredTheme, applyTheme } from "../../services/theme";
 import {
   isChannelEnabled,
@@ -380,6 +398,8 @@ import {
 
 defineProps<{
   hasCwd: boolean;
+  showDirectory: boolean;
+  cwd: string;
   links: Link[];
   canArchive: boolean;
   canExport: boolean;
@@ -388,6 +408,7 @@ defineProps<{
 
 const emit = defineEmits<{
   (e: "open-command-palette"): void;
+  (e: "open-directory-picker"): void;
   (e: "open-diffs"): void;
   (e: "open-git-graph"): void;
   (e: "open-terminal"): void;
@@ -413,13 +434,7 @@ function toggleConversationView() {
   setConversationViewMode(conversationViewMode.value === "all" ? "end-of-turn" : "all");
 }
 
-// Edit File uses Cmd/Ctrl+Shift+P (VS Code parity). Firefox reserves that combo
-// for "New Private Window" and never delivers it to the page, so the shortcut
-// is inert there; explain that on hover rather than silently misleading users.
-const editFileShortcutTooltip = computed(() =>
-  isFirefox ? t("editFileShortcutFirefox") : t("editFileShortcut"),
-);
-
+const triggerRef = ref<{ $el: HTMLButtonElement } | null>(null);
 const popoverRef = ref<InstanceType<typeof Popover> | null>(null);
 const open = ref(false);
 
@@ -434,6 +449,7 @@ function hide() {
 // one-liners (rather than a union-typed helper) so defineEmits' per-event
 // overloads type-check cleanly.
 const onCommandPalette = () => (emit("open-command-palette"), hide());
+const onDirectory = () => (emit("open-directory-picker"), hide());
 const onDiffs = () => (emit("open-diffs"), hide());
 const onGitGraph = () => (emit("open-git-graph"), hide());
 const onTerminal = () => (emit("open-terminal"), hide());
@@ -497,9 +513,7 @@ function onSrModeChange(on: boolean) {
   srMode.value = on;
   setScreenReaderMode(on);
   announceA11y(
-    on
-      ? "Screen reader mode on. Tool output stays expanded."
-      : "Screen reader mode off.",
+    on ? "Screen reader mode on. Tool output stays expanded." : "Screen reader mode off.",
   );
 }
 
@@ -524,12 +538,20 @@ const languageOptions: LanguageOption[] = [
   { locale: "vi", flag: "\uD83C\uDDFB\uD83C\uDDF3", label: "Ti\u1EBFng Vi\u1EC7t" },
   { locale: "upgoer5", flag: "\uD83D\uDE80", label: "Up-Goer Five" },
 ];
-const lang = ref<Locale>(locale.value);
-function languageFor(l: Locale): LanguageOption {
-  return languageOptions.find((o) => o.locale === l) || languageOptions[0];
+const currentLanguage = computed(() => languageOptions.find((o) => o.locale === locale.value)!);
+const languagePickerOpen = ref(false);
+const languageOptionsRef = ref<HTMLDivElement | null>(null);
+
+async function onLanguagePicker() {
+  hide();
+  // The menu item disappears, so let the dialog restore focus to the menu trigger.
+  triggerRef.value?.$el.focus();
+  languagePickerOpen.value = true;
+  await nextTick();
+  languageOptionsRef.value?.querySelector<HTMLButtonElement>('[aria-pressed="true"]')?.focus();
 }
 function onLangChange(l: Locale) {
-  lang.value = l;
   setLocale(l);
+  languagePickerOpen.value = false;
 }
 </script>

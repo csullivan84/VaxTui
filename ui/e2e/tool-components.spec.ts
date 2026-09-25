@@ -1,12 +1,12 @@
-import { test, expect } from '@playwright/test';
-import { createConversationViaAPI, openToolPill, closeToolModal, setPageFeatureFlag } from './helpers';
+import { test, expect, type Locator } from '@playwright/test';
+import {
+  createConversationViaAPI,
+  createConversationViaAPIWithDetails,
+  disableScreenReaderMode,
+  mountAllToolCards,
+} from './helpers';
 
 test.describe('Tool Component Verification', () => {
-  // Pill rendering is gated behind a feature flag; opt in for this suite.
-  test.beforeEach(async ({ page }) => {
-    await setPageFeatureFlag(page, 'tool-pills', true);
-  });
-
   // Shared smorgasbord conversation (created once, reused by multiple tests).
   // The smorgasbord launches browser tools (chromedp) which need up to 60s
   // for the initial Chrome startup, so we only pay that cost once.
@@ -23,145 +23,366 @@ test.describe('Tool Component Verification', () => {
 
   test('all tools use custom components, not GenericTool', async ({ page, request }) => {
     test.setTimeout(180000);
+    const registry = await request.get('/api/tools');
+    expect(registry.ok()).toBeTruthy();
+    const { tools } = await registry.json();
+    expect(tools.map((tool: { name: string }) => tool.name)).not.toContain('keyword_search');
+
     const slug = await ensureSmorgasbord(request);
 
     await page.goto(`/c/${slug}`);
     await page.waitForLoadState('domcontentloaded');
 
-    // All tool results are already in the DB; wait for the UI to render them.
-    // Pillable tools render as compact pills; auto-expand tools (patch,
-    // screenshot, read_image, output_iframe) still render inline.
+    // All tool results are already in the DB; wait for the UI to render them,
+    // then mount the ones that are still cheap offscreen placeholders so the
+    // whole set can be asserted without scrolling through it.
     await page.waitForFunction(
-      () =>
-        document.querySelectorAll(
-          '.tool-pill[data-testid="tool-call-completed"], .patch-tool[data-testid="tool-call-completed"], .screenshot-tool[data-testid="tool-call-completed"]',
-        ).length >= 15,
+      () => document.querySelectorAll('[data-testid="tool-call-completed"]').length >= 15,
       undefined,
       { timeout: 30000 },
     );
+    await mountAllToolCards(page);
 
-    // Helper: open a pill matching the (toolName, textFilter) pair, assert
-    // that the modal's specialized component is present, then close.
-    // Predictable's smorgasbord uses a single "browser" tool name for
-    // every browser action, so a text filter is required for those.
-    const verifyPill = async (
-      toolName: string,
-      textFilter: string | RegExp | null,
-      modalAssertion: (modal: ReturnType<typeof page.locator>) => Promise<void>,
-    ) => {
-      let pill = page.locator(`.tool-pill[data-tool-name="${toolName}"]`);
-      if (textFilter !== null) pill = pill.filter({ hasText: textFilter });
-      const first = pill.first();
-      await expect(first).toBeVisible();
-      await first.scrollIntoViewIfNeeded();
-      await first.click();
-      const modal = page.locator('.tool-pill-expanded');
-      await expect(modal).toBeVisible();
-      await modalAssertion(modal);
-      // Pill itself must NOT use the GenericTool gear icon.
-      expect(await first.locator('.tool-pill-emoji').filter({ hasText: '⚙️' }).count()).toBe(0);
-      await closeToolModal(page);
+    // The generic-shaped cards (.tool) are identified by their header summary;
+    // each must render its specialized component's emoji. Assert on attachment
+    // rather than visibility: the smorgasbord is taller than the viewport and
+    // offscreen chunks are content-visibility: auto.
+    const toolCard = (summary: string | RegExp): Locator =>
+      page.locator('.tool').filter({ has: page.locator('.tool-command', { hasText: summary }) });
+    const expectEmoji = async (card: Locator, emoji: string) => {
+      await expect(card.first()).toBeAttached();
+      await expect(card.first().locator('.tool-emoji')).toHaveText(emoji);
     };
 
-    await verifyPill('bash', null, async (modal) => {
-      const t = modal.locator('.bash-tool').filter({ hasText: "echo 'hello from bash'" });
-      await expect(t).toBeVisible();
-      // In the detail modal the disclosure header is hidden (the modal title
-      // is the headline); the command shows in the expanded Command section.
-      await expect(t.locator('.bash-tool-details')).toBeVisible();
-      await expect(
-        t.locator('.bash-tool-code').filter({ hasText: "echo 'hello from bash'" }).first(),
-      ).toBeVisible();
-    });
+    // bash and shell both render the BashTool card, with the command in the header.
+    for (const command of ["echo 'hello from bash'", "echo 'hello from shell'"]) {
+      const bashCard = page.locator('.bash-tool').filter({ hasText: command }).first();
+      await expect(bashCard).toBeAttached();
+      await expect(bashCard.locator('.bash-tool-emoji')).toBeAttached();
+      await expect(bashCard.locator('.bash-tool-command')).toContainText(command);
+    }
 
-    await verifyPill('shell', null, async (modal) => {
-      const t = modal.locator('.bash-tool').filter({ hasText: "echo 'hello from shell'" });
-      await expect(t).toBeVisible();
-      await expect(t.locator('.bash-tool-details')).toBeVisible();
-      await expect(
-        t.locator('.bash-tool-code').filter({ hasText: "echo 'hello from shell'" }).first(),
-      ).toBeVisible();
-    });
-
-    // Thinking content appears inline (no pill).
+    // Thinking content appears inline (not a tool card).
     const thinkingContent = page.locator('.thinking-content').filter({ hasText: "I'm thinking about the best approach" });
     await expect(thinkingContent.first()).toBeVisible();
     await expect(thinkingContent.locator('text=💭').first()).toBeVisible();
 
-    // patch / screenshot / read_image still render inline (auto-expand tools).
+    // Diff / image / iframe tools keep their own card shapes.
     const patchTool = page.locator('.patch-tool').first();
-    await expect(patchTool).toBeVisible();
-    await expect(patchTool.locator('.patch-tool-emoji')).toBeVisible();
+    await expect(patchTool).toBeAttached();
+    await expect(patchTool.locator('.patch-tool-emoji')).toBeAttached();
 
+    // A browser: screenshot action renders the ScreenshotTool card, same as the
+    // standalone screenshot tool.
     const screenshotTool = page.locator('.screenshot-tool').filter({ hasText: /\.png$|screenshot/i }).first();
-    await expect(screenshotTool).toBeVisible();
+    await expect(screenshotTool).toBeAttached();
+    await expect(page.locator('.screenshot-tool .screenshot-tool-emoji').filter({ hasText: '📷' }).first()).toBeAttached();
 
     const readImageTool = page.locator('.screenshot-tool').filter({ hasText: '/tmp/image.png' });
-    await expect(readImageTool.first()).toBeVisible();
-    await expect(readImageTool.locator('.screenshot-tool-emoji').filter({ hasText: '🖼️' }).first()).toBeVisible();
+    await expect(readImageTool.first()).toBeAttached();
+    await expect(readImageTool.locator('.screenshot-tool-emoji').filter({ hasText: '🖼️' }).first()).toBeAttached();
 
-    // A browser: screenshot action is an auto-expand tool too: it must render
-    // inline as a ScreenshotTool card, never collapse into a pill.
-    await expect(
-      page.locator('.tool-pill[data-tool-name="browser"]').filter({ hasText: /screenshot/i }),
-    ).toHaveCount(0);
-    await expect(page.locator('.screenshot-tool .screenshot-tool-emoji').filter({ hasText: '📷' }).first()).toBeVisible();
+    // browser: screencast_stop -> ScreencastTool card.
+    await expect(page.locator('.screencast-tool').first()).toBeAttached();
 
-    // browser: screencast_stop pill -> ScreencastTool widget in modal.
-    await verifyPill('browser', 'screencast_stop', async (modal) => {
-      await expect(modal.locator('.screencast-tool').first()).toBeVisible();
+    // Spot-check the rest of the set.
+    await expectEmoji(toolCard('https://example.com'), '🌐');
+    await expectEmoji(toolCard('document.title'), '⚡');
+    await expectEmoji(toolCard(/console/i), '📋');
+    await expectEmoji(toolCard('/tmp/test-prompt.txt'), '🤖');
+    // The emulate/network/accessibility/profile families are folded into the
+    // single "browser" tool via `<family>_<sub>` actions, and the old
+    // standalone browser_* tool names must still render with their specialized
+    // components (for conversations in existing DBs). Both spellings reach the
+    // same component, so the per-family emoji is what proves the dispatch.
+    await expectEmoji(toolCard(/^device iphone_14$/), '📱');
+    await expectEmoji(toolCard(/^device ipad$/), '📱');
+    await expectEmoji(toolCard(/^enable$/), '📡');
+    await expectEmoji(toolCard(/^tree$/), '🌳');
+    await expectEmoji(toolCard(/^metrics$/), '📊');
+
+    // No tool falls back to GenericTool's gear.
+    await expect(page.locator('.tool-emoji').filter({ hasText: '⚙️' })).toHaveCount(0);
+  });
+
+  test('audio transcription has a dedicated card and generic fallbacks identify themselves', async ({ page, request }) => {
+    const { conversationId, slug } = await createConversationViaAPIWithDetails(
+      request,
+      'echo: tool card fixture',
+    );
+    const response = await request.get(`/api/conversation/${conversationId}`);
+    expect(response.ok()).toBeTruthy();
+    const body = await response.json();
+    body.conversation.agent_working = false;
+    body.messages = [
+      {
+        message_id: 'tool-card-calls',
+        conversation_id: conversationId,
+        sequence_id: 1,
+        type: 'agent',
+        llm_data: JSON.stringify({
+          Role: 1,
+          Content: [
+            {
+              ID: 'audio-transcription',
+              Type: 5,
+              ToolName: 'openai_audio_transcription',
+              ToolInput: {
+                file: '/tmp/shelley-uploads/planning-session.webm',
+                model: 'gpt-transcribe',
+                response_format: 'json',
+                prompt_chars: 1234,
+              },
+            },
+            {
+              ID: 'audio-transcription-error',
+              Type: 5,
+              ToolName: 'openai_audio_transcription',
+              ToolInput: {
+                file: '/tmp/shelley-uploads/broken-recording.webm',
+                model: 'gpt-transcribe',
+                prompt_chars: 0,
+              },
+            },
+            {
+              ID: 'unknown-tool',
+              Type: 5,
+              ToolName: 'custom_tool_missing_ui_&_#_%_雪_with_a_very_long_name',
+              ToolInput: { value: 42 },
+            },
+            {
+              ID: 'unknown-browser-action',
+              Type: 5,
+              ToolName: 'browser',
+              ToolInput: { action: 'future_action_&_#_%_雪_without_a_dedicated_component_name' },
+            },
+          ],
+          EndOfTurn: false,
+        }),
+        created_at: '2026-09-22T12:00:00Z',
+        generation: 1,
+      },
+      {
+        message_id: 'tool-card-results',
+        conversation_id: conversationId,
+        sequence_id: 2,
+        type: 'user',
+        llm_data: JSON.stringify({
+          Role: 0,
+          Content: [
+            {
+              Type: 6,
+              ToolUseID: 'audio-transcription',
+              ToolResult: [
+                {
+                  Type: 2,
+                  Text: JSON.stringify({
+                    duration_ms: 5573,
+                    model: 'gpt-transcribe',
+                    text: 'We should ship the polished transcription card this week.',
+                    timestamps_model: 'whisper-1',
+                    timestamps_path:
+                      '/tmp/shelley-uploads/planning-session.webm.transcript-timestamps.json',
+                  }),
+                },
+              ],
+              ToolUseStartTime: '2026-09-22T12:00:00Z',
+              ToolUseEndTime: '2026-09-22T12:00:05.573Z',
+            },
+            {
+              Type: 6,
+              ToolUseID: 'audio-transcription-error',
+              ToolError: true,
+              ToolResult: [
+                {
+                  Type: 2,
+                  Text: JSON.stringify({
+                    duration_ms: 931,
+                    error: 'The recording could not be transcribed.',
+                    model: 'gpt-transcribe',
+                  }),
+                },
+              ],
+              ToolUseStartTime: '2026-09-22T12:00:05.600Z',
+              ToolUseEndTime: '2026-09-22T12:00:06.531Z',
+            },
+            {
+              Type: 6,
+              ToolUseID: 'unknown-tool',
+              ToolResult: [{ Type: 2, Text: 'unknown tool output' }],
+              ToolUseStartTime: '2026-09-22T12:00:06Z',
+              ToolUseEndTime: '2026-09-22T12:00:06.100Z',
+            },
+            {
+              Type: 6,
+              ToolUseID: 'unknown-browser-action',
+              ToolResult: [{ Type: 2, Text: 'unknown browser action output' }],
+              ToolUseStartTime: '2026-09-22T12:00:07Z',
+              ToolUseEndTime: '2026-09-22T12:00:07.100Z',
+            },
+          ],
+          EndOfTurn: false,
+        }),
+        created_at: '2026-09-22T12:00:08Z',
+        generation: 1,
+      },
+    ];
+
+    await page.route('**/api/stream2*', (route) => route.abort());
+    await page.route(`**/api/conversation/${conversationId}`, (route) =>
+      route.fulfill({ json: body }),
+    );
+    await disableScreenReaderMode(page);
+    await page.goto(`/c/${slug}`);
+
+    const transcriptions = page.locator('.audio-transcription-tool');
+    await expect(transcriptions).toHaveCount(2);
+    const transcription = transcriptions.filter({ hasText: 'planning-session.webm' });
+    await expect(transcription).toBeVisible();
+    await expect(transcription).toHaveAttribute('data-testid', 'tool-call-completed');
+    await expect(transcription).toContainText('Audio transcription');
+    await expect(transcription).toContainText('planning-session.webm');
+    await expect(transcription).toContainText('gpt-transcribe');
+    await expect(transcription).toContainText('5.6s');
+    await expect(transcription).not.toContainText('duration_ms');
+    await expect(transcription).not.toContainText(
+      'We should ship the polished transcription card this week.',
+    );
+    expect(
+      await transcription
+        .locator('.tool-header')
+        .evaluate((element) => element.scrollWidth <= element.clientWidth),
+    ).toBe(true);
+
+    await transcription.locator('.tool-header').click();
+    await expect(transcription).toContainText(
+      'We should ship the polished transcription card this week.',
+    );
+    await expect(transcription).toContainText('1,234 prompt characters');
+    await expect(transcription).toContainText('whisper-1');
+    await expect(transcription).toContainText('planning-session.webm.transcript-timestamps.json');
+    expect(
+      await transcription.evaluate((element) => element.scrollWidth <= element.clientWidth),
+    ).toBe(true);
+
+    const failedTranscription = transcriptions.filter({ hasText: 'broken-recording.webm' });
+    await expect(failedTranscription).toContainText('failed');
+    await failedTranscription.locator('.tool-header').click();
+    await expect(failedTranscription).toContainText('Error:');
+    await expect(failedTranscription).toContainText('The recording could not be transcribed.');
+    await expect(failedTranscription).not.toContainText('Transcript:');
+
+    const rawGenericSummary = page.locator('.tool-result-summary');
+    expect(
+      await rawGenericSummary.evaluate((element) => element.scrollWidth <= element.clientWidth),
+    ).toBe(true);
+    const browserGeneric = page
+      .locator('.tool')
+      .filter({ hasText: 'browser (future_action_&_#_%_雪_without_a_dedicated_component_name)' });
+    expect(
+      await browserGeneric
+        .locator('.tool-header')
+        .evaluate((element) => element.scrollWidth <= element.clientWidth),
+    ).toBe(true);
+
+    const rawWarning = rawGenericSummary.locator('a.generic-tool-warning');
+    const browserWarning = browserGeneric.locator('a.generic-tool-warning');
+    for (const [link, toolName] of [
+      [rawWarning, 'custom_tool_missing_ui_&_#_%_雪_with_a_very_long_name'],
+      [browserWarning, 'browser (future_action_&_#_%_雪_without_a_dedicated_component_name)'],
+    ] as const) {
+      await expect(link).toHaveAttribute(
+        'aria-label',
+        `GENERIC TOOL RESULT (Please report a bug) — missing UI for ${toolName} (opens in new tab)`,
+      );
+      await expect(link).toHaveAttribute('target', '_blank');
+      await expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+      const href = await link.getAttribute('href');
+      expect(href).toBeTruthy();
+      const url = new URL(href!);
+      expect(`${url.origin}${url.pathname}`).toBe(
+        'https://github.com/boldsoftware/shelley/issues/new',
+      );
+      expect(url.searchParams.get('labels')).toBe('bug');
+      expect(url.searchParams.get('title')).toBe(`Missing tool UI: ${toolName}`);
+      expect(url.searchParams.get('body')).toContain(`**Tool:** \`${toolName}\``);
+    }
+
+    const rawDetails = rawGenericSummary.locator('xpath=ancestor::details');
+    await expect(rawDetails).not.toHaveAttribute('open', '');
+    const rawPopupPromise = page.waitForEvent('popup');
+    await rawWarning.click({ noWaitAfter: true });
+    (await rawPopupPromise).close();
+    await expect(rawDetails).not.toHaveAttribute('open', '');
+    await rawWarning.focus();
+    await rawWarning.press('Space');
+    await expect(rawDetails).not.toHaveAttribute('open', '');
+
+    const browserPopupPromise = page.waitForEvent('popup');
+    await browserWarning.click({ noWaitAfter: true });
+    (await browserPopupPromise).close();
+    await expect(browserGeneric.locator('.tool-details')).toBeHidden();
+
+    const warnings = page.getByText('GENERIC TOOL RESULT (Please report a bug)', { exact: true });
+    await expect(warnings).toHaveCount(2);
+    await expect(warnings.first()).toBeVisible();
+    await expect(warnings.last()).toBeVisible();
+  });
+
+  test('generic tool audit stays inside its card on mobile', async ({ page }) => {
+    await page.setViewportSize({ width: 360, height: 800 });
+    await page.goto('/new');
+    await page.locator('body').evaluate((body) => {
+      body.innerHTML = `
+        <div style="padding: 16px">
+          <details class="tool-result-details">
+            <summary class="tool-result-summary">
+              <div class="tool-result-meta">
+                <div class="tool-result-primary flex space-x-2">
+                  <svg class="chat-tool-icon"></svg>
+                  <div class="generic-tool-result-summary">
+                    <div class="generic-tool-result-heading">
+                      <span class="tool-result-name text-sm font-medium text-blue">
+                        custom_tool_missing_ui
+                      </span>
+                      <a
+                        class="generic-tool-warning"
+                        href="https://github.com/boldsoftware/shelley/issues/new"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        GENERIC TOOL RESULT (Please report a bug)
+                      </a>
+                    </div>
+                    <span class="tool-result-status text-xs">
+                      unknown tool output that must remain inside the card
+                    </span>
+                  </div>
+                </div>
+                <div class="tool-result-time"></div>
+              </div>
+            </summary>
+          </details>
+        </div>
+      `;
     });
 
-    // Spot-check the rest of the pill set. Each pill's specialized
-    // component must render inside its modal.
-    await verifyPill('keyword_search', null, async (modal) => {
-      await expect(modal.locator('.tool .tool-emoji').filter({ hasText: '🔍' }).first()).toBeAttached();
-    });
-    await verifyPill('browser', 'https://example.com', async (modal) => {
-      await expect(modal.locator('.tool .tool-emoji').filter({ hasText: '🌐' }).first()).toBeAttached();
-    });
-    await verifyPill('browser', /\beval\b/, async (modal) => {
-      await expect(modal.locator('.tool .tool-emoji').filter({ hasText: '⚡' }).first()).toBeAttached();
-    });
-    await verifyPill('browser', 'console_logs', async (modal) => {
-      await expect(modal.locator('.tool .tool-emoji').filter({ hasText: '📋' }).first()).toBeAttached();
-    });
-    // The emulate/network/accessibility/profile families are now folded into
-    // the single "browser" tool via `<family>_<sub>` actions. Verify they
-    // render with their specialized component (correct emoji) under that name.
-    await verifyPill('browser', 'emulate_device', async (modal) => {
-      await expect(modal.locator('.tool .tool-emoji').filter({ hasText: '📱' }).first()).toBeAttached();
-    });
-    await verifyPill('browser', 'network_enable', async (modal) => {
-      await expect(modal.locator('.tool .tool-emoji').filter({ hasText: '📡' }).first()).toBeAttached();
-    });
-    await verifyPill('browser', 'accessibility_tree', async (modal) => {
-      await expect(modal.locator('.tool .tool-emoji').filter({ hasText: '🌳' }).first()).toBeAttached();
-    });
-    await verifyPill('browser', 'profile_metrics', async (modal) => {
-      await expect(modal.locator('.tool .tool-emoji').filter({ hasText: '📊' }).first()).toBeAttached();
-    });
-    // Backwards-compat: old standalone browser_* tool names must still render
-    // with their specialized components (for conversations in existing DBs).
-    await verifyPill('browser_emulate', null, async (modal) => {
-      await expect(modal.locator('.tool .tool-emoji').filter({ hasText: '📱' }).first()).toBeAttached();
-    });
-    await verifyPill('browser_network', null, async (modal) => {
-      await expect(modal.locator('.tool .tool-emoji').filter({ hasText: '📡' }).first()).toBeAttached();
-    });
-    await verifyPill('browser_accessibility', null, async (modal) => {
-      await expect(modal.locator('.tool .tool-emoji').filter({ hasText: '🌳' }).first()).toBeAttached();
-    });
-    await verifyPill('browser_profile', null, async (modal) => {
-      await expect(modal.locator('.tool .tool-emoji').filter({ hasText: '📊' }).first()).toBeAttached();
-    });
-    await verifyPill('llm_one_shot', null, async (modal) => {
-      await expect(modal.locator('.tool .tool-emoji').filter({ hasText: '🤖' }).first()).toBeAttached();
-    });
-
-    // No pill should be rendered with the GenericTool gear emoji.
-    const genericPills = page.locator('.tool-pill .tool-pill-emoji').filter({ hasText: '⚙️' });
-    expect(await genericPills.count()).toBe(0);
+    const card = page.locator('.tool-result-details');
+    const summary = page.locator('.tool-result-summary');
+    const status = page.locator('.tool-result-status');
+    const warning = page.locator('.generic-tool-warning');
+    await expect(card).toBeVisible();
+    await expect(warning).toBeVisible();
+    expect(await summary.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(
+      true,
+    );
+    for (const element of [status, warning]) {
+      const elementBox = await element.boundingBox();
+      const summaryBox = await summary.boundingBox();
+      expect((elementBox?.x ?? 0) + (elementBox?.width ?? 0)).toBeLessThanOrEqual(
+        (summaryBox?.x ?? 0) + (summaryBox?.width ?? 0),
+      );
+    }
   });
 
   test('bash tool shows command in header', async ({ page, request }) => {
@@ -169,22 +390,10 @@ test.describe('Tool Component Verification', () => {
     await page.goto(`/c/${slug}`);
     await page.waitForLoadState('domcontentloaded');
 
-    // Wait for the bash pill to render and open it.
-    const pill = page.locator('.tool-pill[data-tool-name="bash"]').filter({ hasText: 'unique-test-command-xyz123' });
-    await expect(pill).toBeVisible({ timeout: 15000 });
-    await pill.click();
-    const modal = page.locator('.tool-pill-expanded');
-    await expect(modal).toBeVisible();
-
-    // The detail modal opens already expanded; the disclosure header is
-    // hidden, so the command shows in the details body's Command section.
-    const bashToolWithOurCommand = modal.locator('.bash-tool').filter({ hasText: 'unique-test-command-xyz123' });
-    await expect(bashToolWithOurCommand).toBeVisible();
-    await expect(bashToolWithOurCommand.locator('.bash-tool-details')).toBeVisible();
-    const commandElement = bashToolWithOurCommand
-      .locator('.bash-tool-code')
-      .filter({ hasText: 'unique-test-command-xyz123' })
-      .first();
+    // The card renders inline and collapsed, with the command in its header.
+    const bashToolWithOurCommand = page.locator('.bash-tool').filter({ hasText: 'unique-test-command-xyz123' });
+    await expect(bashToolWithOurCommand).toBeVisible({ timeout: 15000 });
+    const commandElement = bashToolWithOurCommand.locator('.bash-tool-command');
     await expect(commandElement).toBeVisible();
     const commandText = await commandElement.textContent();
     expect(commandText).toContain('unique-test-command-xyz123');
@@ -213,28 +422,24 @@ test.describe('Tool Component Verification', () => {
     await page.waitForLoadState('domcontentloaded');
 
     await page.waitForFunction(
-      () =>
-        document.querySelectorAll(
-          '.tool-pill[data-testid="tool-call-completed"], .patch-tool[data-testid="tool-call-completed"], .screenshot-tool[data-testid="tool-call-completed"]',
-        ).length >= 15,
+      () => document.querySelectorAll('[data-testid="tool-call-completed"]').length >= 15,
       undefined,
       { timeout: 30000 },
     );
+    await mountAllToolCards(page);
 
-    // The browser navigate pill shows the URL inline; opening it
-    // reveals the full BrowserNavigateTool card.
-    const navigatePill = page.locator('.tool-pill').filter({ hasText: 'https://example.com' }).first();
-    await expect(navigatePill).toBeVisible();
-    await expect(navigatePill).toContainText('https://example.com');
-    await navigatePill.scrollIntoViewIfNeeded();
-    await navigatePill.click();
-    const navigateModal = page.locator('.tool-pill-expanded');
-    // The card header is hidden in the modal; the URL shows in the details
-    // body's URL section (rendered as a link inside .tool-code).
+    // The BrowserNavigateTool card shows the URL in its header; expanding it
+    // shows the URL section (rendered as a link inside .tool-code).
+    const navigateCard = page
+      .locator('.tool')
+      .filter({ has: page.locator('.tool-command', { hasText: 'https://example.com' }) })
+      .first();
+    await navigateCard.scrollIntoViewIfNeeded();
+    await expect(navigateCard).toContainText('https://example.com');
+    await navigateCard.locator('.tool-header').click();
     await expect(
-      navigateModal.locator('.tool-code').filter({ hasText: 'https://example.com' }).first(),
+      navigateCard.locator('.tool-code').filter({ hasText: 'https://example.com' }).first(),
     ).toBeVisible();
-    await closeToolModal(page);
   });
 
   test('patch tool can be collapsed and expanded without errors', async ({ page, request }) => {
@@ -285,18 +490,13 @@ test.describe('Tool Component Verification', () => {
     await page.waitForLoadState('domcontentloaded');
 
     await page.waitForFunction(
-      () =>
-        document.querySelectorAll(
-          '.tool-pill[data-testid="tool-call-completed"], .patch-tool[data-testid="tool-call-completed"], .screenshot-tool[data-testid="tool-call-completed"]',
-        ).length >= 15,
+      () => document.querySelectorAll('[data-testid="tool-call-completed"]').length >= 15,
       undefined,
       { timeout: 30000 },
     );
+    await mountAllToolCards(page);
 
-    // Get all visible *inline* tool emojis (auto-expand tools and any
-    // tool widgets opened in modals) and check their computed
-    // font-size. Tool pills intentionally use a smaller emoji and are
-    // excluded from this size-consistency check.
+    // Get every tool card's emoji and check its computed font-size.
     const emojiSizes = await page.$$eval('.tool-emoji, .bash-tool-emoji, .patch-tool-emoji, .screenshot-tool-emoji', (elements) => elements.map((el) => window.getComputedStyle(el).fontSize));
 
     // All emojis should be 1rem (16px by default)

@@ -195,6 +195,9 @@ func (s *Service) Do(ctx context.Context, req *llm.Request) (*llm.Response, erro
 		// citations render as inline source markers).
 		return s.makeWebSearchCitationsResponse(inputTokens), nil
 
+	case "web search without results":
+		return s.makeWebSearchWithoutResultsResponse(inputTokens), nil
+
 	case "tool smorgasbord":
 		// Return a response with all tool types for testing
 		return s.makeToolSmorgasbordResponse(inputTokens), nil
@@ -329,6 +332,10 @@ func (s *Service) Do(ctx context.Context, req *llm.Request) (*llm.Response, erro
 		// handling of models that return no content (e.g. refusals).
 		if strings.Contains(inputText, "PREDICTABLE_EMPTY_RESPONSE") {
 			return s.makeResponse("", inputTokens), nil
+		}
+
+		if strings.Contains(inputText, "<transcribing_audio_skill>") {
+			return s.makeResponse("predictable spoken words", inputTokens), nil
 		}
 
 		// Default response for undefined inputs
@@ -922,6 +929,18 @@ func (s *Service) makeWebSearchCitationsResponse(inputTokens uint64) *llm.Respon
 	}
 }
 
+func (s *Service) makeWebSearchWithoutResultsResponse(inputTokens uint64) *llm.Response {
+	resp := s.makeWebSearchCitationsResponse(inputTokens)
+	content := resp.Content[:0]
+	for _, block := range resp.Content {
+		if block.Type != llm.ContentTypeWebSearchToolResult {
+			content = append(content, block)
+		}
+	}
+	resp.Content = content
+	return resp
+}
+
 // makeToolSmorgasbordResponse creates a response that uses all available tool types
 func (s *Service) makeToolSmorgasbordResponse(inputTokens uint64) *llm.Response {
 	baseNano := time.Now().UnixNano()
@@ -965,18 +984,6 @@ func (s *Service) makeToolSmorgasbordResponse(inputTokens uint64) *llm.Response 
 		Type:      llm.ContentTypeToolUse,
 		ToolName:  "browser",
 		ToolInput: json.RawMessage(screenshotInput),
-	})
-
-	// keyword_search tool
-	keywordInput, _ := json.Marshal(map[string]interface{}{
-		"query":        "find all references",
-		"search_terms": []string{"reference", "example"},
-	})
-	content = append(content, llm.Content{
-		ID:        fmt.Sprintf("tool_keyword_%d", (baseNano+4)%1000),
-		Type:      llm.ContentTypeToolUse,
-		ToolName:  "keyword_search",
-		ToolInput: json.RawMessage(keywordInput),
 	})
 
 	// browser: navigate action

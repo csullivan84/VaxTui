@@ -45,6 +45,7 @@
         <div class="tool-input">
           {{ typeof toolInput === "string" ? toolInput : JSON.stringify(toolInput, null, 2) }}
         </div>
+        <RunningToolTime :start-time="toolInvokedAt" />
       </div>
     </div>
   </div>
@@ -52,13 +53,10 @@
   <!-- Fallback: completed state -->
   <div v-else class="message message-tool" data-testid="tool-call-completed">
     <div class="message-content">
-      <details
-        :class="`tool-result-details ${toolError ? 'error' : ''}`"
-        :open="inToolDetail || undefined"
-      >
+      <details :class="`tool-result-details ${toolError ? 'error' : ''}`">
         <summary class="tool-result-summary">
           <div class="tool-result-meta">
-            <div class="flex items-center space-x-2">
+            <div class="tool-result-primary flex space-x-2">
               <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" class="chat-tool-icon">
                 <path
                   stroke-linecap="round"
@@ -73,12 +71,17 @@
                   d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
                 />
               </svg>
-              <span class="text-sm font-medium text-blue">{{ toolName }}</span>
-              <span :class="`tool-result-status text-xs ${toolError ? 'error' : 'success'}`">
-                <span aria-hidden="true">{{ toolError ? "\u2717" : "\u2713" }}</span>
-                <span class="sr-only">{{ toolError ? "failed" : "succeeded" }}.</span>
-                {{ summary }}
-              </span>
+              <div class="generic-tool-result-summary">
+                <div class="generic-tool-result-heading">
+                  <span class="tool-result-name text-sm font-medium text-blue">{{ toolName }}</span>
+                  <GenericToolWarning :tool-name="toolName" />
+                </div>
+                <span :class="`tool-result-status text-xs ${toolError ? 'error' : 'success'}`">
+                  <span aria-hidden="true">{{ toolError ? "\u2717" : "\u2713" }}</span>
+                  <span class="sr-only">{{ toolError ? "failed" : "succeeded" }}.</span>
+                  {{ summary }}
+                </span>
+              </div>
             </div>
             <div class="tool-result-time">
               <span v-if="executionTime">{{ executionTime }}</span>
@@ -118,9 +121,9 @@
 import { computed, ref } from "vue";
 import type { LLMContent } from "../../types";
 import { useNearViewport } from "../composables/nearViewport";
-import { useInToolDetail } from "../composables/toolDetail";
 import { usePerfLifecycle } from "../composables/perfLifecycle";
 import { useToolStreamingOutput } from "../composables/toolProgress";
+import AudioTranscriptionTool from "./tools/AudioTranscriptionTool.vue";
 import BashTool from "./tools/BashTool.vue";
 import PatchTool from "./tools/PatchTool.vue";
 import ScreenshotTool from "./tools/ScreenshotTool.vue";
@@ -134,6 +137,8 @@ import BrowserEmulateTool from "./tools/BrowserEmulateTool.vue";
 import BrowserNetworkTool from "./tools/BrowserNetworkTool.vue";
 import BrowserAccessibilityTool from "./tools/BrowserAccessibilityTool.vue";
 import BrowserProfileTool from "./tools/BrowserProfileTool.vue";
+import GenericToolWarning from "./tools/GenericToolWarning.vue";
+import RunningToolTime from "./tools/RunningToolTime.vue";
 import KeywordSearchTool from "./tools/KeywordSearchTool.vue";
 import ChangeDirTool from "./tools/ChangeDirTool.vue";
 import SubagentTool from "./tools/SubagentTool.vue";
@@ -147,6 +152,7 @@ const props = defineProps<{
   toolInput?: unknown;
   toolResult?: LLMContent[];
   toolError?: boolean;
+  toolInvokedAt?: string | null;
   toolStartTime?: string | null;
   toolEndTime?: string | null;
   hasResult?: boolean;
@@ -155,15 +161,13 @@ const props = defineProps<{
   toolUseId?: string;
 }>();
 
-const inToolDetail = useInToolDetail();
-
 // Completed inline specialized cards are the dominant mount cost in very large
 // conversations. Keep a tiny geometry placeholder until the shared observer
-// says the card is near the viewport. Cards that started running (or render in
-// the tool-detail modal) stay eager and never get torn down on completion.
+// says the card is near the viewport. Cards that started running stay eager
+// and never get torn down on completion.
 const mountPlaceholderEl = ref<HTMLElement | null>(null);
 const nearViewport = useNearViewport(mountPlaceholderEl);
-const startedEager = !props.hasResult || inToolDetail;
+const startedEager = !props.hasResult;
 const mountSpecializedCard = computed(() => startedEager || nearViewport.value);
 
 const placeholderKind = computed(() =>
@@ -181,6 +185,7 @@ usePerfLifecycle("toolCall");
 // Map tool names to their specialized components (mirrors TOOL_COMPONENTS).
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const TOOL_COMPONENTS: Record<string, any> = {
+  openai_audio_transcription: AudioTranscriptionTool,
   bash: BashTool,
   shell: BashTool,
   patch: PatchTool,
@@ -223,6 +228,7 @@ const toolComponentProps = computed<Record<string, unknown>>(() => {
     toolResult: props.toolResult,
     hasError: props.toolError,
     executionTime: executionTime.value,
+    toolInvokedAt: props.toolInvokedAt,
     display: props.display,
   };
   if (props.toolName === "patch" && props.onCommentTextChange) {

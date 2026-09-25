@@ -9,3 +9,9 @@ const CANCELLED_SENTINEL = "Tool execution cancelled by user";
 export function isCancelledToolResult(text: string): boolean {
   return text.trimEnd().endsWith(CANCELLED_SENTINEL);
 }
+
+/** Outcome suffix for a tool card's accessible toggle name, e.g. ", failed". */
+export function toolOutcomeSuffix(isComplete: boolean, hasError?: boolean): string {
+  if (!isComplete) return "";
+  return hasError ? ", failed" : ", succeeded";
+}

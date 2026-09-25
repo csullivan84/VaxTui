@@ -48,8 +48,10 @@ type exeEnvironmentConfig struct {
 	BoxHost string `json:"box_host"`
 }
 
-var discoverLLMIntegrations = modelsources.DiscoverLLMIntegrations
-var readCodexOAuth = codexOAuthCredentials
+var (
+	discoverLLMIntegrations = modelsources.DiscoverLLMIntegrations
+	readCodexOAuth          = codexOAuthCredentials
+)
 
 type codexOAuth struct {
 	AccessToken string
@@ -427,13 +429,12 @@ func setupToolSetConfig(llmProvider claudetool.LLMServiceProvider, llmManager se
 	}
 
 	return claudetool.ToolSetConfig{
-		WorkingDir:            wd,
-		LLMProvider:           llmProvider,
-		EnableJITInstall:      claudetool.EnableBashToolJITInstall,
-		EnableBrowser:         true,
-		BuildAvailableModels:  buildAvailableModels,
-		PatchSimpleEnabled:    flagEnabled(server.FlagPatchSimple.Name),
-		PatchOpenAIRawEnabled: flagEnabled(server.FlagPatchOpenAIRaw.Name),
+		WorkingDir:           wd,
+		LLMProvider:          llmProvider,
+		EnableJITInstall:     claudetool.EnableBashToolJITInstall,
+		EnableBrowser:        true,
+		BuildAvailableModels: buildAvailableModels,
+		PatchSimpleEnabled:   flagEnabled(server.FlagPatchSimple.Name),
 	}
 }
 
@@ -467,14 +468,14 @@ func buildLLMConfig(global GlobalConfig, logger *slog.Logger, database *db.DB) (
 	}
 
 	httpc := llmhttp.NewClient(nil)
-	build := func(ctx context.Context) (string, []models.Built, error) {
+	build := func(ctx context.Context) (string, []models.Built, []models.TranscriptionModel, error) {
 		defaultModel, sources, err := buildLLMModelSources(ctx, global, config, logger)
 		if err != nil {
-			return "", nil, err
+			return "", nil, nil, err
 		}
 		providerConfig, err := providerauth.Load("")
 		if err != nil {
-			return "", nil, fmt.Errorf("load imported provider credentials: %w", err)
+			return "", nil, nil, fmt.Errorf("load imported provider credentials: %w", err)
 		}
 		for _, provider := range providerConfig.Providers {
 			switch provider.Kind {
@@ -489,19 +490,20 @@ func buildLLMConfig(global GlobalConfig, logger *slog.Logger, database *db.DB) (
 		if defaultModel == "" {
 			defaultModel = providerauth.PreferredModel(providerConfig)
 		}
-		return defaultModel, built, nil
+		return defaultModel, built, modelsources.TranscriptionModels(sources), nil
 	}
-	defaultModel, built, err := build(context.Background())
+	defaultModel, built, transcriptionModels, err := build(context.Background())
 	if err != nil {
 		return nil, err
 	}
 	return &server.LLMConfig{
-		Models:       built,
-		DefaultModel: defaultModel,
-		DB:           database,
-		HTTPC:        httpc,
+		Models:              built,
+		TranscriptionModels: transcriptionModels,
+		DefaultModel:        defaultModel,
+		DB:                  database,
+		HTTPC:               httpc,
 		RefreshBuiltModels: func(ctx context.Context) ([]models.Built, error) {
-			_, built, err := build(ctx)
+			_, built, _, err := build(ctx)
 			if err != nil {
 				return nil, err
 			}

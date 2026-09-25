@@ -36,6 +36,7 @@
       :plain-text="collapsedPlainText"
       body-class="tool-details"
     >
+      <RunningToolTime v-if="isRunning && isExpanded" :start-time="toolInvokedAt" />
       <div class="tool-section">
         <div class="tool-label">Expression:</div>
         <pre class="tool-code">{{ expression }}</pre>
@@ -58,11 +59,14 @@ import type { LLMContent } from "../../../types";
 import { useToolExpanded } from "../../composables/toolDetail";
 import ToolAccessibleBody from "./ToolAccessibleBody.vue";
 import ToolChevron from "./ToolChevron.vue";
+import RunningToolTime from "./RunningToolTime.vue";
 import ToolStatusIcon from "./ToolStatusIcon.vue";
+import { toolOutcomeSuffix } from "../../utils/toolStatus";
 
 const props = defineProps<{
   toolInput?: unknown;
   isRunning?: boolean;
+  toolInvokedAt?: string | null;
   toolResult?: LLMContent[];
   hasError?: boolean;
   executionTime?: string;
@@ -97,8 +101,10 @@ const displayExpression = computed(() => {
 
 const isComplete = computed(() => !props.isRunning && props.toolResult !== undefined);
 const outputLabel = computed(() => "Browser evaluation result");
-const toggleLabel = computed(() =>
-  isExpanded.value ? "Collapse browser evaluation" : "Expand browser evaluation",
+const toggleLabel = computed(
+  () =>
+    (isExpanded.value ? "Collapse browser evaluation" : "Expand browser evaluation") +
+    toolOutcomeSuffix(isComplete.value, props.hasError),
 );
 const collapsedPlainText = computed(() => {
   const parts = [`Expression:\n${expression.value || "(no expression)"}`];

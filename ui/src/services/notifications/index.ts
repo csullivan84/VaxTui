@@ -1,6 +1,5 @@
 import { initializeFavicon } from "../favicon";
 import { registerHandler } from "./handlers";
-import { faviconNotificationHandler } from "./handlers/favicon";
 import { browserNotificationHandler } from "./handlers/browser";
 import { setChannelEnabled } from "./preferences";
 
@@ -10,7 +9,6 @@ export { getQuietHours, isChannelEnabled, setChannelEnabled, setQuietHours } fro
 
 export function initializeNotifications(): void {
   initializeFavicon();
-  registerHandler("favicon", faviconNotificationHandler);
   registerHandler("browser", browserNotificationHandler);
 }
 

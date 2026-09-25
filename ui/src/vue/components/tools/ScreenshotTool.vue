@@ -46,6 +46,7 @@
       :plain-text="collapsedPlainText"
       body-class="screenshot-tool-details"
     >
+      <RunningToolTime v-if="isRunning && isExpanded" :start-time="toolInvokedAt" />
       <div v-if="isComplete && !hasError && imageUrl" class="screenshot-tool-section">
         <div v-if="executionTime" class="screenshot-tool-label">
           <span>Screenshot:</span>
@@ -89,11 +90,14 @@ import ToolAccessibleBody from "./ToolAccessibleBody.vue";
 import CommentableImage from "../CommentableImage.vue";
 import { displayNeedsAutoOrient, displaySourceSize } from "../../../utils/imageComment";
 import ToolChevron from "./ToolChevron.vue";
+import RunningToolTime from "./RunningToolTime.vue";
 import ToolStatusIcon from "./ToolStatusIcon.vue";
+import { toolOutcomeSuffix } from "../../utils/toolStatus";
 
 const props = defineProps<{
   toolInput?: unknown;
   isRunning?: boolean;
+  toolInvokedAt?: string | null;
   toolResult?: LLMContent[];
   hasError?: boolean;
   executionTime?: string;
@@ -148,10 +152,12 @@ const imageHeight = computed(() => imageContent.value?.DisplayHeight);
 const isComplete = computed(() => !props.isRunning && props.toolResult !== undefined);
 const errorText = computed(() => props.toolResult?.[0]?.Text || "Screenshot capture failed");
 const outputLabel = computed(() => `Screenshot result for ${filename.value}`);
-const toggleLabel = computed(() =>
-  isExpanded.value
-    ? `Collapse screenshot result for ${filename.value}`
-    : `Expand screenshot result for ${filename.value}`,
+const toggleLabel = computed(
+  () =>
+    (isExpanded.value
+      ? `Collapse screenshot result for ${filename.value}`
+      : `Expand screenshot result for ${filename.value}`) +
+    toolOutcomeSuffix(isComplete.value, props.hasError),
 );
 const collapsedPlainText = computed(() => {
   const parts = [`Filename:\n${filename.value}`];

@@ -153,19 +153,36 @@ func TestSteeringSection(t *testing.T) {
 }
 
 func TestExtractPiFileOps(t *testing.T) {
+	native, err := json.Marshal(map[string]string{"input": `*** Begin Patch
+*** Add File: add.go
++content
+*** Update File: old.go
+*** Move to: moved.go
+@@
+-before
++after
+*** Update File: updated.go
+@@
+-old
++new
+*** Delete File: delete.go
+*** End Patch`})
+	if err != nil {
+		t.Fatal(err)
+	}
 	msgs := []llm.Message{
 		{Role: llm.MessageRoleAssistant, Content: []llm.Content{
 			{Type: llm.ContentTypeToolUse, ToolName: "read_image", ToolInput: json.RawMessage(`{"path":"a.go"}`)},
 			{Type: llm.ContentTypeToolUse, ToolName: "patch", ToolInput: json.RawMessage(`{"path":"b.go"}`)},
+			{Type: llm.ContentTypeToolUse, ToolName: "apply_patch", ToolInput: native},
 		}},
 	}
 	read, modified := extractPiFileOps(msgs)
-	// a.go was read (read_image), b.go was patched.
 	if len(read) != 1 || read[0] != "a.go" {
 		t.Errorf("read files = %v, want [a.go]", read)
 	}
-	if len(modified) != 1 || modified[0] != "b.go" {
-		t.Errorf("modified files = %v, want [b.go]", modified)
+	if got, want := strings.Join(modified, ","), "add.go,b.go,delete.go,moved.go,old.go,updated.go"; got != want {
+		t.Errorf("modified files = %v, want %s", modified, want)
 	}
 }
 
@@ -185,7 +202,7 @@ func TestPiDistillCopiesRecentMessagesIntoNewGeneration(t *testing.T) {
 		h.WaitResponse()
 		synctest.Wait()
 		convID := h.convID
-		ctx := context.Background()
+		ctx := t.Context()
 		const imageData = "small-image-data-that-fits-the-retention-budget"
 		if err := h.server.recordMessage(ctx, convID, llm.Message{
 			Role: llm.MessageRoleUser,
@@ -286,7 +303,7 @@ func TestPiDistillForcesSummaryWhenOverBudget(t *testing.T) {
 		h.WaitResponse()
 		synctest.Wait()
 		convID := h.convID
-		ctx := context.Background()
+		ctx := t.Context()
 
 		reqBody := DistillNewGenerationRequest{
 			SourceConversationID: convID,
@@ -352,7 +369,7 @@ func TestPiReDistillPreservesPriorSummary(t *testing.T) {
 		h.WaitResponse()
 		synctest.Wait()
 		convID := h.convID
-		ctx := context.Background()
+		ctx := t.Context()
 
 		distill := func() {
 			reqBody := DistillNewGenerationRequest{
@@ -500,7 +517,7 @@ func TestCompactBatchesMessageWrites(t *testing.T) {
 		synctest.Wait()
 
 		// Count how many context messages were carried forward.
-		ctx := context.Background()
+		ctx := t.Context()
 		msgs, err := h.db.ListMessages(ctx, convID)
 		if err != nil {
 			t.Fatalf("ListMessages: %v", err)
@@ -649,7 +666,15 @@ func TestPiDistillFailureRollsBackGeneration(t *testing.T) {
 		h.WaitResponse()
 		synctest.Wait()
 		convID := h.convID
-		ctx := context.Background()
+		ctx := t.Context()
+		if _, err := db.WithTxRes(h.db, ctx, func(q *generated.Queries) (struct{}, error) {
+			return struct{}{}, q.SetConversationTurnInterrupted(ctx, generated.SetConversationTurnInterruptedParams{
+				TurnInterrupted: true,
+				ConversationID:  convID,
+			})
+		}); err != nil {
+			t.Fatalf("SetConversationTurnInterrupted: %v", err)
+		}
 
 		before, err := h.db.GetConversationByID(ctx, convID)
 		if err != nil {
@@ -680,6 +705,9 @@ func TestPiDistillFailureRollsBackGeneration(t *testing.T) {
 		// pre-compaction value.
 		if after.CurrentGeneration != before.CurrentGeneration {
 			t.Fatalf("generation = %d, want rollback to %d", after.CurrentGeneration, before.CurrentGeneration)
+		}
+		if !after.TurnInterrupted {
+			t.Fatal("failed compaction cleared the resumable interruption")
 		}
 
 		msgs, err := h.db.ListMessages(ctx, convID)
@@ -790,7 +818,7 @@ func TestPiDistillRetriesFableWithOpusOnRefusal(t *testing.T) {
 		h.WaitResponse()
 		synctest.Wait()
 		convID := h.convID
-		ctx := context.Background()
+		ctx := t.Context()
 
 		before, err := h.db.GetConversationByID(ctx, convID)
 		if err != nil {
@@ -863,7 +891,7 @@ func TestDistillNewGenerationRejectsConcurrent(t *testing.T) {
 	h.NewConversation("echo: hello", "")
 	h.WaitResponse()
 
-	manager, err := h.server.getOrCreateConversationManager(context.Background(), h.convID, "")
+	manager, err := h.server.getOrCreateConversationManager(t.Context(), h.convID, "")
 	if err != nil {
 		t.Fatalf("getOrCreateConversationManager: %v", err)
 	}

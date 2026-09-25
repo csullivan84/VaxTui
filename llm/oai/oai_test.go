@@ -909,7 +909,7 @@ func TestToLLMUsage(t *testing.T) {
 		PromptTokens:     100,
 		CompletionTokens: 50,
 	}
-	usage := service.toLLMUsage(openaiUsage, nil)
+	usage := service.toLLMUsage(chatCompletionUsageFromOpenAI(openaiUsage), nil)
 	if usage.InputTokens != 100 {
 		t.Errorf("toLLMUsage().InputTokens = %d, expected 100", usage.InputTokens)
 	}
@@ -928,7 +928,7 @@ func TestToLLMUsage(t *testing.T) {
 			CachedTokens: 25,
 		},
 	}
-	usage = service.toLLMUsage(openaiUsageWithDetails, nil)
+	usage = service.toLLMUsage(chatCompletionUsageFromOpenAI(openaiUsageWithDetails), nil)
 	// InputTokens should be non-cached portion: 100 - 25 = 75
 	if usage.InputTokens != 75 {
 		t.Errorf("toLLMUsage().InputTokens = %d, expected 75", usage.InputTokens)
@@ -936,7 +936,7 @@ func TestToLLMUsage(t *testing.T) {
 	if usage.CacheReadInputTokens != 25 {
 		t.Errorf("toLLMUsage().CacheReadInputTokens = %d, expected 25", usage.CacheReadInputTokens)
 	}
-	// CacheCreationInputTokens should be 0 (OpenAI doesn't report this)
+	// CacheCreationInputTokens should be 0 (go-openai does not decode cache_write_tokens)
 	if usage.CacheCreationInputTokens != 0 {
 		t.Errorf("toLLMUsage().CacheCreationInputTokens = %d, expected 0", usage.CacheCreationInputTokens)
 	}
@@ -1306,7 +1306,7 @@ func TestServiceDo(t *testing.T) {
 	defer server.Close()
 
 	// Create a service with the mock server
-	ctx := context.Background()
+	ctx := t.Context()
 	svc := &Service{
 		APIKey:   "test-api-key",
 		Model:    GPT41,
@@ -1357,6 +1357,41 @@ func TestServiceDo(t *testing.T) {
 	}
 }
 
+// TestServiceDoStreamUsageCacheWrite checks that a streamed Chat Completions
+// usage chunk carrying prompt_tokens_details.cache_write_tokens (GPT-5.6+)
+// lands in CacheCreationInputTokens rather than being billed as plain input.
+// Numbers are from a real gpt-5.6-sol call.
+func TestServiceDoStreamUsageCacheWrite(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		events := []string{
+			`{"id":"c","model":"gpt-5.6-sol","choices":[{"index":0,"delta":{"role":"assistant","content":"bye"},"finish_reason":"stop"}]}`,
+			`{"id":"c","model":"gpt-5.6-sol","choices":[],"usage":{"prompt_tokens":3756,"completion_tokens":5,"total_tokens":3761,"prompt_tokens_details":{"cached_tokens":3746,"cache_write_tokens":7,"audio_tokens":0}}}`,
+		}
+		for _, event := range events {
+			fmt.Fprintf(w, "data: %s\n\n", event)
+		}
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	svc := &Service{APIKey: "test-key", Model: modelForTest("gpt-5.6-sol"), ModelURL: server.URL}
+	resp, err := svc.Do(t.Context(), &llm.Request{
+		Messages: []llm.Message{{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "hi"}}}},
+		OnStream: func(llm.StreamDelta) {},
+	})
+	if err != nil {
+		t.Fatalf("Do() error = %v", err)
+	}
+	u := resp.Usage
+	if u.InputTokens != 3 || u.CacheCreationInputTokens != 7 || u.CacheReadInputTokens != 3746 || u.OutputTokens != 5 {
+		t.Fatalf("usage = %+v, want in=3 write=7 read=3746 out=5", u)
+	}
+	if u.TotalInputTokens() != 3756 {
+		t.Fatalf("TotalInputTokens() = %d, want 3756", u.TotalInputTokens())
+	}
+}
+
 func TestServiceDoStreamsFireworks(t *testing.T) {
 	var gotReq map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1388,7 +1423,7 @@ func TestServiceDoStreamsFireworks(t *testing.T) {
 		ModelURL:     server.URL,
 		ProviderName: "fireworks",
 	}
-	resp, err := svc.Do(context.Background(), &llm.Request{
+	resp, err := svc.Do(t.Context(), &llm.Request{
 		Messages: []llm.Message{{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "hi"}}}},
 		OnStream: func(delta llm.StreamDelta) {
 			deltas = append(deltas, delta)
@@ -1444,7 +1479,7 @@ func TestServiceDoRejectsIncompleteFireworksStream(t *testing.T) {
 	defer server.Close()
 
 	svc := &Service{APIKey: "test-key", Model: modelForTest("test"), ModelURL: server.URL, ProviderName: "fireworks"}
-	_, err := svc.Do(context.Background(), &llm.Request{Messages: []llm.Message{{Role: llm.MessageRoleUser}}, OnStream: func(llm.StreamDelta) {}})
+	_, err := svc.Do(t.Context(), &llm.Request{Messages: []llm.Message{{Role: llm.MessageRoleUser}}, OnStream: func(llm.StreamDelta) {}})
 	if err == nil || !strings.Contains(err.Error(), "no finish reason") {
 		t.Fatalf("Do() error = %v, want incomplete stream", err)
 	}
@@ -1460,7 +1495,7 @@ func TestServiceDoDoesNotRetryBrokenFireworksStream(t *testing.T) {
 	defer server.Close()
 
 	svc := &Service{APIKey: "test-key", Model: modelForTest("test"), ModelURL: server.URL, ProviderName: "fireworks", Backoff: []time.Duration{0}}
-	_, err := svc.Do(context.Background(), &llm.Request{Messages: []llm.Message{{Role: llm.MessageRoleUser}}, OnStream: func(llm.StreamDelta) {}})
+	_, err := svc.Do(t.Context(), &llm.Request{Messages: []llm.Message{{Role: llm.MessageRoleUser}}, OnStream: func(llm.StreamDelta) {}})
 	if err == nil {
 		t.Fatal("Do() error = nil, want broken stream error")
 	}
@@ -1492,7 +1527,7 @@ func TestServiceDoSendsDefaultMaxCompletionTokens(t *testing.T) {
 		ModelURL: server.URL + "/v1",
 	}
 
-	_, err := svc.Do(context.Background(), &llm.Request{
+	_, err := svc.Do(t.Context(), &llm.Request{
 		Messages: []llm.Message{{
 			Role:    llm.MessageRoleUser,
 			Content: []llm.Content{{Type: llm.ContentTypeText, Text: "hi"}},
@@ -1613,7 +1648,7 @@ func TestServiceDoStreamsCompatibleProviders(t *testing.T) {
 
 			svc := &Service{APIKey: "test-key", Model: modelForTest("test"), ModelURL: server.URL, ProviderName: tc.provider}
 			var deltas []llm.StreamDelta
-			_, err := svc.Do(context.Background(), &llm.Request{
+			_, err := svc.Do(t.Context(), &llm.Request{
 				Messages: []llm.Message{{Role: llm.MessageRoleUser}},
 				OnStream: func(delta llm.StreamDelta) { deltas = append(deltas, delta) },
 			})
@@ -1644,7 +1679,7 @@ func TestServiceUsesFirstBackoffForFirstRetry(t *testing.T) {
 	}))
 	defer server.Close()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	var retry llm.RetryEvent
 	svc := &Service{
@@ -1709,7 +1744,7 @@ func TestServiceDoProxyPlainTextError(t *testing.T) {
 		}},
 	}
 
-	resp, err := svc.Do(context.Background(), req)
+	resp, err := svc.Do(t.Context(), req)
 	if err != nil {
 		t.Fatalf("Do() error = %v, expected success after retry", err)
 	}
@@ -1740,7 +1775,7 @@ func TestServiceDoProxyPlainText4xxError(t *testing.T) {
 		}},
 	}
 
-	_, err := svc.Do(context.Background(), req)
+	_, err := svc.Do(t.Context(), req)
 	if err == nil {
 		t.Fatal("Do() expected error for 403, got nil")
 	}
@@ -1855,53 +1890,59 @@ func (r rewriteHostTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	return http.DefaultTransport.RoundTrip(req)
 }
 
-func TestServiceDoDeepSeekRoundTripsReasoningContent(t *testing.T) {
-	// Round-trip scenario: user -> assistant(thinking + tool_call) -> tool_result.
-	// The outgoing request to DeepSeek must echo the prior assistant's
-	// reasoning_content (not a placeholder) so the model can continue its
-	// chain of thought.
-	var gotBody []byte
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotBody, _ = io.ReadAll(r.Body)
-		resp := openai.ChatCompletionResponse{
-			ID: "x", Model: "deepseek-v4-pro",
-			Choices: []openai.ChatCompletionChoice{{
-				Message:      openai.ChatCompletionMessage{Role: "assistant", Content: "ok"},
-				FinishReason: "stop",
-			}},
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
-	}))
-	defer server.Close()
+func TestServiceDoDeepSeekReasoningReplay(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		model  string
+		replay ReasoningReplay
+		want   string
+	}{
+		{name: "legacy chat model auto", model: "deepseek-chat", want: "stored reasoning"},
+		{name: "legacy reasoner model auto", model: "deepseek-reasoner", want: "stored reasoning"},
+		{name: "known snapshot model auto", model: "deepseek-v4-pro", want: "stored reasoning"},
+		{name: "explicit none uses schema placeholder", model: "deepseek-chat", replay: ReasoningReplayNone, want: " "},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var got struct {
+				Messages []struct {
+					Role             string            `json:"role"`
+					ReasoningContent string            `json:"reasoning_content"`
+					ToolCalls        []openai.ToolCall `json:"tool_calls"`
+				} `json:"messages"`
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+					t.Fatal(err)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(openai.ChatCompletionResponse{ID: "x", Model: tt.model, Choices: []openai.ChatCompletionChoice{{
+					Message: openai.ChatCompletionMessage{Role: "assistant", Content: "ok"}, FinishReason: "stop",
+				}}})
+			}))
+			defer server.Close()
 
-	u, _ := url.Parse(server.URL)
-	httpc := &http.Client{Transport: rewriteHostTransport{addr: u.Host}}
-	svc := &Service{
-		APIKey:   "k",
-		Model:    modelForTest("deepseek-v4-pro"),
-		ModelURL: "https://api.deepseek.com",
-		HTTPC:    httpc,
-	}
-
-	req := &llm.Request{
-		Messages: []llm.Message{
-			{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "weather?"}}},
-			{Role: llm.MessageRoleAssistant, Content: []llm.Content{
-				{Type: llm.ContentTypeThinking, Thinking: "I should call the weather tool."},
-				{Type: llm.ContentTypeToolUse, ID: "call_1", ToolName: "get_weather", ToolInput: []byte(`{"city":"Paris"}`)},
-			}},
-			{Role: llm.MessageRoleUser, Content: []llm.Content{{
-				Type: llm.ContentTypeToolResult, ToolUseID: "call_1",
-				ToolResult: []llm.Content{{Type: llm.ContentTypeText, Text: "sunny"}},
-			}}},
-		},
-	}
-	if _, err := svc.Do(context.Background(), req); err != nil {
-		t.Fatalf("Do() error = %v", err)
-	}
-	if !strings.Contains(string(gotBody), `"reasoning_content":"I should call the weather tool."`) {
-		t.Errorf("expected real reasoning_content in request body, got: %s", gotBody)
+			u, err := url.Parse(server.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			svc := &Service{
+				APIKey: "k", Model: modelForTest(tt.model), ModelURL: "https://api.deepseek.com",
+				HTTPC: &http.Client{Transport: rewriteHostTransport{addr: u.Host}}, ReasoningReplay: tt.replay,
+			}
+			_, err = svc.Do(t.Context(), &llm.Request{Messages: []llm.Message{{
+				Role: llm.MessageRoleAssistant,
+				Content: []llm.Content{
+					{Type: llm.ContentTypeThinking, Thinking: "stored reasoning"},
+					{Type: llm.ContentTypeToolUse, ID: "call_1", ToolName: "x", ToolInput: json.RawMessage(`{}`)},
+				},
+			}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got.Messages) != 1 || len(got.Messages[0].ToolCalls) != 1 || got.Messages[0].ReasoningContent != tt.want {
+				t.Fatalf("messages = %+v, want reasoning_content %q", got.Messages, tt.want)
+			}
+		})
 	}
 }
 
@@ -1939,11 +1980,159 @@ func TestServiceDoDeepSeekPlaceholderWhenNoThinking(t *testing.T) {
 			}}},
 		},
 	}
-	if _, err := svc.Do(context.Background(), req); err != nil {
+	if _, err := svc.Do(t.Context(), req); err != nil {
 		t.Fatalf("Do() error = %v", err)
 	}
 	if !strings.Contains(string(gotBody), `"reasoning_content"`) {
 		t.Errorf("expected reasoning_content placeholder in body, got: %s", gotBody)
+	}
+}
+
+func TestServiceDoReasoningContentResponseRoundTrip(t *testing.T) {
+	calls := 0
+	var secondBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		body, _ := io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		if calls == 1 {
+			_ = json.NewEncoder(w).Encode(openai.ChatCompletionResponse{ID: "first", Choices: []openai.ChatCompletionChoice{{
+				Message: openai.ChatCompletionMessage{
+					Role: "assistant", ReasoningContent: "Inspect the result.",
+					ToolCalls: []openai.ToolCall{{
+						ID: "call_1", Type: openai.ToolTypeFunction,
+						Function: openai.FunctionCall{Name: "x", Arguments: `{}`},
+					}},
+				},
+				FinishReason: "tool_calls",
+			}}})
+			return
+		}
+		secondBody = body
+		_ = json.NewEncoder(w).Encode(openai.ChatCompletionResponse{ID: "second", Choices: []openai.ChatCompletionChoice{{
+			Message: openai.ChatCompletionMessage{Role: "assistant", Content: "ok"}, FinishReason: "stop",
+		}}})
+	}))
+	defer server.Close()
+
+	svc := &Service{
+		APIKey: "k", Model: modelForTest("glm-5p2"), ModelURL: server.URL,
+		ReasoningReplay: "reasoning_content",
+	}
+	user := llm.Message{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "use x"}}}
+	first, err := svc.Do(t.Context(), &llm.Request{Messages: []llm.Message{user}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Content) != 2 || first.Content[0].Thinking != "Inspect the result." {
+		t.Fatalf("first response content = %+v", first.Content)
+	}
+	toolResult := llm.Message{Role: llm.MessageRoleUser, Content: []llm.Content{{
+		Type: llm.ContentTypeToolResult, ToolUseID: "call_1",
+		ToolResult: []llm.Content{{Type: llm.ContentTypeText, Text: "done"}},
+	}}}
+	if _, err := svc.Do(t.Context(), &llm.Request{Messages: []llm.Message{user, first.ToMessage(), toolResult}}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(secondBody), `"reasoning_content":"Inspect the result."`) {
+		t.Fatalf("second request did not replay response reasoning: %s", secondBody)
+	}
+}
+
+func TestServiceDoReplaysReasoningContent(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(openai.ChatCompletionResponse{ID: "x", Choices: []openai.ChatCompletionChoice{{
+			Message: openai.ChatCompletionMessage{Role: "assistant", Content: "ok"}, FinishReason: "stop",
+		}}})
+	}))
+	defer server.Close()
+
+	svc := &Service{
+		APIKey: "k", Model: modelForTest("glm-5p2"), ModelURL: server.URL,
+		ReasoningReplay: "reasoning_content",
+	}
+	req := &llm.Request{Messages: []llm.Message{
+		{Role: llm.MessageRoleAssistant, Content: []llm.Content{
+			{Type: llm.ContentTypeThinking, Thinking: "I should call the tool."},
+			{Type: llm.ContentTypeToolUse, ID: "call_1", ToolName: "x", ToolInput: []byte(`{}`)},
+		}},
+		{Role: llm.MessageRoleUser, Content: []llm.Content{{
+			Type: llm.ContentTypeToolResult, ToolUseID: "call_1",
+			ToolResult: []llm.Content{{Type: llm.ContentTypeText, Text: "r"}},
+		}}},
+	}}
+	if _, err := svc.Do(t.Context(), req); err != nil {
+		t.Fatalf("Do() error = %v", err)
+	}
+	if !strings.Contains(string(gotBody), `"reasoning_content":"I should call the tool."`) {
+		t.Fatalf("reasoning_content not replayed: %s", gotBody)
+	}
+}
+
+func TestServiceDoReasoningContentReplayAddsToolCallPlaceholder(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(openai.ChatCompletionResponse{ID: "x", Choices: []openai.ChatCompletionChoice{{
+			Message: openai.ChatCompletionMessage{Role: "assistant", Content: "ok"}, FinishReason: "stop",
+		}}})
+	}))
+	defer server.Close()
+
+	svc := &Service{
+		APIKey: "k", Model: modelForTest("glm-5p2"), ModelURL: server.URL,
+		ReasoningReplay: "reasoning_content",
+	}
+	req := &llm.Request{Messages: []llm.Message{
+		{Role: llm.MessageRoleAssistant, Content: []llm.Content{{
+			Type: llm.ContentTypeToolUse, ID: "call_1", ToolName: "x", ToolInput: []byte(`{}`),
+		}}},
+		{Role: llm.MessageRoleUser, Content: []llm.Content{{
+			Type: llm.ContentTypeToolResult, ToolUseID: "call_1",
+			ToolResult: []llm.Content{{Type: llm.ContentTypeText, Text: "r"}},
+		}}},
+	}}
+	if _, err := svc.Do(t.Context(), req); err != nil {
+		t.Fatalf("Do() error = %v", err)
+	}
+	if !strings.Contains(string(gotBody), `"reasoning_content":" "`) {
+		t.Fatalf("reasoning replay placeholder missing: %s", gotBody)
+	}
+}
+
+func TestServiceDoDisabledReasoningReplayDoesNotAddPlaceholder(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(openai.ChatCompletionResponse{ID: "x", Choices: []openai.ChatCompletionChoice{{
+			Message: openai.ChatCompletionMessage{Role: "assistant", Content: "ok"}, FinishReason: "stop",
+		}}})
+	}))
+	defer server.Close()
+
+	svc := &Service{
+		APIKey: "k", Model: modelForTest("glm-5p2"), ModelURL: server.URL,
+		ReasoningReplay: "none",
+	}
+	req := &llm.Request{Messages: []llm.Message{
+		{Role: llm.MessageRoleAssistant, Content: []llm.Content{{
+			Type: llm.ContentTypeToolUse, ID: "call_1", ToolName: "x", ToolInput: []byte(`{}`),
+		}}},
+		{Role: llm.MessageRoleUser, Content: []llm.Content{{
+			Type: llm.ContentTypeToolResult, ToolUseID: "call_1",
+			ToolResult: []llm.Content{{Type: llm.ContentTypeText, Text: "r"}},
+		}}},
+	}}
+	if _, err := svc.Do(t.Context(), req); err != nil {
+		t.Fatalf("Do() error = %v", err)
+	}
+	if strings.Contains(string(gotBody), `"reasoning_content"`) {
+		t.Fatalf("disabled replay added placeholder: %s", gotBody)
 	}
 }
 
@@ -1976,7 +2165,7 @@ func TestServiceDoNonDeepSeekStripsReasoningContent(t *testing.T) {
 			}}},
 		},
 	}
-	if _, err := svc.Do(context.Background(), req); err != nil {
+	if _, err := svc.Do(t.Context(), req); err != nil {
 		t.Fatalf("Do() error = %v", err)
 	}
 	if strings.Contains(string(gotBody), `"reasoning_content"`) {
@@ -1991,6 +2180,8 @@ func TestServiceSupportedReasoningLevels(t *testing.T) {
 		want  string
 	}{
 		{name: "GPT-6 Astra", model: GPT6Astra, want: "low,medium,high,xhigh,max"},
+		{name: "GPT-6 Sol", model: GPT6Sol, want: "off,low,medium,high,xhigh,max"},
+		{name: "GPT-6 Luna", model: GPT6Luna, want: "off,low,medium,high,xhigh,max"},
 		{name: "GPT 5.6", model: GPT56Sol, want: "off,low,medium,high,xhigh,max"},
 		{name: "unknown", model: Model{ModelName: "totally-unknown-model"}, want: ""},
 	}
@@ -2038,6 +2229,8 @@ func TestServiceReasoningEffort(t *testing.T) {
 		{name: "svc high", svcLevel: llm.ThinkingLevelHigh, wantEffort: "high"},
 		{name: "svc xhigh clamped to high", svcLevel: llm.ThinkingLevelXHigh, wantEffort: "high"},
 		{name: "svc max clamped to high", svcLevel: llm.ThinkingLevelMax, wantEffort: "high"},
+		{name: "gpt-6 sol off sends none", model: GPT6Sol, reqLevel: llm.ThinkingLevelOff, wantEffort: "none"},
+		{name: "gpt-6 luna max verbatim", model: GPT6Luna, reqLevel: llm.ThinkingLevelMax, wantEffort: "max"},
 		{name: "gpt-5.6 minimal rounds to low", model: GPT56Sol, svcLevel: llm.ThinkingLevelMinimal, wantEffort: "low"},
 		{name: "gpt-5.6 off sends none", model: GPT56Sol, reqLevel: llm.ThinkingLevelOff, wantEffort: "none"},
 		{name: "GLM low rounds to high", model: GLM52Fireworks, svcLevel: llm.ThinkingLevelLow, wantEffort: "high"},
@@ -2082,7 +2275,7 @@ func TestServiceReasoningEffort(t *testing.T) {
 				ThinkingLevel:   tt.svcLevel,
 				ReasoningEffort: tt.svcEffort,
 			}
-			_, err := svc.Do(context.Background(), &llm.Request{
+			_, err := svc.Do(t.Context(), &llm.Request{
 				Messages:      []llm.Message{{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "hi"}}}},
 				ThinkingLevel: tt.reqLevel,
 			})

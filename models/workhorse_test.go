@@ -58,6 +58,11 @@ func TestWorkhorseModel(t *testing.T) {
 		Built{ID: "gemini-3.7-flash-lite", Provider: ProviderGemini, ReleaseDate: "2026-08-13"},
 		Built{ID: "deepseek-v4-flash", Provider: ProviderFireworks, ReleaseDate: "2026-04-24"},
 		Built{ID: "deepseek-v4-flash-0731-fireworks", Provider: ProviderFireworks, ReleaseDate: "2026-07-31"},
+		// Pro must not be picked as a workhorse: it is the expensive sibling, and
+		// the family match is "deepseek-v4" minus "pro" so the dot-versioned
+		// deepseek-v4.1-flash ID still matches.
+		Built{ID: "deepseek-v4-pro-fireworks", Provider: ProviderFireworks, ReleaseDate: "2026-08-13"},
+		Built{ID: "deepseek-v4.1-flash-fireworks", Provider: ProviderFireworks, ReleaseDate: "2026-09-10"},
 		Built{ID: "deepseek-v4-flash-0801-fireworks", Provider: ProviderFireworks, ReleaseDate: "2026-08-01"},
 		Built{ID: "nemotron-lightning-3p5", Provider: ProviderFireworks},
 	)
@@ -70,7 +75,7 @@ func TestWorkhorseModel(t *testing.T) {
 		{"claude-haiku-4-5", "claude-haiku-4-6"},
 		{"gpt-5.4-nano", "gpt-5.7-luna"},
 		{"gemini-3-flash", "gemini-3.6-flash"},
-		{"nemotron-lightning-3p5", "deepseek-v4-flash-0801-fireworks"},
+		{"nemotron-lightning-3p5", "deepseek-v4.1-flash-fireworks"},
 		{"unknown-custom-model", "unknown-custom-model"},
 		{"", ""},
 	} {
@@ -109,7 +114,7 @@ func TestGetWorkhorseServiceUsesSelectedPrimary(t *testing.T) {
 	}
 
 	req := &llm.Request{ThinkingLevel: llm.ThinkingLevelHigh, ReasoningEffort: "high"}
-	if _, err := service.Do(context.Background(), req); err != nil {
+	if _, err := service.Do(t.Context(), req); err != nil {
 		t.Fatal(err)
 	}
 	if workhorse.calls != 1 || conversation.calls != 0 {
@@ -141,7 +146,7 @@ func TestGetWorkhorseServiceFallsBackWhenPrimaryLookupFails(t *testing.T) {
 		service.SupportsImages() != conversation.supportsImages {
 		t.Fatal("workhorse service metadata did not delegate to the conversation fallback")
 	}
-	if _, err := service.Do(context.Background(), &llm.Request{}); err != nil {
+	if _, err := service.Do(t.Context(), &llm.Request{}); err != nil {
 		t.Fatal(err)
 	}
 	if conversation.calls != 1 {
@@ -160,7 +165,7 @@ func TestGetWorkhorseServiceDoesNotEagerlyLookupFallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.Do(context.Background(), &llm.Request{}); err != nil {
+	if _, err := service.Do(t.Context(), &llm.Request{}); err != nil {
 		t.Fatal(err)
 	}
 	if primary.calls != 1 {
@@ -182,7 +187,7 @@ func TestWorkhorseServiceFallsBackAfterPrimaryFailure(t *testing.T) {
 	}
 	req := &llm.Request{ThinkingLevel: llm.ThinkingLevelHigh, ReasoningEffort: "high"}
 
-	if _, err := service.Do(context.Background(), req); err != nil {
+	if _, err := service.Do(t.Context(), req); err != nil {
 		t.Fatal(err)
 	}
 	if workhorse.calls != 1 || conversation.calls != 1 {
@@ -208,7 +213,7 @@ func TestWorkhorseServiceDoesNotFallbackWhenContextCanceled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	_, err = service.Do(ctx, &llm.Request{})
@@ -232,7 +237,7 @@ func TestWorkhorseServiceDoesNotDuplicateConversationModel(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = service.Do(context.Background(), &llm.Request{})
+	_, err = service.Do(t.Context(), &llm.Request{})
 	if !errors.Is(err, modelErr) {
 		t.Fatalf("error = %v, want %v", err, modelErr)
 	}
@@ -255,7 +260,7 @@ func TestWorkhorseServiceReturnsFallbackError(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = service.Do(context.Background(), &llm.Request{})
+	_, err = service.Do(t.Context(), &llm.Request{})
 	if !errors.Is(err, fallbackErr) {
 		t.Fatalf("error = %v, want %v", err, fallbackErr)
 	}
@@ -275,7 +280,7 @@ func TestWorkhorseServiceReturnsFallbackLookupError(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = service.Do(context.Background(), &llm.Request{})
+	_, err = service.Do(t.Context(), &llm.Request{})
 	if err == nil {
 		t.Fatal("expected fallback lookup error")
 	}

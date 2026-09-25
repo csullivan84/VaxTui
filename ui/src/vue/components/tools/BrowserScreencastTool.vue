@@ -1,7 +1,5 @@
 <!-- Vue port of components/BrowserScreencastTool.tsx. Preserves the exact DOM
-     classes, data-testid, and aria contracts the e2e tests rely on. Note: the
-     React version uses local useState(true) for expand (NOT the tool-detail
-     context), so this mirrors that with a plain ref(true). -->
+     classes, data-testid, and aria contracts the e2e tests rely on. -->
 <template>
   <div
     class="screencast-tool"
@@ -43,6 +41,7 @@
       :plain-text="collapsedPlainText"
       body-class="screencast-tool-details"
     >
+      <RunningToolTime v-if="isRunning && isExpanded" :start-time="toolInvokedAt" />
       <div v-if="isRunning" class="screencast-tool-section">
         <div class="screencast-tool-status">
           <template v-if="action === 'screencast_start'">Starting screencast recording...</template>
@@ -87,11 +86,14 @@ import { computed, ref } from "vue";
 import type { LLMContent } from "../../../types";
 import ToolAccessibleBody from "./ToolAccessibleBody.vue";
 import ToolChevron from "./ToolChevron.vue";
+import RunningToolTime from "./RunningToolTime.vue";
 import ToolStatusIcon from "./ToolStatusIcon.vue";
+import { toolOutcomeSuffix } from "../../utils/toolStatus";
 
 const props = defineProps<{
   toolInput?: unknown;
   isRunning?: boolean;
+  toolInvokedAt?: string | null;
   toolResult?: LLMContent[];
   hasError?: boolean;
   executionTime?: string;
@@ -159,10 +161,12 @@ const videoUrl = computed<string | undefined>(() => {
 
 const isComplete = computed(() => !props.isRunning && props.toolResult !== undefined);
 const outputLabel = computed(() => `Browser screencast: ${label.value}`);
-const toggleLabel = computed(() =>
-  isExpanded.value
-    ? `Collapse browser screencast: ${label.value}`
-    : `Expand browser screencast: ${label.value}`,
+const toggleLabel = computed(
+  () =>
+    (isExpanded.value
+      ? `Collapse browser screencast: ${label.value}`
+      : `Expand browser screencast: ${label.value}`) +
+    toolOutcomeSuffix(isComplete.value, props.hasError),
 );
 const collapsedPlainText = computed(() => {
   const parts = [`Action: ${action.value}`];

@@ -36,6 +36,7 @@
       :plain-text="collapsedPlainText"
       body-class="tool-details"
     >
+      <RunningToolTime v-if="isRunning && isExpanded" :start-time="toolInvokedAt" />
       <div class="tool-section">
         <div class="tool-label">Action:</div>
         <pre class="tool-code">{{ action || "(none)" }}</pre>
@@ -73,7 +74,9 @@ import type { LLMContent } from "../../../types";
 import { useToolExpanded } from "../../composables/toolDetail";
 import ToolAccessibleBody from "./ToolAccessibleBody.vue";
 import ToolChevron from "./ToolChevron.vue";
+import RunningToolTime from "./RunningToolTime.vue";
 import ToolStatusIcon from "./ToolStatusIcon.vue";
+import { toolOutcomeSuffix } from "../../utils/toolStatus";
 
 interface EmulateInput {
   action?: string;
@@ -90,6 +93,7 @@ interface EmulateInput {
 const props = defineProps<{
   toolInput?: unknown;
   isRunning?: boolean;
+  toolInvokedAt?: string | null;
   toolResult?: LLMContent[];
   hasError?: boolean;
   executionTime?: string;
@@ -124,10 +128,12 @@ const summary = computed(() => {
   return summaryParts.filter(Boolean).join(" ") || "emulate";
 });
 const outputLabel = computed(() => `Browser emulation: ${summary.value}`);
-const toggleLabel = computed(() =>
-  isExpanded.value
-    ? `Collapse browser emulation: ${summary.value}`
-    : `Expand browser emulation: ${summary.value}`,
+const toggleLabel = computed(
+  () =>
+    (isExpanded.value
+      ? `Collapse browser emulation: ${summary.value}`
+      : `Expand browser emulation: ${summary.value}`) +
+    toolOutcomeSuffix(isComplete.value, props.hasError),
 );
 const collapsedPlainText = computed(() => {
   const i = input.value;

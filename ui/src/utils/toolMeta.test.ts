@@ -1,10 +1,4 @@
-import {
-  HEADLINE_BUDGET_NARROW,
-  HEADLINE_BUDGET_WIDE,
-  isAutoExpandTool,
-  toolEmoji,
-  toolHeadline,
-} from "./toolMeta";
+import { HEADLINE_BUDGET_NARROW, HEADLINE_BUDGET_WIDE, toolEmoji, toolHeadline } from "./toolMeta";
 
 function assert(cond: boolean, msg: string): void {
   if (!cond) throw new Error(`Assertion failed: ${msg}`);
@@ -133,6 +127,15 @@ run("emoji unchanged for shell", () => {
   assert(toolEmoji("bash") === "\u{1F6E0}\uFE0F", "wrench");
 });
 
+run("audio transcription uses its microphone icon and recording filename", () => {
+  const input = { file: "/tmp/shelley-uploads/meeting.webm" };
+  assert(toolEmoji("openai_audio_transcription") === "🎙️", "transcription icon");
+  assert(
+    toolHeadline("openai_audio_transcription", input) === "meeting.webm",
+    "transcription filename",
+  );
+});
+
 run("umbrella browser tool picks per-family emoji for folded-in actions", () => {
   const cases: Array<[string, string]> = [
     ["emulate_device", "\u{1F4F1}"],
@@ -148,12 +151,14 @@ run("umbrella browser tool picks per-family emoji for folded-in actions", () => 
   }
 });
 
-run("llm_one_shot image output stays inline", () => {
+run("retired keyword_search keeps its historical icon and query headline", () => {
+  const input = { query: "find authentication handlers", search_terms: ["auth", "handler"] };
+  assert(toolEmoji("keyword_search") === "🔍", "keyword_search icon");
+  assert(toolHeadline("keyword_search", input) === input.query, "keyword_search query");
   assert(
-    isAutoExpandTool("llm_one_shot", {}, { images: [{ url: "/api/read?path=image.png" }] }),
-    "image output should auto-expand",
+    toolHeadline("keyword_search", undefined) === "keyword_search",
+    "keyword_search without input",
   );
-  assert(!isAutoExpandTool("llm_one_shot", {}, { images: [] }), "text-only output stays a pill");
 });
 
 console.log("\ntoolMeta tests passed");

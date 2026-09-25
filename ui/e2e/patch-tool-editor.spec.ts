@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { writeFileSync, readFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { createConversationViaAPI, withTempDir } from "./helpers";
+import { createConversationViaAPI, disableScreenReaderMode, withTempDir } from "./helpers";
 
 // A patch tool card's header offers "open in editor": it opens the patched
 // file in the same standalone Monaco editor the fuzzy finder uses, so a patch
@@ -54,6 +54,7 @@ test.describe("Patch tool open-in-editor", () => {
       writeFileSync(join(dir, "sub", "notes.txt"), "nothing to replace here\n");
 
       const slug = await createConversationViaAPI(request, "patch: ./sub/notes.txt", { cwd: dir });
+      await disableScreenReaderMode(page);
       await page.goto(`/c/${slug}`);
       await page.waitForLoadState("domcontentloaded");
 
@@ -61,6 +62,9 @@ test.describe("Patch tool open-in-editor", () => {
       await expect(patchTool).toBeVisible({ timeout: 15000 });
       await expect(patchTool.locator(".patch-tool-filename")).toHaveText("./sub/notes.txt");
       await expect(patchTool.locator(".patch-tool-error")).toBeVisible();
+      await expect(patchTool.locator(".patch-tool-details")).toBeHidden();
+      await patchTool.locator(".patch-tool-header").click();
+      await expect(patchTool.locator(".patch-tool-error-message")).toBeVisible();
 
       await patchTool.getByRole("button", { name: "Open in editor" }).click();
 

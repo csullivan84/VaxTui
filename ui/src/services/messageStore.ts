@@ -46,6 +46,20 @@
 // history. The one exception is an EMPTY snapshot with live rows grafted on
 // top, which establishes nothing — see applyFullHistory.
 //
+// Hidden tabs never write to IndexedDB (canPersist). IDB locks are
+// origin-wide and Safari throttles or suspends background tabs, so a hidden
+// tab holding even a one-row readwrite transaction stalls every read the
+// visible tab makes — measured at the full 250ms read deadline (and the 3s
+// startup deadline) once a handful of tabs were open. Skipping is safe
+// because every tab receives every /api/stream2 event: whenever some tab is
+// visible, that tab persists the same data. When no tab is visible the disk
+// merely lags as an honest prefix, which the existing catch-up paths repair
+// cheaply: the conversation list seeds max_sequence_id_known on every page
+// load (tail fetch), hydrate unions the disk row with this tab's hot messages
+// (mergeRecords), and a later visible append backfills the skipped messages
+// from memory before writing (_persistUpsert), so the join check below only
+// trips when this tab genuinely never saw the gap.
+//
 // At-rest encryption (v4): the sensitive payload of each row is AES-GCM
 // encrypted with a per-browser key derived server-side from a long-lived
 // secret + a session cookie (see services/cryptoKey.ts + server/cache_key.go).
@@ -81,7 +95,7 @@ import {
 } from "./cryptoKey";
 import { perfCount } from "../utils/perf";
 import { cacheDiag } from "./cacheDiag";
-import { withDeadline, isDeadlineExceeded } from "./deadline";
+import { withDeadline, isDeadlineExceeded, isAbortError } from "./deadline";
 
 // Cross-tab notification channel for key rotation. When one tab runs
 // wipeAndRotateKey() the others must drop their cached CryptoKey and
@@ -139,6 +153,18 @@ const IDB_OPEN_COOLDOWN_MS = 30_000;
 const IDB_TX_TIMEOUT_MS = 3_000;
 
 /**
+ * How long a cache read may wait behind another tab's readwrite transaction.
+ *
+ * A one-row metadata lookup normally completes in a few milliseconds. If it
+ * is still queued after this bound, the origin-wide IDB writer is obstructing
+ * us and fetching the conversation is faster than waiting. This is deliberately
+ * much shorter than the startup transaction deadline: production Safari logs
+ * showed conversation switches pausing for exactly the old 3-second bound
+ * before a 36ms REST response could even start.
+ */
+const IDB_READ_TIMEOUT_MS = 250;
+
+/**
  * Rows per Promise.all batch for bulk crypto.subtle calls. Awaiting each row
  * individually serializes on the main-thread/crypto-thread round-trip:
  * measured on a 21k-message conversation, sequential decrypt took 610ms on
@@ -151,16 +177,21 @@ const CRYPTO_BATCH = 512;
  * Deadline options for a cache READ.
  *
  * Reads take shared locks, but still queue behind another tab's exclusive
- * writer, so they need the same bound as the startup transaction. A late
- * result is just discarded: hydrate has already returned, and the caller has
- * gone to the network.
+ * writer. Give them only a short chance to win; once that expires, hydrate
+ * returns a miss and the caller starts the faster network path. A late result
+ * is discarded because the caller has already moved on.
  */
 function readDeadlineOpts(store: string) {
   return {
     what: `indexedDB.read ${store}`,
     onLate: () => cacheDiag("info", "idb.read_late", { store }),
-    onLateError: (err: unknown) =>
-      cacheDiag("fail", "idb.read_late_error", { store, error: String(err) }),
+    onLateError: (err: unknown) => {
+      // hydrate aborts its own readonly transaction after the deadline so the
+      // abandoned bulk read does not wake later and duplicate the REST work.
+      // That expected AbortError is already represented by hydrate.idb_error.
+      if (isAbortError(err)) return;
+      cacheDiag("fail", "idb.read_late_error", { store, error: String(err) });
+    },
   };
 }
 
@@ -244,9 +275,9 @@ interface ConvMetaPayload {
   context_window_size: number;
 }
 
-/** Singleton row in keys_meta. */
+/** Cache-key singleton in keys_meta, keyed "current". */
 interface KeyMetaRow {
-  id: "current";
+  id: string;
   key_id: string;
 }
 
@@ -356,7 +387,8 @@ function mergeRecords(
     minSequenceId: messages.length > 0 ? messages[0].sequence_id : 0,
     maxSequenceId: messages.length > 0 ? messages[messages.length - 1].sequence_id : -1,
     maxSequenceIdKnown: Math.max(disk.maxSequenceIdKnown, hot.maxSequenceIdKnown),
-    hasFullHistory: (disk.hasFullHistory || hot.hasFullHistory) && joinsUp(disk, hot),
+    hasFullHistory:
+      (disk.hasFullHistory || hot.hasFullHistory) && joinsUp(hot.messages, disk.maxSequenceId),
     needsRefresh: disk.needsRefresh || hot.needsRefresh,
     updatedAt: Math.max(disk.updatedAt, hot.updatedAt),
   };
@@ -374,17 +406,55 @@ function mergeRecords(
  *
  * Only the JOIN is checked, not the whole run: gaps inside the disk row
  * itself can be genuine (see ConvMetaRow.message_count). Live messages
- * append, so the first one past the disk tail must be exactly tail + 1.
+ * append, so the first one past the disk tail must be exactly tail + 1 —
+ * including a regenerated turn that re-keys a known message_id to a new
+ * sequence_id, which is an append at the new position like any other.
  */
-function joinsUp(disk: ConversationCacheRecord, hot: ConversationCacheRecord): boolean {
-  const known = new Set(disk.messages.map((m) => m.message_id));
-  let firstNew = Infinity;
-  for (const m of hot.messages) {
-    if (known.has(m.message_id)) continue;
-    if (m.sequence_id > disk.maxSequenceId && m.sequence_id < firstNew) firstNew = m.sequence_id;
+function joinsUp(messages: Message[], tail: number): boolean {
+  const first = firstPastTail(messages, tail);
+  return first === Infinity || first === (tail >= 0 ? tail + 1 : 1);
+}
+
+/** Smallest sequence_id in `messages` past `tail`, or Infinity if none is. */
+function firstPastTail(messages: Message[], tail: number): number {
+  let first = Infinity;
+  for (const m of messages) {
+    if (m.sequence_id > tail && m.sequence_id < first) first = m.sequence_id;
   }
-  if (firstNew === Infinity) return true;
-  return firstNew === (disk.messages.length > 0 ? disk.maxSequenceId + 1 : 1);
+  return first;
+}
+
+/**
+ * Extend a live batch with the hot messages that sit between the disk tail
+ * and the batch, so the disk row stays contiguous.
+ *
+ * Hidden tabs skip persistence (canPersist) but keep receiving stream events
+ * into `hot`. If no sibling tab was visible either, the disk row stops at some
+ * earlier tail; the next visible append would then skip past it and the
+ * transaction's join check would clear has_full_history — correct, but it
+ * turns a cheap tail fetch into a full re-download at the next focus. The
+ * messages needed to close the gap are usually right here in memory.
+ *
+ * The fill must cover the gap exactly (one message per sequence_id, since
+ * live appends are consecutive); anything less is left to the join check.
+ */
+function backfillFromHot(hot: Message[], incoming: Message[], diskMax: number): Message[] {
+  const firstIncoming = firstPastTail(incoming, diskMax);
+  if (diskMax < 0 || firstIncoming === Infinity || firstIncoming === diskMax + 1) return incoming;
+  const incomingIds = new Set(incoming.map((m) => m.message_id));
+  const bySeq = new Map(hot.map((m) => [m.sequence_id, m]));
+  const fill: Message[] = [];
+  for (let seq = diskMax + 1; seq < firstIncoming; seq++) {
+    const m = bySeq.get(seq);
+    if (!m || incomingIds.has(m.message_id)) return incoming;
+    fill.push(m);
+  }
+  cacheDiag("info", "persist.backfilled_from_hot", {
+    conversation_id: incoming[0].conversation_id,
+    from: diskMax + 1,
+    to: firstIncoming - 1,
+  });
+  return [...fill, ...incoming];
 }
 
 function convRange(id: string): IDBKeyRange {
@@ -419,6 +489,10 @@ export interface MessageStoreOptions {
   openCooldownMs?: number;
   /** Override IDB_TX_TIMEOUT_MS. Tests only. */
   txTimeoutMs?: number;
+  /** Override IDB_READ_TIMEOUT_MS. Tests only. */
+  readTimeoutMs?: number;
+  /** Override page visibility. Tests only. */
+  isPageVisible?: () => boolean;
 }
 
 export class MessageStore {
@@ -428,6 +502,8 @@ export class MessageStore {
   private readonly openTimeoutMs: number;
   private readonly openCooldownMs: number;
   private readonly txTimeoutMs: number;
+  private readonly readTimeoutMs: number;
+  private readonly isPageVisible: () => boolean;
   private dbPromise: Promise<IDBPDatabase<ShelleyDB>> | null = null;
   /**
    * When indexedDB.open() last blew its deadline; 0 if it hasn't. Drives the
@@ -488,6 +564,13 @@ export class MessageStore {
     this.openTimeoutMs = opts.openTimeoutMs ?? IDB_OPEN_TIMEOUT_MS;
     this.openCooldownMs = opts.openCooldownMs ?? IDB_OPEN_COOLDOWN_MS;
     this.txTimeoutMs = opts.txTimeoutMs ?? IDB_TX_TIMEOUT_MS;
+    // Existing tests historically used txTimeoutMs for every transaction
+    // deadline; preserve that override while giving production reads their
+    // own much shorter bound.
+    this.readTimeoutMs = opts.readTimeoutMs ?? opts.txTimeoutMs ?? IDB_READ_TIMEOUT_MS;
+    this.isPageVisible =
+      opts.isPageVisible ??
+      (() => typeof document === "undefined" || document.visibilityState === "visible");
     if (typeof BroadcastChannel !== "undefined") {
       this.rotateChannel = new BroadcastChannel(ROTATE_CHANNEL);
       // Node implements BroadcastChannel via libuv and keeps the event
@@ -752,6 +835,18 @@ export class MessageStore {
     }
   }
 
+  /**
+   * Hidden tabs keep their in-memory cache current but never write to
+   * IndexedDB; see the file header for why that is both necessary and safe.
+   * Called both before the (slow, async) encryption and again right before
+   * the transaction opens, so a tab hidden mid-flight still never writes.
+   */
+  private canPersist(id: string, operation: string): boolean {
+    if (this.isPageVisible()) return true;
+    cacheDiag("info", "persist.hidden_tab_skipped", { conversation_id: id, operation });
+    return false;
+  }
+
   /** Wait until all write-behind operations have completed. */
   async settle(): Promise<void> {
     while (this.inflight.size > 0) {
@@ -930,25 +1025,36 @@ export class MessageStore {
         return this.hot.get(id) ?? null;
       }
       const db = await this.db();
-      // Bounded: these are readonly (shared) locks, but a sibling tab holding
-      // an EXCLUSIVE lock on the same store still blocks them for as long as
-      // it likes — including forever, if that tab was suspended mid-write.
-      // Reading the cache must never outlast just fetching from the network.
-      const meta = await withDeadline(
-        db.get("conversation_meta", id),
-        this.txTimeoutMs,
-        readDeadlineOpts("conversation_meta"),
-      );
+      // Issue both reads in one turn; IDB serves a transaction's requests in
+      // order, so the deadline on the one-row meta lookup bounds only lock
+      // acquisition while the bulk getAll stays unbounded and a large healthy
+      // cache can finish copying.
+      const readTx = db.transaction(["conversation_meta", "messages"], "readonly");
+      const metaRead = readTx.objectStore("conversation_meta").get(id);
+      const rowsRead = readTx.objectStore("messages").getAll(convRange(id));
+      let meta: ConvMetaRow | undefined;
+      try {
+        meta = await withDeadline(
+          metaRead,
+          this.readTimeoutMs,
+          readDeadlineOpts("conversation_meta"),
+        );
+      } catch (err) {
+        void readTx.done.catch(() => {});
+        void rowsRead.catch(() => {});
+        try {
+          readTx.abort();
+        } catch {
+          // It completed between the deadline and abort.
+        }
+        throw err;
+      }
+      const [rows] = await Promise.all([rowsRead, readTx.done]);
       if (meta) {
         const payload = await this.decryptMetaRow(material.key, meta);
         if (payload) {
           // getAll on the compound key range returns rows in ascending
           // (conv, seq) order — no JS sort needed.
-          const rows = await withDeadline(
-            db.getAll("messages", convRange(id)),
-            this.txTimeoutMs,
-            readDeadlineOpts("messages"),
-          );
           const decrypted: Message[] = [];
           for (let i = 0; i < rows.length; i += CRYPTO_BATCH) {
             const batch = await Promise.all(
@@ -1102,22 +1208,12 @@ export class MessageStore {
     // hasFullHistory forces the next focus into a FULL reload — a
     // ?last_sequence_id= tail fetch can never recover a missing middle.
     const prevMax = rec.maxSequenceId;
-    let firstNewSeq = Infinity;
-    for (const m of incoming) {
-      if (!byMsgId.has(m.message_id) && m.sequence_id > prevMax && m.sequence_id < firstNewSeq) {
-        firstNewSeq = m.sequence_id;
-      }
-    }
-    if (
-      rec.hasFullHistory &&
-      firstNewSeq !== Infinity &&
-      firstNewSeq !== (rec.messages.length > 0 ? prevMax + 1 : 1)
-    ) {
+    if (rec.hasFullHistory && !joinsUp(incoming, prevMax)) {
       rec.hasFullHistory = false;
       cacheDiag(
         "fail",
         "upsert.sequence_skip",
-        { conversation_id: id, cached_max: prevMax, first_new: firstNewSeq },
+        { conversation_id: id, cached_max: prevMax, first_new: firstPastTail(incoming, prevMax) },
         id,
       );
     }
@@ -1157,13 +1253,43 @@ export class MessageStore {
     convHint: Conversation | null,
     ctxHint: number,
   ): Promise<void> {
+    if (!this.canPersist(id, "upsert")) return;
     const material = await this.getKey();
     if (!material) return;
+    const db = await this.db();
+    // Snapshot the existing meta row in its own readonly tx (crypto.subtle
+    // awaits would auto-commit a readwrite one). Its payload supplies the
+    // `conversation` / `context_window_size` defaults, which are not
+    // ratcheted: overwriting a concurrent writer's fresher copy is acceptable,
+    // as in v3. Its plaintext tail drives the backfill below.
+    const existingRow = await db.get("conversation_meta", id);
+    const diskMax = existingRow?.max_sequence_id_local ?? -1;
+    const hot = this.hot.get(id);
+    // The disk has nothing, or an incomplete row, yet this tab holds the
+    // complete history: a REST load it skipped persisting while hidden.
+    // Writing just the live batch would leave a row that can only ever be
+    // repaired by a full reload, so write the whole history instead — unless
+    // the disk is AHEAD of us: a sibling may have written live rows past our
+    // tail that we have not received yet, and replacing its longer row with
+    // our shorter one would discard them. Once we catch up, a later append
+    // takes this path.
+    if (
+      !existingRow?.has_full_history &&
+      hot?.hasFullHistory &&
+      hot.messages.length > 0 &&
+      diskMax <= hot.maxSequenceId
+    ) {
+      cacheDiag("info", "persist.full_history_from_hot", {
+        conversation_id: id,
+        messages: hot.messages.length,
+      });
+      await this._persistFullHistory(id, { ...hot });
+      return;
+    }
+    incoming = backfillFromHot(hot?.messages ?? [], incoming, diskMax);
     // Encrypt OUTSIDE the IDB tx — crypto.subtle returns promises and
-    // awaiting non-IDB promises inside a tx invalidates it. The encrypted
-    // payload for the meta row depends on the *existing* row; we read it
-    // in its own RX tx first (snapshot), encrypt, then do a single RW tx
-    // that does the true RMW of the plaintext ratchet fields.
+    // awaiting non-IDB promises inside a tx invalidates it. Then do a single
+    // RW tx that does the true RMW of the plaintext ratchet fields.
     const encRows: MessageRow[] = [];
     for (let i = 0; i < incoming.length; i += CRYPTO_BATCH) {
       encRows.push(
@@ -1172,12 +1298,6 @@ export class MessageStore {
         )),
       );
     }
-    const db = await this.db();
-    // Snapshot existing meta payload for `conversation` and
-    // `context_window_size` defaults. These are not ratcheted; if a
-    // concurrent writer landed something fresher, our overwrite of the
-    // payload is acceptable (same loose semantics as v3).
-    const existingRow = await db.get("conversation_meta", id);
     const existingPayload = existingRow
       ? await this.decryptMetaRow(material.key, existingRow)
       : null;
@@ -1189,6 +1309,7 @@ export class MessageStore {
           : ctxHint,
     };
     const { iv, ct } = await wrapJSON(material.key, payload, this.metaAAD(id));
+    if (!this.canPersist(id, "upsert")) return;
 
     // Now a single RW tx — no non-IDB awaits inside.
     const tx = db.transaction(["messages", "conversation_meta", "keys_meta"], "readwrite");
@@ -1217,7 +1338,6 @@ export class MessageStore {
       }
     }
     let added = 0;
-    let firstNewSeq = Infinity;
     const idIdx = msgs.index("by_message_id");
     // Three phases instead of one interleaved loop, so the exclusive lock is
     // held across a handful of event-loop turns rather than one per message.
@@ -1236,12 +1356,12 @@ export class MessageStore {
       if (priorKey) {
         if (priorKey[0] !== m.conversation_id || priorKey[1] !== m.sequence_id) {
           // Same message re-keyed to a new sequence_id (regenerated turn):
-          // a move, not an addition.
+          // a move, not an addition (message_count), though joinsUp still
+          // sees it as an append at its new position.
           moved.push(priorKey);
         }
       } else {
         added++;
-        if (m.sequence_id > prevMax && m.sequence_id < firstNewSeq) firstNewSeq = m.sequence_id;
       }
       if (m.sequence_id > maxLocal) maxLocal = m.sequence_id;
     }
@@ -1252,9 +1372,7 @@ export class MessageStore {
     // A live append must continue the history we already hold. If it skips
     // ahead, messages were committed while we weren't listening and the
     // cached set now has a hole — mirror mergeRecords.joinsUp().
-    if (stillFull && firstNewSeq !== Infinity && firstNewSeq !== (prevMax >= 0 ? prevMax + 1 : 1)) {
-      stillFull = false;
-    }
+    if (stillFull && !joinsUp(incoming, prevMax)) stillFull = false;
     const observedAfter = await msgs.count(convRange(id));
     const metaRow: ConvMetaRow = {
       conversation_id: id,
@@ -1420,6 +1538,7 @@ export class MessageStore {
   }
 
   private async _persistFullHistory(id: string, rec: ConversationCacheRecord): Promise<void> {
+    if (!this.canPersist(id, "full_history")) return;
     const material = await this.getKey();
     if (!material) return;
     // Encrypt all message rows + the meta payload OUTSIDE the IDB tx.
@@ -1443,6 +1562,7 @@ export class MessageStore {
       context_window_size: rec.contextWindowSize,
     };
     const { iv, ct } = await wrapJSON(material.key, payload, this.metaAAD(id));
+    if (!this.canPersist(id, "full_history")) return;
 
     const tx = db.transaction(["messages", "conversation_meta", "keys_meta"], "readwrite");
     if (!(await this.verifyKeyInTx(tx.objectStore("keys_meta"), material.keyId))) {
@@ -1468,24 +1588,27 @@ export class MessageStore {
       conversation_id: id,
       updated_at: Date.now(),
       max_sequence_id_known: Math.max(existing?.max_sequence_id_known ?? 0, rec.maxSequenceIdKnown),
-      // Ratchet against any concurrent writer that pushed local higher.
-      max_sequence_id_local: Math.max(existing?.max_sequence_id_local ?? -1, rec.maxSequenceId),
+      // NOT ratcheted: the delete-range above removed any rows a concurrent
+      // writer had pushed past our tail, so the row's tail is exactly ours.
+      // Carrying the old value forward would make the next append's join
+      // check compare against phantom rows and wave a real hole through.
+      max_sequence_id_local: rec.maxSequenceId,
       // Mirror the in-memory record rather than hardcoding true: an empty
       // snapshot with grafted live rows is not a complete history (see
       // applyFullHistory), and persisting `true` here would let the next
       // reload hydrate the certification we just refused.
       has_full_history: rec.hasFullHistory,
       message_count: rowCount,
-      // A full REST snapshot IS the re-verification, so clear any pending
-      // reconnect-driven refresh flag.
-      needs_refresh: false,
+      // Mirror the record: a fresh REST snapshot IS the re-verification
+      // (applyFullHistory clears the flag), but a hot record written from
+      // _persistUpsert may still be awaiting one after a stream reconnect.
+      needs_refresh: rec.needsRefresh,
       iv,
       ct,
     };
     await metaStore.put(row);
     await tx.done;
   }
-
   // ── setConversation ────────────────────────────────────────────────────────
 
   setConversation(id: string, conv: Conversation): void {
@@ -1589,6 +1712,7 @@ export class MessageStore {
       needs_refresh?: boolean;
     },
   ): Promise<void> {
+    if (!this.canPersist(id, "metadata")) return;
     const material = await this.getKey();
     if (!material) return;
     const touchesPayload =
@@ -1624,6 +1748,7 @@ export class MessageStore {
     const emptyCipher = touchesPayload
       ? null
       : await wrapJSON(material.key, emptyPayload(), this.metaAAD(id));
+    if (!this.canPersist(id, "metadata")) return;
 
     const tx = db.transaction(["conversation_meta", "keys_meta"], "readwrite");
     if (!(await this.verifyKeyInTx(tx.objectStore("keys_meta"), material.keyId))) {
@@ -1802,6 +1927,10 @@ export class MessageStore {
     this.transient.delete(id);
     this.hydrated.delete(id);
     this.notify(id);
+    // Every tab receives the list patch that triggers this, so a hidden tab
+    // can leave the disk rows to a visible sibling (or to pruneStale) rather
+    // than open its own transaction; see canPersist.
+    if (!this.canPersist(id, "delete")) return;
     // Wait for any in-flight write-behind ops for this conversation to
     // settle before deleting, so a slow upsert can't race past us and
     // recreate rows after the delete, and put the delete itself on the same
@@ -1840,6 +1969,7 @@ export class MessageStore {
    * Returns the list of pruned conversation_ids.
    */
   async pruneStale(activeIds: Iterable<string>, olderThanMs: number): Promise<string[]> {
+    if (!this.isPageVisible()) return [];
     if (!this.factory) return [];
     const active = new Set(activeIds);
     const cutoff = Date.now() - olderThanMs;
@@ -1861,6 +1991,7 @@ export class MessageStore {
         // concurrent upsert (e.g. a live stream event landing during prune).
         await this.settle();
         const db = await this.db();
+        if (!this.isPageVisible()) break;
         const tx = db.transaction(["messages", "conversation_meta"], "readwrite");
         // Re-read the meta row INSIDE the prune tx and verify it's still
         // stale. If a stream event upserted it after our scan, skip.

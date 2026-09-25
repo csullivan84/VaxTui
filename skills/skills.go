@@ -6,11 +6,14 @@ import (
 	"context"
 	"fmt"
 	"html"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 	"unicode"
+
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -28,8 +31,30 @@ type Skill struct {
 	When          string            `json:"when,omitempty"`
 	AllowedTools  string            `json:"allowed_tools,omitempty"`
 	Metadata      map[string]string `json:"metadata,omitempty"`
-	Path          string            `json:"path"`           // Path to SKILL.md file (empty for built-in skills)
-	Body          string            `json:"body,omitempty"` // Full markdown body (set for built-in skills)
+	Path          string            `json:"path"`               // Path to SKILL.md file (empty for non-filesystem skills)
+	Body          string            `json:"body,omitempty"`     // Full markdown body (set for built-in skills)
+	Activate      string            `json:"activate,omitempty"` // Command that prints the full skill for activation
+	Source        string            `json:"source,omitempty"`   // Filesystem path, built-in path, or integration root URL
+	Origin        string            `json:"origin,omitempty"`   // File, Integration, or Built into Shelley
+}
+
+// ActivationCommand returns the command agents should run to load the skill.
+func (s Skill) ActivationCommand() string {
+	if s.Activate != "" {
+		return s.Activate
+	}
+	return "shelley skill cat " + s.Name
+}
+
+// SourceLocation returns the location shown in system-prompt metadata.
+func (s Skill) SourceLocation() string {
+	if s.Source != "" {
+		return s.Source
+	}
+	if s.Path != "" {
+		return s.Path
+	}
+	return "skills/builtin/" + s.Name + "/SKILL.md"
 }
 
 // Discover finds all skills in the given directories.
@@ -141,7 +166,19 @@ func Parse(path string) (Skill, error) {
 		return Skill{}, err
 	}
 
-	frontmatter, err := parseFrontmatter(string(content))
+	skill, err := ParseContent(string(content))
+	if err != nil {
+		return Skill{}, err
+	}
+	skill.Path = path
+	skill.Source = path
+	skill.Origin = "File"
+	return skill, nil
+}
+
+// ParseContent parses SKILL.md content without reading from the filesystem.
+func ParseContent(content string) (Skill, error) {
+	frontmatter, err := parseFrontmatter(content)
 	if err != nil {
 		return Skill{}, err
 	}
@@ -149,6 +186,9 @@ func Parse(path string) (Skill, error) {
 	name, _ := frontmatter["name"].(string)
 	description, _ := frontmatter["description"].(string)
 
+	if strings.IndexByte(name, 0) >= 0 || strings.IndexByte(description, 0) >= 0 {
+		return Skill{}, &ValidationError{Message: "name and description must not contain NUL bytes"}
+	}
 	if name == "" || description == "" {
 		return Skill{}, &ValidationError{Message: "name and description are required"}
 	}
@@ -164,7 +204,7 @@ func Parse(path string) (Skill, error) {
 	skill := Skill{
 		Name:        name,
 		Description: description,
-		Path:        path,
+		Activate:    "shelley skill cat " + name,
 	}
 
 	if license, ok := frontmatter["license"].(string); ok {
@@ -234,94 +274,139 @@ func validateName(name string) error {
 	return nil
 }
 
-// parseFrontmatter extracts YAML frontmatter from markdown content.
-// This is a simple parser that handles basic YAML without external dependencies.
-func parseFrontmatter(content string) (map[string]any, error) {
-	if !strings.HasPrefix(content, "---") {
-		return nil, &ValidationError{Message: "SKILL.md must start with YAML frontmatter (---)"}
+// splitFrontmatter separates YAML frontmatter from the markdown body.
+func splitFrontmatter(content string) (yamlContent, body string, err error) {
+	trimmed := strings.TrimLeftFunc(content, unicode.IsSpace)
+	documentStart := len(content) - len(trimmed)
+	lineOffset := strings.IndexByte(trimmed, '\n')
+	if lineOffset < 0 {
+		return "", "", &ValidationError{Message: "SKILL.md must start with YAML frontmatter (---)"}
 	}
-
-	parts := strings.SplitN(content, "---", 3)
-	if len(parts) < 3 {
-		return nil, &ValidationError{Message: "SKILL.md frontmatter not properly closed with ---"}
+	lineEnd := documentStart + lineOffset
+	if strings.TrimRight(strings.TrimSuffix(content[documentStart:lineEnd], "\r"), " \t") != "---" {
+		return "", "", &ValidationError{Message: "SKILL.md must start with YAML frontmatter (---)"}
 	}
+	start := lineEnd + 1
 
-	yamlContent := parts[1]
-	return parseSimpleYAML(yamlContent)
+	for pos := start; pos <= len(content); {
+		lineEnd := len(content)
+		next := len(content)
+		if offset := strings.IndexByte(content[pos:], '\n'); offset >= 0 {
+			lineEnd = pos + offset
+			next = lineEnd + 1
+		}
+		line := strings.TrimRight(strings.TrimSuffix(content[pos:lineEnd], "\r"), " \t")
+		if line == "---" {
+			return content[start:pos], content[next:], nil
+		}
+		if next == len(content) {
+			break
+		}
+		pos = next
+	}
+	return "", "", &ValidationError{Message: "SKILL.md frontmatter not properly closed with ---"}
 }
 
-// parseSimpleYAML parses simple YAML frontmatter.
-// Supports: strings, and nested maps (for metadata).
-func parseSimpleYAML(content string) (map[string]any, error) {
-	result := make(map[string]any)
-	lines := strings.Split(content, "\n")
-
-	var currentKey string
-	var inNestedMap bool
-	nestedMap := make(map[string]any)
-
-	for _, line := range lines {
-		// Skip empty lines and comments
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
-			continue
-		}
-
-		// Check for nested map entries (indented with spaces)
-		if inNestedMap && (strings.HasPrefix(line, "  ") || strings.HasPrefix(line, "\t")) {
-			parts := strings.SplitN(trimmed, ":", 2)
-			if len(parts) == 2 {
-				key := strings.TrimSpace(parts[0])
-				value := strings.TrimSpace(parts[1])
-				value = unquoteYAML(value)
-				nestedMap[key] = value
-			}
-			continue
-		}
-
-		// If we were in a nested map, save it
-		if inNestedMap && currentKey != "" {
-			result[currentKey] = nestedMap
-			nestedMap = make(map[string]any)
-			inNestedMap = false
-		}
-
-		// Parse top-level key: value
-		parts := strings.SplitN(trimmed, ":", 2)
-		if len(parts) != 2 {
-			continue
-		}
-
-		key := strings.TrimSpace(parts[0])
-		value := strings.TrimSpace(parts[1])
-
-		if value == "" {
-			// Could be start of a nested map
-			currentKey = key
-			inNestedMap = true
-			continue
-		}
-
-		value = unquoteYAML(value)
-		result[key] = value
+// parseFrontmatter extracts YAML frontmatter from markdown content.
+func parseFrontmatter(content string) (map[string]any, error) {
+	yamlContent, _, err := splitFrontmatter(content)
+	if err != nil {
+		return nil, err
 	}
-
-	// Handle final nested map
-	if inNestedMap && currentKey != "" && len(nestedMap) > 0 {
-		result[currentKey] = nestedMap
+	decoder := yaml.NewDecoder(strings.NewReader(yamlContent))
+	var node yaml.Node
+	if err := decoder.Decode(&node); err != nil {
+		return nil, &ValidationError{Message: "invalid YAML frontmatter: " + err.Error()}
 	}
-
+	var extra yaml.Node
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return nil, &ValidationError{Message: "invalid YAML frontmatter: multiple YAML documents"}
+		}
+		return nil, &ValidationError{Message: "invalid YAML frontmatter: " + err.Error()}
+	}
+	value, err := stringScalarYAMLValue(&node)
+	if err != nil {
+		return nil, &ValidationError{Message: "invalid YAML frontmatter: " + err.Error()}
+	}
+	result, ok := value.(map[string]any)
+	if !ok {
+		return nil, &ValidationError{Message: "YAML frontmatter must be a mapping"}
+	}
 	return result, nil
 }
 
-// unquoteYAML removes surrounding quotes from a YAML string value.
-func unquoteYAML(s string) string {
-	if len(s) >= 2 {
-		if (s[0] == '"' && s[len(s)-1] == '"') || (s[0] == '\'' && s[len(s)-1] == '\'') {
-			return s[1 : len(s)-1]
-		}
+// stringScalarYAMLValue converts YAML mappings recursively while preserving
+// every scalar's source text as a string. Agent Skills frontmatter defines
+// string fields, and the old parser treated unquoted values such as 1.0 and
+// true as strings rather than silently dropping them after YAML implicit typing.
+const maxSkillYAMLNodeVisits = 10_000
+
+func stringScalarYAMLValue(node *yaml.Node) (any, error) {
+	remaining := maxSkillYAMLNodeVisits
+	return stringScalarYAMLValueVisit(node, make(map[*yaml.Node]bool), &remaining)
+}
+
+func stringScalarYAMLValueVisit(node *yaml.Node, visiting map[*yaml.Node]bool, remaining *int) (any, error) {
+	if node == nil {
+		return nil, nil
 	}
-	return s
+	if *remaining == 0 {
+		return nil, fmt.Errorf("YAML alias expansion exceeds limit")
+	}
+	*remaining = *remaining - 1
+	if visiting[node] {
+		return nil, fmt.Errorf("cyclic YAML alias")
+	}
+	visiting[node] = true
+	defer delete(visiting, node)
+
+	switch node.Kind {
+	case yaml.DocumentNode:
+		if len(node.Content) != 1 {
+			return nil, fmt.Errorf("expected one YAML document")
+		}
+		return stringScalarYAMLValueVisit(node.Content[0], visiting, remaining)
+	case yaml.MappingNode:
+		if len(node.Content)%2 != 0 {
+			return nil, fmt.Errorf("invalid YAML mapping")
+		}
+		result := make(map[string]any, len(node.Content)/2)
+		for i := 0; i < len(node.Content); i += 2 {
+			key := node.Content[i]
+			if key.Kind != yaml.ScalarNode {
+				return nil, fmt.Errorf("mapping key must be a scalar")
+			}
+			if _, exists := result[key.Value]; exists {
+				return nil, fmt.Errorf("duplicate mapping key %q", key.Value)
+			}
+			value, err := stringScalarYAMLValueVisit(node.Content[i+1], visiting, remaining)
+			if err != nil {
+				return nil, err
+			}
+			result[key.Value] = value
+		}
+		return result, nil
+	case yaml.SequenceNode:
+		result := make([]any, 0, len(node.Content))
+		for _, child := range node.Content {
+			value, err := stringScalarYAMLValueVisit(child, visiting, remaining)
+			if err != nil {
+				return nil, err
+			}
+			result = append(result, value)
+		}
+		return result, nil
+	case yaml.ScalarNode:
+		return node.Value, nil
+	case yaml.AliasNode:
+		if node.Alias == nil {
+			return nil, fmt.Errorf("YAML alias has no target")
+		}
+		return stringScalarYAMLValueVisit(node.Alias, visiting, remaining)
+	default:
+		return nil, fmt.Errorf("unsupported YAML node kind %d", node.Kind)
+	}
 }
 
 // ToPromptXML generates the <available_skills> XML block for system prompts.
@@ -341,8 +426,8 @@ func ToPromptXML(skills []Skill) string {
 		sb.WriteString("<description>")
 		sb.WriteString(html.EscapeString(skill.Description))
 		sb.WriteString("</description>\n")
-		sb.WriteString("<activate>shelley skill cat ")
-		sb.WriteString(html.EscapeString(skill.Name))
+		sb.WriteString("<activate>")
+		sb.WriteString(html.EscapeString(skill.ActivationCommand()))
 		sb.WriteString("</activate>\n")
 		sb.WriteString("</skill>\n")
 	}
@@ -364,10 +449,12 @@ func DefaultDirs() []string {
 	// Search these directories for skills:
 	// 1. ~/.config/shelley/ (XDG convention for Shelley)
 	// 2. ~/.config/agents/skills (shared agents skills directory)
-	// 3. ~/.shelley/ (legacy location)
+	// 3. ~/.agents/skills (non-XDG alternative to ~/.config/agents/skills)
+	// 4. ~/.shelley/ (legacy location)
 	candidateDirs := []string{
 		filepath.Join(home, ".config", "shelley"),
 		filepath.Join(home, ".config", "agents", "skills"),
+		filepath.Join(home, ".agents", "skills"),
 		filepath.Join(home, ".shelley"),
 	}
 
@@ -501,14 +588,16 @@ func DiscoverInTree(workingDir, gitRoot string) ([]Skill, map[string]bool) {
 	return skills, allNames
 }
 
-// ListAll returns all available skills (built-in + filesystem), deduplicated by name.
-//
-// Filesystem skills take priority over built-in skills with the same name.
-// An empty SKILL.md on the filesystem suppresses the corresponding built-in
-// skill entirely — this is the mechanism for users to disable built-in skills.
-//
-// If gitRoot is empty, it is computed from workingDir.
+// ListAll returns all available filesystem and built-in skills, deduplicated by name.
 func ListAll(workingDir, gitRoot string) []Skill {
+	return ListAllWithIntegrations(workingDir, gitRoot, nil)
+}
+
+// ListAllWithIntegrations merges filesystem, integration-discovered, and
+// built-in skills. Filesystem claims win even when their SKILL.md is malformed
+// or empty, followed by integrations, then built-ins. Within each source,
+// first-seen wins.
+func ListAllWithIntegrations(workingDir, gitRoot string, integrationSkills []Skill) []Skill {
 	if gitRoot == "" {
 		gitRoot = findGitRoot(workingDir)
 	}
@@ -546,9 +635,17 @@ func ListAll(workingDir, gitRoot string) []Skill {
 		fsNames[s.Name] = true
 	}
 
-	for _, s := range BuiltinSkills() {
-		if !fsNames[s.Name] {
+	for _, s := range integrationSkills {
+		if !fsNames[s.Name] && !seen[s.Name] {
 			all = append(all, s)
+			seen[s.Name] = true
+		}
+	}
+
+	for _, s := range BuiltinSkills() {
+		if !fsNames[s.Name] && !seen[s.Name] {
+			all = append(all, s)
+			seen[s.Name] = true
 		}
 	}
 

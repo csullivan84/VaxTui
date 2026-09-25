@@ -110,6 +110,7 @@
       :plain-text="collapsedPlainText"
       body-class="output-iframe-tool-details"
     >
+      <RunningToolTime v-if="isRunning && isExpanded" :start-time="toolInvokedAt" />
       <div
         v-if="isComplete && !hasError && htmlWithHeightReporter"
         class="output-iframe-tool-section"
@@ -155,7 +156,9 @@ import JSZip from "jszip";
 import type { LLMContent } from "../../../types";
 import ToolAccessibleBody from "./ToolAccessibleBody.vue";
 import ToolChevron from "./ToolChevron.vue";
+import RunningToolTime from "./RunningToolTime.vue";
 import ToolStatusIcon from "./ToolStatusIcon.vue";
+import { toolOutcomeSuffix } from "../../utils/toolStatus";
 
 interface EmbeddedFile {
   name: string;
@@ -167,6 +170,7 @@ interface EmbeddedFile {
 const props = defineProps<{
   toolInput?: unknown;
   isRunning?: boolean;
+  toolInvokedAt?: string | null;
   toolResult?: LLMContent[];
   hasError?: boolean;
   executionTime?: string;
@@ -499,8 +503,11 @@ const isComplete = computed(() => !props.isRunning && props.toolResult !== undef
 const downloadLabel = computed(() => (hasMultipleFiles.value ? "Download ZIP" : "Download HTML"));
 const errorText = computed(() => props.toolResult?.[0]?.Text || "Failed to display HTML content");
 const outputLabel = computed(() => `HTML output: ${title.value}`);
-const toggleLabel = computed(() =>
-  isExpanded.value ? `Collapse HTML output: ${title.value}` : `Expand HTML output: ${title.value}`,
+const toggleLabel = computed(
+  () =>
+    (isExpanded.value
+      ? `Collapse HTML output: ${title.value}`
+      : `Expand HTML output: ${title.value}`) + toolOutcomeSuffix(isComplete.value, props.hasError),
 );
 const collapsedPlainText = computed(() => {
   const parts = [`Title:\n${title.value}`, `Filename:\n${filename.value}`];

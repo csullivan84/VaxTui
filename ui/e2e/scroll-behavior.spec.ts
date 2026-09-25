@@ -71,6 +71,48 @@ test.describe("Scroll behavior", () => {
     ).toBe(0);
   });
 
+  test("a promoted draft allows bare scrolling after its first response", async ({ page }) => {
+    await page.goto("/new");
+    const input = page.getByTestId("message-input");
+    const container = page.locator(".messages-container");
+    const scrollButton = page.locator(".scroll-to-bottom-button");
+    await expect(input).toBeVisible();
+    // Let the observer report the empty list before the draft gains an ID.
+    await container.evaluate(
+      () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+    );
+    await input.fill("wide tables");
+    await expect(page).toHaveURL(/\/c\/[^/]+$/);
+    await page.getByTestId("send-button").click();
+    await expect(page.getByText("Wide Table (many columns)", { exact: true })).toBeAttached();
+    await expect(page.getByTestId("agent-thinking")).toBeHidden();
+    await expect
+      .poll(() => container.evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight))
+      .toBeLessThan(5);
+    await expect(scrollButton).toBeHidden();
+
+    // Find/accessibility navigation has no preceding wheel or touch event.
+    // It must release initial bottom restoration, not get pulled back down.
+    await container.evaluate((el) => {
+      el.scrollTop = 0;
+    });
+    await expect(scrollButton).toBeVisible();
+    await expect.poll(() => container.evaluate((el) => el.scrollTop)).toBeLessThan(5);
+
+    await input.fill("markdown: still reading");
+    await page.getByTestId("send-button").click();
+    await expect(page.locator(".message-agent").last()).toContainText("still reading");
+    await expect(page.getByTestId("agent-thinking")).toBeHidden();
+    await expect.poll(() => container.evaluate((el) => el.scrollTop)).toBeLessThan(5);
+    await expect(scrollButton).toBeVisible();
+
+    await scrollButton.click();
+    await expect(scrollButton).toBeHidden();
+    await expect
+      .poll(() => container.evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight))
+      .toBeLessThan(5);
+  });
+
   test("shows scroll-to-bottom button when scrolled up, auto-scrolls when at bottom", async ({
     page,
     request,
@@ -616,6 +658,96 @@ test.describe("Scroll behavior", () => {
       .toBeLessThan(120);
   });
 
+  test("saved-bottom restoration survives clamps but yields to gestures and bare navigation", async ({
+    page,
+    request,
+  }) => {
+    const generated = await request.post("/debug/loremipsum?json=1", {
+      form: { size: "medium", model: "predictable" },
+    });
+    expect(generated.ok()).toBeTruthy();
+    const { conversation_id: conversationId } = await generated.json();
+    const scrollKey = `shelley_scroll_${conversationId}`;
+
+    await page.goto(`/c/${conversationId}`);
+    const container = page.locator(".messages-container");
+    const scrollButton = page.locator(".scroll-to-bottom-button");
+    await expect(container).toBeVisible({ timeout: 30000 });
+    await page.evaluate(
+      ({ key }) => localStorage.setItem(key, "bottom"),
+      { key: scrollKey },
+    );
+    await page.reload();
+    await expect(scrollButton).toBeHidden({ timeout: 10000 });
+    await expect(page.locator(".messages-bottom-sentinel")).toBeAttached({ timeout: 30000 });
+
+    // A list shrink clamps scrollTop while leaving the bottom sentinel in
+    // view. Saving during that startup-style transition must keep the semantic
+    // bottom rather than persist the transient pixel offset.
+    const afterClamp = await container.evaluate(async (element, key) => {
+      const list = element.querySelector(".messages-list");
+      const sentinel = element.querySelector(".messages-bottom-sentinel");
+      if (!list || !sentinel) throw new Error("message list sentinel not found");
+      const spacer = document.createElement("div");
+      spacer.style.height = "600px";
+      list.insertBefore(spacer, sentinel);
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      element.scrollTop = element.scrollHeight;
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      spacer.remove();
+      // Force the clamp and its scroll handler before ResizeObserver can
+      // explain the shrink, matching WebKit's event ordering.
+      void element.scrollTop;
+      element.dispatchEvent(new Event("scroll"));
+      window.dispatchEvent(new Event("beforeunload"));
+      const immediate = localStorage.getItem(key);
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      window.dispatchEvent(new Event("beforeunload"));
+      return { immediate, settled: localStorage.getItem(key) };
+    }, scrollKey);
+    expect(afterClamp).toEqual({ immediate: "bottom", settled: "bottom" });
+
+    // A bare jump (Find/accessibility/programmatic scrolling) is provisional
+    // until the sentinel confirms it left the bottom.
+    const beforeConfirmation = await container.evaluate((element, key) => {
+      element.scrollTop = 0;
+      element.dispatchEvent(new Event("scroll"));
+      window.dispatchEvent(new Event("beforeunload"));
+      return localStorage.getItem(key);
+    }, scrollKey);
+    expect(beforeConfirmation).toBe("bottom");
+    await expect(scrollButton).toBeVisible({ timeout: 5000 });
+    await expect
+      .poll(async () => {
+        await page.evaluate(() => window.dispatchEvent(new Event("beforeunload")));
+        return page.evaluate((key) => localStorage.getItem(key), scrollKey);
+      })
+      .not.toBe("bottom");
+
+    // Returning to bottom and restoring again re-arms the guard, but an
+    // explicit upward wheel gesture cancels it immediately.
+    await scrollButton.click();
+    await page.evaluate((key) => localStorage.setItem(key, "bottom"), scrollKey);
+    await page.reload();
+    await expect(scrollButton).toBeHidden({ timeout: 10000 });
+    await expect(page.locator(".messages-bottom-sentinel")).toBeAttached({ timeout: 30000 });
+    await container.evaluate(
+      () =>
+        new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+    );
+    const afterWheel = await container.evaluate((element, key) => {
+      element.dispatchEvent(new WheelEvent("wheel", { deltaY: -200, bubbles: true }));
+      window.dispatchEvent(new Event("beforeunload"));
+      const saved = localStorage.getItem(key);
+      element.scrollTop = 0;
+      return saved;
+    }, scrollKey);
+    expect(afterWheel).not.toBe("bottom");
+    await expect(scrollButton).toBeVisible({ timeout: 5000 });
+    await page.evaluate(() => window.dispatchEvent(new Event("beforeunload")));
+    expect(await page.evaluate((key) => localStorage.getItem(key), scrollKey)).not.toBe("bottom");
+  });
+
   test("a scroll-up the observer has not yet reported still disarms auto-follow", async ({
     page,
     request,
@@ -723,7 +855,7 @@ test.describe("Scroll behavior", () => {
 // messageStore. No model timing, keyboard surrogate, or direct component calls.
 const streamingTest = test.extend<{
   controlledStream: {
-    chunk: (type: "text" | "thinking", text: string) => Promise<void>;
+    chunk: (type: "text" | "thinking", text: string, renderedText?: string) => Promise<void>;
     finish: () => Promise<void>;
   };
 }>({
@@ -792,12 +924,12 @@ const streamingTest = test.extend<{
         });
       await working(true);
       let seq = 0;
-      const chunk = async (type: "text" | "thinking", text: string) => {
+      const chunk = async (type: "text" | "thinking", text: string, renderedText = text) => {
         await send({
           conversation_id: conversationId,
           stream_delta: { type, text, index: type === "thinking" ? 0 : 1, seq: seq++ },
         });
-        await expect(page.locator(".streaming-message")).toContainText(text);
+        await expect(page.locator(".streaming-message")).toContainText(renderedText);
         // Let the rendered chunk's resize and intersection callbacks run.
         await page.evaluate(
           () =>
@@ -1037,6 +1169,27 @@ streamingTest.describe("Mobile streaming scroll gestures", () => {
 
 streamingTest.describe("Desktop streaming scroll behavior", () => {
   streamingTest.use({ viewport: { width: 1280, height: 720 }, isMobile: false, hasTouch: false });
+
+  streamingTest(
+    "streamed fenced code stays plain until the durable message renders",
+    async ({ page, controlledStream }) => {
+      await expect(
+        page.locator(".message-agent pre > code").last().locator(".shelley-code-token").first(),
+      ).toBeAttached({ timeout: 30000 });
+
+      await controlledStream.chunk(
+        "text",
+        "```typescript\nconst values = Array.from({ length: 200 }, (_, index) => index);\n```\n",
+        "const values = Array.from({ length: 200 }, (_, index) => index);",
+      );
+
+      const streamedCode = page.locator(".streaming-message pre > code");
+      await expect(streamedCode).toHaveCount(1);
+      await expect(streamedCode).not.toHaveAttribute("data-shelley-code-highlight");
+      await expect(streamedCode.locator(".shelley-code-token")).toHaveCount(0);
+      await controlledStream.finish();
+    },
+  );
 
   streamingTest(
     "mouse-held streaming still follows; wheel and pointer scroll-up still disarm",

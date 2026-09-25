@@ -42,11 +42,12 @@ export interface AvailableModel {
   id: string;
   display_name?: string;
   source?: string;
+  mode?: string;
   base_url?: string;
   api_type?: string;
+  api_model_name?: string;
   ready: boolean;
   max_context_tokens?: number;
-  context_pricing_threshold?: number;
   is_default?: boolean;
   supports_images?: boolean;
 }
@@ -95,6 +96,17 @@ export interface GitTour {
   chunks: GitTourEntry[];
 }
 
+export type GitTourBuildState = "absent" | "building" | "present" | "failed";
+
+export interface GitTourBuildStatus {
+  status: GitTourBuildState;
+  hash: string;
+  repository?: string;
+  worker_conversation_id?: string;
+  worker_slug?: string;
+  error?: string;
+}
+
 export interface GitTourResponse {
   hash: string;
   tour: GitTour;
@@ -103,6 +115,7 @@ export interface GitTourResponse {
 export interface ChatAcceptedResponse {
   status?: string;
   btw?: BtwReaderDescriptor;
+  tour?: GitTourBuildStatus;
 }
 
 export interface BtwSummaryReceipt {
@@ -221,23 +234,14 @@ class ApiService {
     return response.json();
   }
 
-  async searchConversations(query: string): Promise<ConversationWithState[]> {
-    const params = new URLSearchParams({
-      q: query,
-      search_content: "true",
-    });
-    const response = await fetch(`${this.baseUrl}/conversations?${params}`);
-    if (!response.ok) {
-      throw new Error(`Failed to search conversations: ${response.statusText}`);
-    }
-    return response.json();
-  }
-
   // searchConversationsFTS performs a full-text search across both active AND
   // archived top-level conversations, using SQLite FTS5 over message bodies.
-  async searchConversationsFTS(query: string): Promise<ConversationWithState[]> {
+  async searchConversationsFTS(
+    query: string,
+    signal?: AbortSignal,
+  ): Promise<ConversationWithState[]> {
     const params = new URLSearchParams({ q: query });
-    const response = await fetch(`${this.baseUrl}/conversations/search?${params}`);
+    const response = await fetch(`${this.baseUrl}/conversations/search?${params}`, { signal });
     if (!response.ok) {
       throw new Error(`Failed to search conversations: ${response.statusText}`);
     }
@@ -436,6 +440,14 @@ class ApiService {
     return data.readers ?? [];
   }
 
+  async dismissBtwExchange(conversationId: string, exchangeId: string): Promise<void> {
+    const response = await fetch(
+      `${this.baseUrl}/conversation/${conversationId}/btw/${exchangeId}/dismiss`,
+      { method: "POST", headers: this.postHeaders },
+    );
+    if (!response.ok) throw await responseError(response, "Failed to dismiss BTW");
+  }
+
   async summarizeBtwExchange(
     conversationId: string,
     exchangeId: string,
@@ -483,6 +495,23 @@ class ApiService {
       throw await responseError(response, "Failed to fork conversation");
     }
     return response.json();
+  }
+
+  async resumeConversation(conversationId: string): Promise<"resuming" | "not_applicable"> {
+    const response = await fetch(`${this.baseUrl}/conversation/${conversationId}/resume`, {
+      method: "POST",
+    });
+    if (!response.ok) {
+      let detail = "";
+      try {
+        detail = (await response.text()).trim();
+      } catch {
+        // ignore
+      }
+      throw new Error(detail || `Failed to resume conversation: ${response.statusText}`);
+    }
+    const body = (await response.json()) as { status?: string };
+    return body.status === "resuming" ? "resuming" : "not_applicable";
   }
 
   async retryConversation(conversationId: string): Promise<void> {
@@ -553,6 +582,16 @@ class ApiService {
     }
   }
 
+  async sendQueuedMessageNow(conversationId: string, queuedId: string): Promise<void> {
+    const response = await fetch(
+      `${this.baseUrl}/conversation/${conversationId}/send-queued?queued_id=${encodeURIComponent(queuedId)}`,
+      { method: "POST" },
+    );
+    if (!response.ok) {
+      throw await responseError(response, "Failed to send queued message now");
+    }
+  }
+
   // Cancel a single queued message by its QueuedMessage id.
   async cancelQueuedMessage(conversationId: string, queuedId: string): Promise<void> {
     const response = await fetch(
@@ -561,6 +600,17 @@ class ApiService {
     );
     if (!response.ok) {
       throw new Error(`Failed to cancel queued message: ${response.statusText}`);
+    }
+  }
+
+  // Retry a failed durable queued item in place.
+  async retryQueuedMessage(conversationId: string, queuedId: string): Promise<void> {
+    const response = await fetch(
+      `${this.baseUrl}/conversation/${conversationId}/retry-queued?queued_id=${encodeURIComponent(queuedId)}`,
+      { method: "POST" },
+    );
+    if (!response.ok) {
+      throw await responseError(response, "Failed to retry queued message");
     }
   }
 
@@ -670,6 +720,27 @@ class ApiService {
       throw new Error(text || response.statusText);
     }
     return response.json();
+  }
+
+  async getGitTourStatus(cwd: string, hash: string): Promise<GitTourBuildStatus> {
+    const params = new URLSearchParams({ cwd, hash });
+    const response = await fetch(`${this.baseUrl}/git/tour/status?${params}`);
+    if (!response.ok) {
+      throw await responseError(response, "Failed to check commit tour status");
+    }
+    return response.json();
+  }
+
+  async requestGitTour(
+    conversationId: string,
+    cwd: string,
+    hash: string,
+  ): Promise<GitTourBuildStatus> {
+    const accepted = await this.sendMessage(conversationId, {
+      message: `/tour ${hash}\n${cwd}`,
+    });
+    if (!accepted.tour) throw new Error("Commit tour request returned no status");
+    return accepted.tour;
   }
 
   async hasGitTour(cwd: string, hash: string): Promise<boolean> {
@@ -795,12 +866,14 @@ class ApiService {
   // (no snippets), then "only" for git-grep hits alone — each match then
   // carries `line`/`snippet`/`snippet_matched_indexes` and no path highlights
   // — so name matches render immediately while grep catches up. `signal` lets
-  // callers abort superseded requests while the user types.
+  // callers abort superseded requests while the user types. `includeDirs` adds
+  // folders to name results (is_dir=true, with a trailing slash in path);
+  // file-only callers such as the editor's finder keep the existing default.
   async findFiles(
     dir: string,
     query: string,
     signal?: AbortSignal,
-    limitOrOpts?: number | { content?: "skip" | "only" },
+    opts?: { content?: "skip" | "only"; includeDirs?: boolean; limit?: number },
   ): Promise<{
     dir: string;
     search_dir: string;
@@ -808,6 +881,7 @@ class ApiService {
     match_query: string;
     matches: Array<{
       path: string;
+      is_dir?: boolean;
       matched_indexes?: number[];
       line?: number;
       snippet?: string;
@@ -818,11 +892,9 @@ class ApiService {
   }> {
     const params = new URLSearchParams({ dir });
     if (query) params.set("q", query);
-    if (typeof limitOrOpts === "number") {
-      if (limitOrOpts) params.set("limit", String(limitOrOpts));
-    } else if (limitOrOpts?.content) {
-      params.set("content", limitOrOpts.content);
-    }
+    if (opts?.content) params.set("content", opts.content);
+    if (opts?.includeDirs) params.set("include_dirs", "true");
+    if (opts?.limit) params.set("limit", String(opts.limit));
     const response = await fetch(`${this.baseUrl}/find-files?${params.toString()}`, { signal });
     if (!response.ok) {
       throw await responseError(response, "Failed to find files");
@@ -1064,8 +1136,23 @@ export const modelCostsApi = {
   },
 };
 
+// Descendant direct and indirect usage grouped by (model, endpoint).
+export interface SubagentModelUsageDTO {
+  model: string;
+  url: string;
+  llm_calls: number;
+  input_tokens: number;
+  cache_creation_input_tokens: number;
+  cache_read_input_tokens: number;
+  output_tokens: number;
+  estimated_usd: number;
+  reported_usd: number;
+  cost: ModelCostDTO | null;
+}
+
 // Aggregated LLM usage across a conversation's subagents (recursive).
 export interface SubagentUsageDTO {
+  per_model: SubagentModelUsageDTO[];
   llm_calls: number;
   estimated_usd: number;
   reported_usd: number;
@@ -1098,6 +1185,8 @@ export interface CustomModel {
   effective_max_tokens?: number;
   tags: string; // Comma-separated tags (e.g., "slug" for slug generation)
   reasoning_effort: string; // Legacy provider-verbatim default
+  reasoning_replay: "auto" | "none" | "reasoning_content";
+  resolved_reasoning_replay?: "none" | "reasoning_content";
   reasoning_support: "auto" | "yes" | "no";
   reasoning_map: string;
   supports_reasoning: boolean;
@@ -1114,6 +1203,7 @@ export interface CreateCustomModelRequest {
   max_tokens: number;
   tags: string; // Comma-separated tags
   reasoning_effort: string; // Legacy provider-verbatim default
+  reasoning_replay: "auto" | "none" | "reasoning_content";
   reasoning_support: "auto" | "yes" | "no";
   reasoning_map: string;
   image_support: "auto" | "yes" | "no";
@@ -1127,6 +1217,7 @@ export interface TestCustomModelRequest {
   model_name: string;
   max_tokens?: number;
   reasoning_effort?: string;
+  reasoning_replay?: "auto" | "none" | "reasoning_content";
   reasoning_support?: "auto" | "yes" | "no";
   reasoning_map?: string;
 }

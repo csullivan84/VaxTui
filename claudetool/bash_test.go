@@ -12,13 +12,102 @@ import (
 	"shelley.exe.dev/platformpath"
 )
 
+func TestBashToolExitCode(t *testing.T) {
+	workingDir := t.TempDir()
+	tool := (&BashTool{WorkingDir: NewMutableWorkingDir(workingDir)}).Tool()
+
+	t.Run("success", func(t *testing.T) {
+		out := tool.Run(t.Context(), json.RawMessage(`{"command":"printf unchanged"}`))
+		if out.Error != nil {
+			t.Fatalf("Run() error = %v", out.Error)
+		}
+		if got := out.LLMContent[0].Text; got != "unchanged" {
+			t.Fatalf("LLM output = %q, want %q", got, "unchanged")
+		}
+		display := bashDisplayData(t, out.Display)
+		if display.WorkingDir != workingDir {
+			t.Errorf("WorkingDir = %q, want %q", display.WorkingDir, workingDir)
+		}
+		if display.ExitCode == nil || *display.ExitCode != 0 {
+			t.Errorf("ExitCode = %v, want 0", display.ExitCode)
+		}
+		encoded, err := json.Marshal(display)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(encoded), `"exitCode":0`) {
+			t.Errorf("marshaled display = %s, want exitCode 0", encoded)
+		}
+	})
+
+	t.Run("nonzero exit", func(t *testing.T) {
+		out := tool.Run(t.Context(), json.RawMessage(`{"command":"printf unchanged; exit 7"}`))
+		if out.Error == nil {
+			t.Fatal("Run() error = nil, want non-nil")
+		}
+		if got, want := out.Error.Error(), "[command failed: exit status 7]\nunchanged"; got != want {
+			t.Fatalf("error = %q, want %q", got, want)
+		}
+		display := bashDisplayData(t, out.Display)
+		if display.WorkingDir != workingDir {
+			t.Errorf("WorkingDir = %q, want %q", display.WorkingDir, workingDir)
+		}
+		if display.ExitCode == nil || *display.ExitCode != 7 {
+			t.Errorf("ExitCode = %v, want 7", display.ExitCode)
+		}
+	})
+
+	t.Run("cancelled before execution", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		out := tool.Run(ctx, json.RawMessage(`{"command":"printf should-not-run"}`))
+		if out.Error == nil {
+			t.Fatal("Run() error = nil, want non-nil")
+		}
+		display := bashDisplayData(t, out.Display)
+		if display.WorkingDir != workingDir {
+			t.Errorf("WorkingDir = %q, want %q", display.WorkingDir, workingDir)
+		}
+		if display.ExitCode != nil {
+			t.Errorf("ExitCode = %v, want unknown", *display.ExitCode)
+		}
+		encoded, err := json.Marshal(display)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(encoded), "exitCode") {
+			t.Errorf("marshaled display = %s, want exitCode omitted", encoded)
+		}
+	})
+
+	t.Run("signal", func(t *testing.T) {
+		out := tool.Run(t.Context(), json.RawMessage(`{"command":"kill -TERM $$"}`))
+		if out.Error == nil {
+			t.Fatal("Run() error = nil, want non-nil")
+		}
+		display := bashDisplayData(t, out.Display)
+		if display.ExitCode != nil {
+			t.Errorf("ExitCode = %v, want unknown", *display.ExitCode)
+		}
+	})
+}
+
+func bashDisplayData(t *testing.T, value any) BashDisplayData {
+	t.Helper()
+	display, ok := value.(BashDisplayData)
+	if !ok {
+		t.Fatalf("Display = %T, want BashDisplayData", value)
+	}
+	return display
+}
+
 func TestBashSlowOk(t *testing.T) {
 	// Test that slow_ok flag is properly handled
 	t.Run("SlowOk Flag", func(t *testing.T) {
 		input := json.RawMessage(`{"command":"echo 'slow test'","slow_ok":true}`)
 
 		bashTool := (&BashTool{WorkingDir: NewMutableWorkingDir("/")}).Tool()
-		toolOut := bashTool.Run(context.Background(), input)
+		toolOut := bashTool.Run(t.Context(), input)
 		if toolOut.Error != nil {
 			t.Fatalf("Unexpected error: %v", toolOut.Error)
 		}
@@ -39,7 +128,7 @@ func TestBashTool(t *testing.T) {
 	t.Run("Basic Command", func(t *testing.T) {
 		input := json.RawMessage(`{"command":"echo 'Hello, world!'"}`)
 
-		toolOut := tool.Run(context.Background(), input)
+		toolOut := tool.Run(t.Context(), input)
 		if toolOut.Error != nil {
 			t.Fatalf("Unexpected error: %v", toolOut.Error)
 		}
@@ -64,7 +153,7 @@ func TestBashTool(t *testing.T) {
 	t.Run("Command With Arguments", func(t *testing.T) {
 		input := json.RawMessage(`{"command":"echo -n foo && echo -n bar"}`)
 
-		toolOut := tool.Run(context.Background(), input)
+		toolOut := tool.Run(t.Context(), input)
 		if toolOut.Error != nil {
 			t.Fatalf("Unexpected error: %v", toolOut.Error)
 		}
@@ -90,7 +179,7 @@ func TestBashTool(t *testing.T) {
 			t.Fatalf("Failed to marshal input: %v", err)
 		}
 
-		toolOut := tool.Run(context.Background(), inputJSON)
+		toolOut := tool.Run(t.Context(), inputJSON)
 		if toolOut.Error != nil {
 			t.Fatalf("Unexpected error: %v", toolOut.Error)
 		}
@@ -117,11 +206,14 @@ func TestBashTool(t *testing.T) {
 
 		input := json.RawMessage(`{"command":"sleep 0.5 && echo 'Should not see this'"}`)
 
-		toolOut := tool.Run(context.Background(), input)
+		toolOut := tool.Run(t.Context(), input)
 		if toolOut.Error == nil {
 			t.Errorf("Expected timeout error, got none")
 		} else if !strings.Contains(toolOut.Error.Error(), "timed out") {
 			t.Errorf("Expected timeout error, got: %v", toolOut.Error)
+		}
+		if display := bashDisplayData(t, toolOut.Display); display.ExitCode != nil {
+			t.Errorf("ExitCode = %v, want unknown after timeout", *display.ExitCode)
 		}
 	})
 
@@ -129,7 +221,7 @@ func TestBashTool(t *testing.T) {
 	t.Run("Failed Command", func(t *testing.T) {
 		input := json.RawMessage(`{"command":"exit 1"}`)
 
-		toolOut := tool.Run(context.Background(), input)
+		toolOut := tool.Run(t.Context(), input)
 		if toolOut.Error == nil {
 			t.Errorf("Expected error for failed command, got none")
 		}
@@ -139,94 +231,63 @@ func TestBashTool(t *testing.T) {
 	t.Run("Invalid JSON Input", func(t *testing.T) {
 		input := json.RawMessage(`{"command":123}`) // Invalid JSON (command must be string)
 
-		toolOut := tool.Run(context.Background(), input)
+		toolOut := tool.Run(t.Context(), input)
 		if toolOut.Error == nil {
 			t.Errorf("Expected error for invalid input, got none")
 		}
 	})
 }
 
-func TestChainedCdHint(t *testing.T) {
+func TestChainedCdLeavesDir(t *testing.T) {
+	const wd = "/work/project"
 	tests := []struct {
 		name  string
 		paths []string
-		wd    string
-		want  string
-		avoid string
+		want  bool
 	}{
-		{
-			name:  "current directory relative path",
-			paths: []string{"."},
-			wd:    "/work/project",
-			want:  "Drop the redundant `cd`",
-			avoid: "Prefer calling the change_dir tool",
-		},
-		{
-			name:  "current directory absolute path",
-			paths: []string{"/work/project"},
-			wd:    "/work/project",
-			want:  "Drop the redundant `cd`",
-			avoid: "Prefer calling the change_dir tool",
-		},
-		{
-			name:  "multiple directory changes",
-			paths: []string{".", "/tmp"},
-			wd:    "/work/project",
-			want:  "Prefer calling the change_dir tool",
-		},
+		{name: "no chained cd", paths: nil, want: false},
+		{name: "current directory relative path", paths: []string{"."}, want: false},
+		{name: "current directory absolute path", paths: []string{"/work/project"}, want: false},
+		{name: "different directory", paths: []string{"/tmp"}, want: true},
+		{name: "current then different", paths: []string{".", "/tmp"}, want: true},
+		{name: "non-literal path", paths: []string{""}, want: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := chainedCdHint(tc.paths, tc.wd)
-			if !strings.Contains(got, tc.want) {
-				t.Errorf("hint %q does not contain %q", got, tc.want)
-			}
-			if tc.avoid != "" && strings.Contains(got, tc.avoid) {
-				t.Errorf("hint %q unexpectedly contains %q", got, tc.avoid)
+			if got := chainedCdLeavesDir(tc.paths, wd); got != tc.want {
+				t.Errorf("chainedCdLeavesDir(%q, %q) = %v, want %v", tc.paths, wd, got, tc.want)
 			}
 		})
 	}
 }
 
 func TestBashChainedCdHint(t *testing.T) {
-	tool := (&BashTool{WorkingDir: NewMutableWorkingDir(t.TempDir())}).Tool()
-
-	tests := []struct {
-		name         string
-		command      string
-		wantHintPart string
-		avoid        string
-	}{
-		{
-			name:         "current directory",
-			command:      "cd . && printf done",
-			wantHintPart: "Drop the redundant `cd`",
-			avoid:        "Prefer calling the change_dir tool",
-		},
-		{
-			name:         "different directory",
-			command:      "cd / && printf done",
-			wantHintPart: "Prefer calling the change_dir tool",
-		},
+	wd := t.TempDir()
+	tool := (&BashTool{WorkingDir: NewMutableWorkingDir(wd)}).Tool()
+	run := func(t *testing.T, command string) string {
+		t.Helper()
+		input, err := json.Marshal(bashInput{Command: command})
+		if err != nil {
+			t.Fatalf("marshal input: %v", err)
+		}
+		out := tool.Run(t.Context(), input)
+		if out.Error != nil {
+			t.Fatalf("run bash tool: %v", out.Error)
+		}
+		return out.LLMContent[0].Text
 	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			input, err := json.Marshal(bashInput{Command: tc.command})
-			if err != nil {
-				t.Fatalf("marshal input: %v", err)
-			}
-			out := tool.Run(context.Background(), input)
-			if out.Error != nil {
-				t.Fatalf("run bash tool: %v", out.Error)
-			}
-			got := out.LLMContent[0].Text
-			if !strings.Contains(got, tc.wantHintPart) {
-				t.Errorf("output %q does not contain %q", got, tc.wantHintPart)
-			}
-			if tc.avoid != "" && strings.Contains(got, tc.avoid) {
-				t.Errorf("output %q unexpectedly contains %q", got, tc.avoid)
-			}
-		})
+
+	if got := run(t, "cd . && printf done"); strings.Contains(got, "[shelley:") {
+		t.Errorf("cd to the current directory produced a hint: %q", got)
+	}
+	got := run(t, "cd / && printf done")
+	for _, want := range []string{"change_dir", wd} {
+		if !strings.Contains(got, want) {
+			t.Errorf("first chained cd output %q does not contain %q", got, want)
+		}
+	}
+	if got := run(t, "cd / && printf done"); strings.Contains(got, "[shelley:") {
+		t.Errorf("second chained cd repeated the hint: %q", got)
 	}
 }
 
@@ -236,7 +297,7 @@ func TestExecuteBashInDirUsesSnapshot(t *testing.T) {
 	snapshot := bashTool.getWorkingDir()
 	bashTool.WorkingDir.Set(t.TempDir())
 
-	output, err := bashTool.executeBashInDir(context.Background(), bashInput{Command: "pwd"}, 5*time.Second, snapshot)
+	output, err := bashTool.executeBashInDir(t.Context(), bashInput{Command: "pwd"}, 5*time.Second, snapshot)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,7 +315,7 @@ func TestExecuteBashInDirUsesSnapshot(t *testing.T) {
 }
 
 func TestExecuteBash(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	bashTool := &BashTool{WorkingDir: NewMutableWorkingDir("/")}
 
 	// Test successful command
@@ -387,27 +448,46 @@ func TestExecuteBash(t *testing.T) {
 		}
 	})
 
-	// Test timeout
-	t.Run("Command Timeout", func(t *testing.T) {
-		req := bashInput{
-			Command: "sleep 1 && echo 'Should not see this'",
-		}
+	for _, tc := range []struct {
+		name   string
+		slowOK bool
+		hint   string
+	}{
+		{"Command Timeout", false, "slow_ok: true"},
+		{"Slow Command Timeout", true, "tmux"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := bashInput{
+				Command: "echo 'Before timeout'; sleep 1 && echo 'Should not see this'",
+				SlowOK:  tc.slowOK,
+			}
 
-		start := time.Now()
-		_, err := bashTool.executeBash(ctx, req, 200*time.Millisecond)
-		elapsed := time.Since(start)
+			start := time.Now()
+			_, err := bashTool.executeBash(ctx, req, 200*time.Millisecond)
+			elapsed := time.Since(start)
 
-		// Command should time out after ~200ms, not wait for the full second.
-		if elapsed >= 1*time.Second {
-			t.Errorf("Command did not respect timeout, took %v", elapsed)
-		}
+			// Command should time out after ~200ms, not wait for the full second.
+			if elapsed >= 1*time.Second {
+				t.Errorf("Command did not respect timeout, took %v", elapsed)
+			}
 
-		if err == nil {
-			t.Errorf("Expected 200ms timeout error after %v, got none", elapsed)
-		} else if !strings.Contains(err.Error(), "timed out") {
-			t.Errorf("Expected 200ms timeout error after %v, got: %v", elapsed, err)
-		}
-	})
+			if err == nil {
+				t.Errorf("Expected 200ms timeout error after %v, got none", elapsed)
+			} else if !strings.Contains(err.Error(), "timed out") {
+				t.Errorf("Expected 200ms timeout error after %v, got: %v", elapsed, err)
+			}
+			if err != nil {
+				for _, want := range []string{tc.hint, "Before timeout"} {
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("timeout error = %q, want %q", err, want)
+					}
+				}
+				if strings.Contains(err.Error(), "Should not see this") {
+					t.Errorf("command continued after timeout: %v", err)
+				}
+			}
+		})
+	}
 }
 
 func TestBashTimeout(t *testing.T) {
@@ -592,7 +672,7 @@ func TestIsNoTrailerSet(t *testing.T) {
 }
 
 func TestShellHasCommand(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// bash is always available since we run tests via bash
 	if !shellHasCommand(ctx, "bash") {

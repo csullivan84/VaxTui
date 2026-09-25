@@ -1493,6 +1493,21 @@ body {
   overflow-wrap: anywhere;
 }
 
+.message-author-conversation {
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  margin-bottom: 0.5rem;
+  overflow-wrap: anywhere;
+}
+
+.message-author-conversation a {
+  color: var(--link-color);
+}
+
+.message-conversation > .message-content {
+  width: 100%;
+}
+
 .message-agent .message-content,
 .message-tool .message-content {
   margin-right: auto;
@@ -1774,8 +1789,20 @@ body {
   justify-content: space-between;
 }
 
+.tool-result-primary {
+  min-width: 0;
+  align-items: flex-start;
+}
+
+.tool-result-primary .chat-tool-icon {
+  margin-top: 0.1rem;
+}
+
+.tool-result-name,
 .tool-result-status {
+  min-width: 0;
   font-size: 0.75rem;
+  overflow-wrap: anywhere;
 }
 
 .tool-result-status.success {
@@ -1789,6 +1816,18 @@ body {
 .tool-result-time {
   font-size: 0.75rem;
   color: var(--text-tertiary);
+}
+
+@media (max-width: 640px) {
+  .tool-result-meta {
+    align-items: flex-start;
+  }
+
+  .tool-result-primary {
+    display: grid;
+    flex: 1 1 auto;
+    grid-template-columns: auto minmax(0, 1fr);
+  }
 }
 
 /* Tool running state */
@@ -1848,6 +1887,7 @@ body {
   --tool-card-placeholder-outer-size: 68px;
 }
 
+.tool-card-mount-placeholder--audio,
 .tool-card-mount-placeholder--output-iframe {
   --tool-card-placeholder-outer-size: 84px;
 }
@@ -1858,14 +1898,16 @@ body {
 }
 
 /* Tool Component (shared styles for all tools) */
-.tool {
+.tool,
+.message-conversation {
   background: var(--gray-100);
   border-radius: 0.5rem;
   margin: 0.5rem 0;
   width: 100%;
 }
 
-.dark .tool {
+.dark .tool,
+.dark .message-conversation {
   background: var(--gray-800);
 }
 
@@ -1885,6 +1927,14 @@ body {
 
 .dark .tool-header:hover {
   background: rgba(255, 255, 255, 0.02);
+}
+
+.tool-header--static {
+  cursor: default;
+}
+
+.tool-header.tool-header--static:hover {
+  background: transparent;
 }
 
 .tool-summary {
@@ -1951,6 +2001,136 @@ body {
   white-space: nowrap;
 }
 
+.generic-tool-result-summary {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.3rem;
+}
+
+.generic-tool-result-heading {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.generic-tool-summary--complete {
+  align-items: flex-start;
+}
+
+.generic-tool-copy {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.3rem;
+}
+
+.generic-tool-warning {
+  display: inline-flex;
+  max-width: 100%;
+  border: 1px solid var(--error-border);
+  border-radius: 0.25rem;
+  padding: 0.15rem 0.4rem;
+  background: var(--error-bg);
+  color: var(--error-text);
+  font-family: var(--font-sans);
+  font-size: 0.625rem;
+  font-weight: 700;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+  text-decoration: none;
+  align-self: flex-start;
+}
+
+.generic-tool-warning:hover {
+  text-decoration: underline;
+}
+
+.generic-tool-warning:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+
+.audio-transcription-copy {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.audio-transcription-title-row {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.audio-transcription-title-row .tool-badge {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.audio-transcription-title {
+  color: var(--text-primary);
+  font-size: 0.875rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.audio-transcription-filename {
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.audio-transcription-controls {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.audio-transcription-error-status {
+  color: var(--error-text);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.audio-transcription-request {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.audio-transcription-transcript {
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  padding: 0.75rem;
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-size: 0.875rem;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.audio-transcription-transcript--error {
+  border-color: var(--error-border);
+  background: var(--error-bg);
+  color: var(--error-text);
+}
+
 .subagent-model-badge {
   background: var(--bg-tertiary);
   color: var(--text-tertiary);
@@ -2008,6 +2188,12 @@ body {
   font-weight: 400;
 }
 
+.tool-running-elapsed {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
 .tool-code {
   font-family: var(--font-mono);
   font-size: 0.875rem;
@@ -2022,9 +2208,8 @@ body {
   color: var(--text-primary);
 }
 
-/* Error output is signalled by the ✗ status icon in the header, not by
- * painting the whole output box red, so `.tool-code.error` carries no
- * styling (it intentionally renders like a normal code block). */
+/* Expanded output labels identify failures without painting the whole
+ * output box red, so `.tool-code.error` renders like a normal code block. */
 
 /* Bash Tool Component - uses shared tool styles */
 .bash-tool {
@@ -2496,6 +2681,14 @@ body {
   /* Performance: allow browser to skip rendering off-screen diffs */
   content-visibility: auto;
   contain-intrinsic-size: auto 200px;
+}
+
+/* Keep every Pierre diff as compact as Monaco's macOS defaults. The custom
+   properties inherit through the diffs-container shadow root. */
+diffs-container {
+  --diffs-font-family: var(--font-mono);
+  --diffs-font-size: 12px;
+  --diffs-line-height: 18px;
 }
 
 /* Target the diffs-container custom element from @pierre/diffs */
@@ -3215,6 +3408,10 @@ body {
   transform: rotate(-90deg);
 }
 
+.send-split-main .compact-send-icon {
+  transform: none;
+}
+
 .send-split-divider {
   width: 1px;
   background: rgba(255, 255, 255, 0.3);
@@ -3357,7 +3554,8 @@ body {
   letter-spacing: 0.03em;
 }
 
-.queued-message-badge-cancel {
+.queued-message-badge-cancel,
+.queued-message-badge-action {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -3378,13 +3576,30 @@ body {
   min-width: 44px;
 }
 
-.queued-message-badge-cancel:hover {
+.queued-message-badge-cancel:hover,
+.queued-message-badge-action:hover {
   opacity: 1;
   background: rgba(0, 0, 0, 0.08);
 }
 
-.dark .queued-message-badge-cancel:hover {
+.dark .queued-message-badge-cancel:hover,
+.dark .queued-message-badge-action:hover {
   background: rgba(255, 255, 255, 0.08);
+}
+
+.queued-message-badge-action:disabled {
+  cursor: wait;
+  opacity: 0.5;
+}
+
+.queued-message-badge-send {
+  background: rgba(249, 115, 22, 0.12);
+  font-weight: 600;
+  opacity: 1;
+}
+
+.dark .queued-message-badge-send {
+  background: rgba(249, 115, 22, 0.18);
 }
 
 /* Action row under textarea */
@@ -3434,7 +3649,7 @@ body {
   opacity: 0.4;
 }
 
-/* Voice input button */
+/* Recording button */
 .message-voice-btn {
   flex-shrink: 0;
   width: 36px;
@@ -3455,16 +3670,16 @@ body {
   cursor: pointer;
 }
 
-.message-voice-btn:hover:not(:disabled):not(.listening) {
+.message-voice-btn:hover:not(:disabled) {
   background: var(--gray-100);
   color: var(--text-primary);
 }
 
-.dark .message-voice-btn:hover:not(:disabled):not(.listening) {
+.dark .message-voice-btn:hover:not(:disabled) {
   background: var(--gray-700);
 }
 
-.message-voice-btn:active:not(:disabled):not(.listening) {
+.message-voice-btn:active:not(:disabled) {
   transform: scale(0.95);
 }
 
@@ -3473,26 +3688,324 @@ body {
   opacity: 0.4;
 }
 
-.message-voice-btn.listening,
-.message-voice-btn.listening:hover {
+/* Inline media recording takeover */
+/* Detached controls retain the same recorder while another chat is selected. */
+.recording-floating {
+  position: fixed;
+  z-index: 30;
+  right: 1rem;
+  bottom: calc(9rem + env(safe-area-inset-bottom, 0px));
+  width: min(32rem, calc(100vw - 2rem));
+  box-sizing: border-box;
+  padding: 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  background: var(--bg-base);
+  box-shadow: 0 8px 32px rgb(0 0 0 / 20%);
+}
+
+.recording-return {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  margin: 0 0 0.375rem;
+  padding: 0.25rem 0.375rem;
+  border: 0;
+  border-radius: 0.25rem;
+  color: var(--text-primary);
+  background: transparent;
+  font: inherit;
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+
+.recording-return:hover {
+  background: var(--bg-hover);
+}
+
+.recording-floating .recording-panel {
+  height: auto;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.recording-floating .recording-panel-main {
+  flex-basis: 100%;
+}
+
+.recording-floating .recording-actions {
+  margin-left: auto;
+}
+
+.recording-floating .recording-preserved-text {
+  max-width: 8rem;
+}
+
+.recording-panel {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  height: 46px;
+  box-sizing: border-box;
+  padding: 0.2rem 0.375rem;
+  border: 1.5px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-base);
+}
+
+.recording-panel-main {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: row;
+  align-items: center;
+  gap: 0.375rem;
+  min-width: 0;
+}
+
+.recording-preview {
+  width: 64px;
+  height: 34px;
+  flex: 0 0 auto;
+  border-radius: 3px;
+  background: #000;
+  object-fit: cover;
+}
+
+.recording-waveform {
+  position: relative;
+  display: flex;
+  width: 42px;
+  height: 20px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+}
+
+.recording-waveform::before {
+  position: absolute;
+  right: 0;
+  left: 0;
+  top: 50%;
+  height: 1px;
+  background: color-mix(in srgb, #dc2626 20%, transparent);
+  content: "";
+}
+
+.recording-waveform-bar {
+  position: relative;
+  width: 2px;
+  max-height: 18px;
+  border-radius: 1px;
   background: #dc2626;
-  color: white;
-  animation: pulse-voice 1.5s ease-in-out infinite;
+  transition: height 80ms linear;
 }
 
-.dark .message-voice-btn.listening,
-.dark .message-voice-btn.listening:hover {
-  background: #ef4444;
-  color: white;
+.recording-waveform-preroll {
+  opacity: 0.18;
+  transform: scaleY(0.4);
 }
 
-@keyframes pulse-voice {
-  0%,
-  100% {
-    transform: scale(1);
-  }
+.recording-waveform-preroll,
+.recording-waveform-preroll .recording-waveform-bar {
+  transition:
+    opacity 180ms ease,
+    transform 180ms ease,
+    height 80ms linear;
+}
+
+.recording-status {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.375rem;
+  min-height: 1.25rem;
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+}
+
+.recording-status-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--gray-400);
+}
+
+.recording-status-dot.starting,
+.recording-status-dot.stopping {
+  width: 0.75rem;
+  height: 0.75rem;
+  box-sizing: border-box;
+  border: 2px solid color-mix(in srgb, var(--orange-500, #f97316) 30%, transparent);
+  border-top-color: var(--orange-500, #f97316);
+  background: transparent;
+  animation: recording-start-spin 0.65s linear infinite;
+}
+
+.recording-status-dot.transcribing {
+  background: var(--orange-500, #f97316);
+}
+
+.recording-status-dot.recording {
+  background: #dc2626;
+  animation: recording-pulse 1.5s ease-in-out infinite;
+}
+
+.recording-status-dot.preroll {
+  background: #dc2626;
+  opacity: 0.45;
+}
+
+.recording-status-dot.error {
+  background: var(--error-text);
+}
+
+@keyframes recording-pulse {
   50% {
-    transform: scale(1.1);
+    opacity: 0.35;
+  }
+}
+
+@keyframes recording-start-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.recording-preserved-text {
+  min-width: 0;
+  max-width: min(24rem, 45vw);
+  overflow: hidden;
+  color: var(--text-primary);
+  font: inherit;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recording-preserved-text::before {
+  content: "·";
+  margin-right: 0.375rem;
+  color: var(--text-secondary);
+}
+
+.recording-timer {
+  color: inherit;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+}
+
+.recording-error {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--error-text);
+  font-size: 0.875rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recording-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.375rem;
+}
+
+.recording-actions .btn {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  justify-content: center;
+  gap: 0.3rem;
+  padding: 0.25rem 0.5rem;
+  white-space: nowrap;
+}
+
+.recording-screen-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.recording-stop-btn {
+  background: #dc2626;
+  border-color: #dc2626;
+  touch-action: manipulation;
+}
+
+.recording-stop-btn:hover:not(:disabled) {
+  background: #b91c1c;
+  border-color: #b91c1c;
+}
+
+@media (max-width: 640px) {
+  .recording-floating {
+    top: calc(5.5rem + env(safe-area-inset-top, 0px));
+    bottom: auto;
+  }
+
+  .recording-panel {
+    height: 42px;
+    flex-direction: row;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.2rem 0.25rem;
+  }
+
+  .recording-panel-main {
+    gap: 0.25rem;
+  }
+
+  .recording-waveform {
+    width: 36px;
+  }
+
+  .recording-panel[data-mode="screen"] .recording-waveform {
+    display: none;
+  }
+
+  .recording-status[data-state="preroll"] .recording-status-label,
+  .recording-status[data-state="recording"] .recording-status-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+
+  .recording-preserved-text {
+    max-width: 36vw;
+  }
+
+  .recording-actions {
+    flex-wrap: nowrap;
+    gap: 0.2rem;
+  }
+
+  .recording-actions .btn {
+    width: 32px;
+    min-width: 32px;
+    height: 32px;
+    min-height: 32px;
+    padding: 0;
+  }
+
+  .recording-action-label {
+    display: none;
+  }
+
+  .recording-screen-btn {
+    margin-right: 0;
+  }
+}
+
+@media print {
+  .recording-floating {
+    display: none;
   }
 }
 
@@ -3574,6 +4087,31 @@ body {
   font-weight: 600;
   color: var(--primary);
   white-space: nowrap;
+}
+
+.file-completion-menu {
+  gap: 0;
+  padding-inline: 0;
+}
+
+.file-completion-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.file-completion-item {
+  align-items: flex-start;
+}
+
+.file-completion-grep-pending {
+  border-top: 1px solid var(--border);
+  padding-block: 5px;
+}
+
+.file-completion-status {
+  padding: 8px 10px;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
 }
 
 .slash-command-description {
@@ -3933,6 +4471,7 @@ select:disabled {
   align-items: center;
   justify-content: space-between;
   width: 100%;
+  min-width: 0;
   gap: 0.75rem;
 }
 
@@ -3952,6 +4491,9 @@ select:disabled {
   font-size: 0.75rem;
   line-height: 1.2;
   color: var(--text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .status-message.status-warning {
@@ -3991,9 +4533,27 @@ select:disabled {
   }
 }
 
+/* Working text gives up space before the directory/model readout. */
 .animated-working {
-  display: inline;
+  container: working-status / inline-size;
+  flex: 0 1000 16ch;
+  width: 16ch;
+  min-width: 3ch;
+  overflow: hidden;
+  white-space: nowrap;
   font-family: var(--font-mono);
+}
+
+@container working-status (width < 16ch) {
+  .working-prefix {
+    display: none;
+  }
+}
+
+@container working-status (width < 10ch) {
+  .working-word {
+    display: none;
+  }
 }
 
 .animated-working .bold-letter {
@@ -4024,8 +4584,13 @@ select:disabled {
   color: white;
 }
 
-.status-button-primary:hover {
+.status-button-primary:hover:not(:disabled) {
   background: var(--primary-dark);
+}
+
+.status-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
 }
 
 .status-button-cancel {
@@ -4498,9 +5063,7 @@ svg {
   transform: translateX(-50%) scale(0.95);
 }
 
-/* Floating nav cluster — bottom of messages area. Contains TOC button
-   (always visible) and an optional scroll-to-bottom button. Replaces the
-   centered scroll-to-bottom button so the TOC is a first-class control. */
+/* Floating scroll control at the bottom of the messages area. */
 .chat-nav-cluster {
   position: absolute;
   bottom: 1rem;
@@ -4515,7 +5078,7 @@ svg {
 .chat-nav-cluster > * {
   pointer-events: auto;
 }
-/* Override centered positioning when inside the cluster; match TOC button size */
+/* Keep the floating scroll control at the bottom-right. */
 .chat-nav-cluster .scroll-to-bottom-button {
   position: static;
   transform: none;
@@ -4533,27 +5096,34 @@ svg {
   height: 1.125rem;
 }
 
-/* TOC trigger button */
+/* Teleport targets place the persistent TOC directly in the flex row. */
+.status-navigation {
+  display: contents;
+}
+
+/* Inline TOC trigger, immediately after the model readout. */
 .toc-button {
-  background: var(--bg-base);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  width: 2.5rem;
-  height: 2.5rem;
+  flex: none;
+  background: none;
+  border: none;
+  border-radius: 0.25rem;
+  width: 1.5rem;
+  height: 1.5rem;
+  padding: 0;
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  color: var(--text-primary);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
-  transition:
-    background 0.15s ease,
-    box-shadow 0.15s ease,
-    transform 0.1s ease;
+  color: var(--text-secondary);
+  transition: background 0.15s ease;
 }
 .toc-button:hover {
   background: var(--bg-hover);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
+  color: var(--text-primary);
+}
+.toc-button:focus-visible {
+  outline: 2px solid var(--blue-text);
+  outline-offset: 1px;
 }
 .toc-button:active {
   transform: scale(0.95);
@@ -5509,10 +6079,35 @@ svg {
   min-width: 0;
 }
 
-.status-working-group {
+.status-interrupted-group {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  flex: 1 1 auto;
+  gap: 0.625rem;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.status-interrupted-group .status-message {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-interrupted-button {
+  flex-shrink: 0;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--border);
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  font-size: 0.75rem;
+  transition: background-color 0.15s ease;
+}
+
+.status-interrupted-button:hover:not(:disabled) {
+  background: var(--bg-secondary);
 }
 
 /* Right-hand status readout: "~/dir · 15k · model-name", dot-separated. One
@@ -5611,6 +6206,7 @@ svg {
 }
 
 .status-stop-button {
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   gap: 0.25rem;
@@ -5770,9 +6366,9 @@ svg {
   }
 
   /* Hide standalone status bar on mobile — content is shown inline in controls row.
-     Exception: keep visible for archived conversations (no MessageInput rendered)
-     and new conversations (status slot is not used). */
-  .status-bar:not(.status-bar-archived):not(.status-bar-new) {
+     Exceptions: archived conversations have no MessageInput, new conversations
+     do not use the slot, and interrupted turns need the full-width prompt. */
+  .status-bar:not(.status-bar-archived):not(.status-bar-new):not(.status-bar-interrupted) {
     display: none;
   }
 
@@ -5787,23 +6383,13 @@ svg {
     flex: 1;
     min-width: 0;
     overflow: hidden;
+    gap: 0.375rem;
     font-size: 0.875rem;
   }
 
   /* Compact the status bar active layout when inline */
   .message-controls-status-slot .status-bar-active {
     gap: 0.375rem;
-  }
-
-  /* The hostname readout yields room to the context usage label rather than
-     wrapping to a second line. Scoped to .status-ready: error and
-     no-models messages are the whole point of the status bar when they
-     appear, and must keep wrapping rather than be clipped. */
-  .message-controls-status-slot .status-message.status-ready {
-    min-width: 0;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
   }
 
   /* Let new-conversation fields share a row when they fit and wrap naturally
@@ -6426,7 +7012,8 @@ svg {
   min-width: 0;
 }
 
-.commit-picker-tour-badge {
+.commit-picker-tour-badge,
+.git-graph-tour-link {
   display: inline-flex;
   align-items: center;
   flex: 0 0 auto;
@@ -6442,7 +7029,8 @@ svg {
   text-transform: uppercase;
 }
 
-.dark .commit-picker-tour-badge {
+.dark .commit-picker-tour-badge,
+.dark .git-graph-tour-link {
   color: #c4b5fd;
 }
 
@@ -7073,15 +7661,151 @@ svg {
   margin-top: 0.375rem;
 }
 
-.diff-viewer-tour-contents-item.change button {
+.diff-viewer-tour-contents-tree {
+  min-width: 0;
+}
+
+.tour-file-tree {
+  min-width: 0;
+  padding: 0 0.25rem;
+}
+
+.tour-file-tree-directory .diff-tree-row {
+  color: var(--text-secondary);
+  cursor: default;
+}
+
+.tour-file-tree-directory .diff-tree-row:hover {
+  background: transparent;
+}
+
+.diff-viewer-tour-contents-tree .diff-tree-row {
   font-family: var(--font-mono, monospace);
   font-size: 0.6875rem;
 }
 
-.diff-viewer-tour-contents-item.change.nested {
-  margin-left: 0.625rem;
-  border-left: 1px solid var(--border-color);
-  padding-left: 0.25rem;
+.tour-file-tree-item {
+  min-width: 0;
+}
+
+.tour-file-heading {
+  margin-top: 0.125rem;
+}
+
+.diff-viewer-tour-contents-tree .tour-change-row {
+  gap: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  cursor: default;
+}
+
+.tour-visibility-control,
+.tour-change-link {
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+
+.tour-visibility-control {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  align-self: stretch;
+  flex: 0 0 16px;
+  padding: 0 2px;
+}
+
+button.tour-visibility-control,
+.tour-change-link {
+  cursor: pointer;
+}
+
+button.tour-visibility-control:hover .tour-visibility-icon {
+  color: inherit;
+}
+
+button.tour-visibility-control:focus-visible,
+.tour-change-link:focus-visible {
+  outline: 1px solid var(--primary);
+  outline-offset: 1px;
+  border-radius: 0.125rem;
+}
+
+.tour-change-link {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  gap: 0.35rem;
+  min-width: 0;
+  padding: 0.2rem 0 0.2rem 0.35rem;
+  text-align: left;
+}
+
+.tour-visibility-icon {
+  flex: 0 0 12px;
+  width: 12px;
+  height: 12px;
+  color: var(--text-secondary);
+}
+
+.tour-change-row.active .tour-visibility-icon {
+  color: inherit;
+}
+
+.tour-change-row .tour-change-range {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: inherit;
+  color: inherit;
+}
+
+.tour-change-collapsed:not(.active) {
+  color: var(--text-secondary);
+}
+
+.tour-trivial-label {
+  flex-shrink: 0;
+  padding: 0.0625rem 0.25rem;
+  border: 1px solid var(--border);
+  border-radius: 0.25rem;
+  color: inherit;
+  font-family: var(--font-sans, sans-serif);
+  font-size: 0.625rem;
+  font-weight: 400;
+  line-height: 1.2;
+}
+
+.tour-file-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  white-space: nowrap;
+}
+
+.tour-file-name-stem {
+  min-width: 1ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tour-file-name-suffix {
+  flex-shrink: 0;
+}
+
+.diff-viewer-tour-contents-tree .diff-tree-decoration,
+.diff-viewer-tour-contents-tree .diff-tree-row.active .diff-tree-decoration {
+  font-size: inherit;
+  background: transparent;
+}
+
+.diff-viewer-tour-contents-item button[aria-current="location"] {
+  background: var(--accent-bg, rgba(37, 99, 235, 0.15));
+  color: var(--accent-text, #2563eb);
 }
 
 .diff-viewer-file-list {
@@ -8123,7 +8847,7 @@ svg {
 }
 
 .command-palette-item-title {
-  font-size: 0.875rem;
+  font-size: 1rem;
   color: var(--text-primary);
   white-space: nowrap;
   overflow: hidden;
@@ -8181,12 +8905,6 @@ svg {
   border-radius: 0.25rem;
   color: var(--text-secondary);
   white-space: nowrap;
-}
-
-/* Edit File's shortcut is inert in Firefox (reserved for private window). */
-.overflow-menu-shortcut-inert kbd {
-  opacity: 0.5;
-  text-decoration: line-through;
 }
 
 .command-palette-footer {
@@ -8456,7 +9174,7 @@ svg {
   height: 8px;
   background: #ef4444;
   border-radius: 50%;
-  margin-left: auto;
+  margin-left: 0.5rem;
   flex-shrink: 0;
 }
 
@@ -9587,9 +10305,68 @@ kbd {
   overflow-x: auto;
 }
 
+.markdown-content .shelley-code-block {
+  margin: 0.75em 0;
+  background: var(--code-bg);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.markdown-content .shelley-code-block pre {
+  margin: 0;
+  border-radius: 0;
+}
+
+.shelley-code-header {
+  height: 26px;
+  padding: 0 7px 0 11px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.shelley-code-copy {
+  position: relative;
+  display: flex;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.shelley-code-copy::before {
+  content: "";
+  position: absolute;
+  inset: -5px;
+}
+
+.shelley-code-copy:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
 .dark .markdown-content pre {
   background: var(--bg-base);
   box-shadow: inset 0 0 0 1px var(--border);
+}
+
+.dark .markdown-content .shelley-code-block {
+  background: var(--bg-base);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
+.dark .markdown-content .shelley-code-block pre {
+  box-shadow: none;
 }
 
 .markdown-content pre code {
@@ -10306,9 +11083,73 @@ kbd {
   margin-left: 0.3em;
 }
 
-.msg-diff-link {
+.msg-diff-link,
+.msg-tour-action,
+.msg-tour-building {
   color: var(--blue-text);
   text-decoration: underline;
+}
+
+.msg-tour-action {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  font: inherit;
+  font-style: inherit;
+  cursor: pointer;
+}
+
+.msg-tour-action:disabled {
+  cursor: default;
+  opacity: 0.65;
+}
+
+.msg-tour-building {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3em;
+}
+
+.msg-tour-building .working-indicator {
+  width: 10px;
+  height: 10px;
+  border-top-color: transparent;
+  animation: spin 0.8s linear infinite;
+}
+
+.msg-tour-failed {
+  color: var(--error-text);
+}
+
+.git-graph-tour-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: 0.3rem;
+  padding: 0.3rem 0.7rem;
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-size: 0.78rem;
+  font-weight: 500;
+  line-height: 1.4;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.git-graph-tour-action:hover:not(:disabled) {
+  background: var(--bg-secondary);
+}
+
+.git-graph-tour-action:disabled {
+  cursor: default;
+  opacity: 0.65;
+}
+
+.git-graph-tour-action .spinner {
+  width: 11px;
+  height: 11px;
+  border-width: 1.5px;
 }
 
 .msg-distill-container {
@@ -10398,6 +11239,7 @@ kbd {
   font-size: 0.75rem;
   color: var(--text-secondary);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  width: min(440px, calc(100vw - 1rem));
   max-width: calc(100vw - 1rem);
 }
 .chat-context-popup.p-popover:before,
@@ -10412,14 +11254,14 @@ kbd {
 }
 .chat-context-popup .chat-context-popup-content {
   padding: 6px 10px;
-  max-height: min(42rem, calc(100dvh - 1rem));
+  max-height: min(42rem, var(--context-popup-available-height, calc(100dvh - 1rem)));
   overflow-y: auto;
   overscroll-behavior: contain;
 }
 
 @media (max-width: 768px) {
   .chat-context-popup .chat-context-popup-content {
-    max-height: 70dvh;
+    max-height: min(70dvh, var(--context-popup-available-height, 70dvh));
   }
 }
 
@@ -10468,12 +11310,12 @@ kbd {
 
 .token-cost-graph {
   margin-top: 0;
-  width: 280px;
+  width: 100%;
   max-width: 100%;
 }
 
 .context-composition-graph {
-  width: 280px;
+  width: 100%;
   max-width: 100%;
 }
 
@@ -10672,10 +11514,123 @@ kbd {
   font-variant-numeric: tabular-nums;
 }
 
-.token-cost-total-row {
-  margin-top: 5px;
-  padding-top: 5px;
+.token-cost-timeline {
+  max-width: 420px;
+  margin-inline: auto;
+}
+
+.token-cost-table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  margin-top: 8px;
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.token-cost-label-column {
+  width: 30%;
+}
+
+.token-cost-table th,
+.token-cost-table td {
+  padding: 3px 0 3px 10px;
+  text-align: right;
+  vertical-align: top;
+}
+
+.token-cost-table th:first-child {
+  padding-left: 0;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.token-cost-table thead th {
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-primary);
+}
+
+.token-cost-table .token-cost-model-row,
+.token-cost-table .token-cost-legend-row {
+  display: table-row;
+}
+
+.token-cost-table .token-cost-model-row > * {
+  padding-top: 9px;
+}
+
+.token-cost-table .token-cost-model-name {
+  white-space: normal;
+}
+
+.token-cost-table .token-cost-legend-row th {
+  font-weight: normal;
+}
+
+.token-cost-table .token-cost-chip {
+  display: inline-block;
+  margin-right: 5px;
+}
+
+.token-cost-table .token-cost-legend-cost,
+.token-cost-table .token-cost-legend-unit {
+  min-width: 0;
+}
+
+.token-cost-cell {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 0 6px;
+  align-items: baseline;
+}
+
+.token-cost-cell > :last-child {
+  grid-column: 3;
+}
+
+.token-cost-empty {
+  color: var(--text-tertiary);
+}
+
+.token-cost-table tfoot > tr > * {
+  padding-top: 6px;
   border-top: 1px solid var(--border);
+  font-weight: 600;
+}
+
+.token-cost-total-row {
+  border-top: 1px solid var(--border);
+}
+
+@media (min-width: 769px) {
+  .chat-context-popup.p-popover:has(.token-cost-table-with-subagents) {
+    width: min(640px, calc(100vw - 1rem));
+  }
+
+  .chat-context-popup:has(.token-cost-table-with-subagents) .context-composition-graph {
+    max-width: 420px;
+    margin-inline: auto;
+  }
+}
+
+/* Keep the comparison columns side by side on phones; put rates below counts. */
+@media (max-width: 768px) {
+  .token-cost-table-with-subagents .token-cost-cell {
+    grid-template-columns: 1fr auto;
+    gap: 0 3px;
+  }
+
+  .token-cost-table-with-subagents .token-cost-cell > :last-child {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .token-cost-table-with-subagents .token-cost-cell > .token-cost-legend-unit {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    font-size: 0.6rem;
+  }
 }
 
 .token-cost-graph-note {
@@ -11102,7 +12057,85 @@ kbd {
   color: var(--success-text);
 }
 
-/* MessageInput styles */
+/* Durable queued recording transcription. It uses tool-card visual language
+   while its server-owned worker is running or failed. */
+.transcription-task-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  width: 100%;
+  padding: 0.625rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  background: var(--bg-secondary);
+}
+
+.transcription-task-card.error {
+  border-color: var(--error-border);
+}
+
+.transcription-task-main,
+.transcription-task-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  min-width: 0;
+}
+
+.transcription-task-main {
+  flex: 1;
+  overflow: hidden;
+}
+
+.transcription-task-actions {
+  flex: none;
+}
+
+.transcription-task-copy {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  font-size: 0.8125rem;
+}
+
+.transcription-task-context,
+.transcription-task-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.transcription-task-context {
+  color: var(--text-primary);
+}
+
+.transcription-task-path {
+  color: var(--text-secondary);
+}
+
+.transcription-task-error {
+  color: var(--error-text);
+  overflow-wrap: anywhere;
+}
+
+.transcription-task-icon {
+  width: 1rem;
+  height: 1rem;
+  flex: none;
+  color: var(--error-text);
+}
+
+@media (max-width: 600px) {
+  .transcription-task-card {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .transcription-task-actions {
+    align-self: flex-end;
+  }
+}
 .message-input-hidden {
   display: none;
 }
@@ -11174,48 +12207,6 @@ kbd {
   flex: 1;
 }
 
-/* Live segment attached to a subagent tool pill: its own small chip to
- * the right of the pill (a button can't nest interactive content). */
-.subagent-pill-live {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  min-width: 0;
-  min-height: 26px;
-  padding: 2px 10px;
-  border-radius: 999px;
-  border: 1px dashed var(--tp-border, var(--border));
-  background: transparent;
-  color: var(--text-secondary);
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.subagent-pill-live:hover {
-  color: var(--link-color);
-  border-color: var(--link-color);
-}
-
-.subagent-pill-live:focus-visible {
-  outline: 2px solid var(--link-color);
-  outline-offset: 1px;
-}
-
-.subagent-pill-activity {
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
-  max-width: 220px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-@media (max-width: 600px) {
-  .subagent-pill-activity {
-    max-width: 110px;
-  }
-}
-
 /* ConfigFieldInput styles */
 .config-field-description {
   font-size: 0.75rem;
@@ -11268,6 +12259,32 @@ kbd {
   height: 8px;
   align-self: flex-start;
   margin-top: 0.35rem;
+}
+
+.drawer-interrupted-indicator {
+  width: 8px;
+  height: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  color: var(--warning-text);
+  flex-shrink: 0;
+  align-self: flex-start;
+  margin-top: 0.35rem;
+}
+
+.drawer-interrupted-indicator::before,
+.drawer-interrupted-indicator::after {
+  content: "";
+  width: 1.5px;
+  height: 7px;
+  border-radius: 1px;
+  background: currentColor;
+}
+
+.conversation-item.active .drawer-interrupted-indicator {
+  color: currentColor;
 }
 
 .drawer-subagent-count-badge-text {
@@ -11743,6 +12760,29 @@ kbd {
   display: inline-flex;
   gap: 0.2rem;
   flex: 0 0 auto;
+}
+
+.git-graph-tour-link {
+  min-height: 1.25rem;
+  padding-right: 0.45rem;
+  padding-left: 0.45rem;
+  text-decoration: none;
+}
+
+.git-graph-tour-link:hover {
+  border-color: rgba(139, 92, 246, 0.7);
+  background: rgba(139, 92, 246, 0.2);
+}
+
+.git-graph-tour-link-disabled {
+  opacity: 0.5;
+  cursor: default;
+  pointer-events: none;
+}
+
+.git-graph-tour-link:focus-visible {
+  outline: 2px solid var(--accent, #3b82f6);
+  outline-offset: 1px;
 }
 
 .git-graph-subject {
@@ -12571,6 +13611,29 @@ kbd {
   border-radius: 999px;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
 }
+
+/* The floating pill covers the top commit on mobile; make it a slim
+   full-width header bar instead. Lives after the base rule so it wins
+   the cascade. */
+@media (max-width: 768px) {
+  .git-graph-toolbar {
+    position: static;
+    margin: 0;
+    width: 100%;
+    justify-content: center;
+    padding: 0.125rem 0.5rem;
+    background: transparent;
+    border: 0;
+    border-bottom: 1px solid var(--border-color);
+    border-radius: 0;
+    box-shadow: none;
+  }
+  /* The list's top padding would add to the gap under the header bar,
+     making the bar look off-center; drop it. */
+  .git-graph-list {
+    padding-top: 0;
+  }
+}
 .git-graph-tool {
   width: 1.5rem;
   height: 1.5rem;
@@ -12829,7 +13892,8 @@ kbd {
 /* Fuzzy file finder: content-match snippet under the path line. .grp-main is
    a flex row (path | meta); wrapping lets the full-width snippet drop onto
    its own line without disturbing GitRepoPicker's use of the same classes. */
-.ff-modal .grp-main {
+.ff-modal .grp-main,
+.file-completion-item .grp-main {
   flex-wrap: wrap;
   row-gap: 0.1rem;
 }
@@ -13046,8 +14110,18 @@ kbd {
 }
 
 /* Web Search Tool */
+.web-search-details {
+  padding: 0 1rem 0.75rem;
+}
+
+.web-search-queries {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
 .web-search-results {
-  padding: 0.5rem 0.75rem;
+  padding-top: 0.75rem;
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
@@ -13097,7 +14171,7 @@ kbd {
   color: var(--text-tertiary);
 }
 
-.web-search-query {
+.web-search-query-preview {
   font-style: italic;
   color: var(--text-secondary);
 }
@@ -13345,326 +14419,6 @@ kbd {
   opacity: 0.5;
 }
 
-/* ============================================================
- * Tool pills (iOS-style)
- *
- * A burst of tool calls is rendered as a single wrapped row of
- * tightly-packed pills. Tapping a pill opens the full
- * CoalescedToolCall view in a modal. Diffs, screenshots, image
- * reads and output_iframe results continue to render inline.
- * Mirrors iOS/exe.dev/ToolPillsRow.swift.
- * ============================================================ */
-
-.tool-pills-row-wrap .message-content {
-  padding: 0;
-  background: none;
-  border: none;
-}
-
-.tool-pills-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  padding: 4px 0;
-  margin: 0;
-  list-style: none;
-  align-items: center;
-}
-
-.tool-pill-item {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  /* Let a wide pill (a long headline, or a long line of live output) shrink
-   * to the row instead of overflowing it: as a flex item this needs
-   * min-width:0, otherwise its automatic minimum size is its content width. */
-  min-width: 0;
-  max-width: 100%;
-}
-
-.tool-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  max-width: 100%;
-  min-height: 26px;
-  padding: 2px 10px;
-  border-radius: 999px;
-  border: 1px solid var(--tp-border, var(--border));
-  background: var(--tp-bg, var(--bg-tertiary));
-  color: var(--text-primary);
-  font: inherit;
-  font-size: 0.8125rem;
-  line-height: 1.2;
-  cursor: pointer;
-  white-space: nowrap;
-  transition:
-    filter 0.12s ease,
-    transform 0.06s ease;
-}
-
-.tool-pill:hover {
-  filter: brightness(1.04);
-}
-
-.tool-pill:active {
-  transform: translateY(0.5px);
-}
-
-.tool-pill:focus-visible {
-  outline: 2px solid var(--link-color);
-  outline-offset: 1px;
-}
-
-.tool-pill-emoji {
-  font-size: 0.8125rem;
-  line-height: 1;
-  flex-shrink: 0;
-}
-
-/* The pill's label: its headline (.tool-pill-text) or, while the tool runs and
- * reports output, the last line it printed (.tool-pill-output). ToolPillLabel
- * renders one or the other, never both, so they share their layout. Pills stay
- * chip-sized rather than growing to the conversation width: each label already
- * bounds its own text (the headline budget in toolMeta.ts, MAX_LEN in
- * lastLine.ts), and max-width is the visual guard for both. */
-.tool-pill-text,
-.tool-pill-output {
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
-  max-width: 360px;
-  /* overflow:hidden both clips the text and opts these flex items out of the
-   * automatic minimum content size, so a narrow row shrinks them further. */
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* Live output reads as transient: dimmer than the pill's --text-primary. */
-.tool-pill-output {
-  color: var(--text-secondary);
-}
-
-.tool-pill-spinner {
-  width: 10px;
-  height: 10px;
-  border: 1.5px solid var(--tp-border, var(--text-secondary));
-  border-top-color: transparent;
-  border-radius: 50%;
-  animation: tool-pill-spin 0.8s linear infinite;
-  flex-shrink: 0;
-}
-
-@keyframes tool-pill-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-.tool-pill-err {
-  /* Exit-code/error is a low-priority signal: a small muted glyph, not a
-   * red chip. The pill keeps its neutral background (see .tool-pill--error). */
-  color: var(--text-secondary);
-  font-size: 0.75rem;
-  font-weight: 600;
-  flex-shrink: 0;
-}
-
-/* Errored pills keep the normal neutral chip styling; the small muted
- * ✗ glyph is the only differentiator. No red overrides here. */
-
-/* No per-tool tint on the web. Web's tool widgets are monochrome
- * with a single blue accent, and a rainbow row of pills clashes
- * with the rest of the conversation surface. The emoji already
- * encodes tool identity at-a-glance; the pill itself just needs to
- * look like a tappable chip. (iOS uses color because its native
- * surfaces are richer, see ToolPillsRow.swift.) */
-
-/* Pill in the expanded state: keep it visually anchored to the
- * card that opened below it. */
-.tool-pill--expanded {
-  background: var(--bg-secondary, var(--bg-tertiary));
-  border-color: var(--link-color);
-}
-
-/* Inline-expanded tool cards live directly under the pill row
- * inside the same .message-content wrapper. */
-.tool-pill-expanded-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-top: 8px;
-}
-
-.tool-pill-expanded > .message-tool {
-  margin: 0;
-}
-
-@media (max-width: 600px) {
-  /* Headline only, deliberately: while a tool runs, .tool-pill-output is the
-   * pill's only label and may use the full row, which on a phone is narrower
-   * than the desktop cap anyway (so the cap never actually binds there). */
-  .tool-pill-text {
-    max-width: 150px;
-  }
-}
-
-/* ============================================================
- * Tool detail modal: a WIDE, FLAT detail view for the
- * CoalescedToolCall card shown in a dialog when a pill is clicked.
- *
- * The inline (non-modal) tool cards are a gray rounded card with their
- * own clickable header. Inside the modal that produces ugly
- * double-boxing and shows the command up to three times. Everything
- * below is scoped to .tool-detail-modal so the inline cards are
- * untouched: we flatten the card, hide its header (the modal title
- * + status strip name the tool and its result), and let the boxed
- * sections sit directly on the flat modal background.
- * ============================================================ */
-.tool-detail-modal {
-  width: min(960px, 94vw);
-  max-width: 94vw;
-}
-
-.tool-detail-modal .tool-pill-expanded > .message-tool {
-  margin: 0;
-}
-
-/* Flatten the outer card: no gray card-within-card. */
-.tool-detail-modal .bash-tool,
-.tool-detail-modal .tool {
-  background: none;
-  margin: 0;
-}
-
-.dark .tool-detail-modal .bash-tool,
-.dark .tool-detail-modal .tool {
-  background: none;
-}
-
-/* Hide the card's own header entirely: the modal title names the tool
- * and the titleRight status strip carries result + duration, so the
- * card header (command line, cwd, duplicate status, chevron) is
- * redundant. */
-.tool-detail-modal .bash-tool-header,
-.tool-detail-modal .tool-header {
-  display: none;
-}
-
-/* Align the body to the modal padding (the modal-body already pads). */
-.tool-detail-modal .bash-tool-details,
-.tool-detail-modal .llm-one-shot-images,
-.tool-detail-modal .tool-details {
-  padding: 0;
-  gap: 1rem;
-}
-
-/* Polish the code/pre boxes so they look intentional on the flat
- * background: comfortable padding, subtle rounded border, readable
- * line-height, and scroll when content is large. */
-.tool-detail-modal .bash-tool-code,
-.tool-detail-modal .tool-code {
-  padding: 0.875rem 1rem;
-  border: 1px solid var(--border);
-  border-radius: 0.5rem;
-  line-height: 1.55;
-  /* The modal body is the single scroll container — don't cap the box
-   * height or add a nested overflow, otherwise long output produces two
-   * scrollbars (inner box + modal body). Let it grow and scroll the body. */
-  max-height: none;
-  overflow-x: auto;
-  overflow-y: visible;
-}
-
-/* Fallback render path: unmapped tools (no entry in TOOL_COMPONENTS) use
- * the generic .tool-result-details card. Flatten it the same way and
- * strip the red error tint so it matches the specialised tool cards. */
-.tool-detail-modal .tool-result-details,
-.tool-detail-modal .tool-result-details.error {
-  border: none;
-  margin: 0;
-}
-
-.tool-detail-modal .tool-result-summary {
-  display: none;
-}
-
-.tool-detail-modal .tool-result-content {
-  padding: 0;
-}
-
-.tool-detail-modal .tool-result-section.error.output,
-.tool-detail-modal .tool-result-section.output,
-.tool-detail-modal .tool-result-section {
-  background: var(--bg-base);
-  border: 1px solid var(--border);
-}
-
-.tool-detail-modal .tool-result-section.error.output .tool-result-label {
-  color: var(--text-secondary);
-}
-
-/* Specialised tool error messages (screenshot/screencast/output-iframe)
- * paint a red box inline; inside the detail modal we keep the rest of the
- * surface neutral, so render these as ordinary code blocks too. */
-.tool-detail-modal .screenshot-tool-error-message,
-.tool-detail-modal .screencast-tool-error-message,
-.tool-detail-modal .output-iframe-tool-error-message {
-  background: var(--bg-base);
-  border-color: var(--border);
-  color: var(--text-primary);
-}
-
-/* ------------------------------------------------------------
- * Status strip (Modal titleRight): a small, muted badge with the
- * run state and execution duration. Tasteful and monochrome — even
- * a failure is just a soft ✗, never a red banner.
- * ------------------------------------------------------------ */
-.tool-detail-status {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-size: 0.8125rem;
-  color: var(--text-secondary);
-}
-
-.tool-detail-status-label {
-  font-weight: 500;
-}
-
-.tool-detail-status-glyph {
-  font-weight: 600;
-}
-
-.tool-detail-status--success .tool-detail-status-glyph {
-  color: var(--success-text);
-}
-
-/* Failure and cancellation stay muted — the ✗ reads as secondary text,
- * not an alarm. */
-.tool-detail-status--failed .tool-detail-status-glyph,
-.tool-detail-status--failed .tool-detail-status-label,
-.tool-detail-status--cancelled .tool-detail-status-glyph,
-.tool-detail-status--cancelled .tool-detail-status-label {
-  color: var(--text-secondary);
-}
-
-.tool-detail-status-time {
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
-  color: var(--text-tertiary);
-}
-
-.tool-detail-status-spinner {
-  width: 11px;
-  height: 11px;
-  border: 1.5px solid var(--text-secondary);
-  border-top-color: transparent;
-  border-radius: 50%;
-  animation: tool-pill-spin 0.8s linear infinite;
-  flex-shrink: 0;
-}
-
 /* ---------------------------------------------------------------------------
  * Conversation export page (/export/<id>)
  * A focused split-pane editor: editable Markdown left, rendered preview right.
@@ -13863,7 +14617,7 @@ kbd {
 
 /* =========================================================================
    ChatOverflowMenu.vue — the top-right kebab menu rebuilt on PrimeVue
-   (Popover + Select). Scoped under .overflow-menu-panel so it never touches
+   (Popover + language Modal). Scoped under .overflow-menu-panel so it never touches
    the legacy React menu, which still uses .overflow-menu and the
    hand-rolled .theme-toggle-* / .md-toggle-* / .language-dropdown-* classes.
    ========================================================================= */
@@ -13917,6 +14671,17 @@ kbd {
 .overflow-menu-panel .overflow-menu-item:hover {
   background: var(--bg-hover);
 }
+.overflow-menu-cwd {
+  flex: 1;
+  width: 0;
+  min-width: 0;
+  margin-left: 1rem;
+  text-align: right;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .overflow-menu-panel .chat-menu-icon {
   margin-right: 0.75rem;
   font-size: 1rem;
@@ -13937,18 +14702,48 @@ kbd {
   margin: 0.25rem 0;
 }
 
-/* Row that holds the language Select control. */
-.overflow-menu-control {
-  padding: 0.5rem;
-}
-.overflow-menu-control .md-toggle-label {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  font-size: 0.75rem;
+/* Keep the current language visible without a full-width form control. */
+.overflow-menu-language {
+  margin-left: auto;
+  padding-left: 1rem;
   color: var(--text-secondary);
-  margin-bottom: 0.375rem;
-  font-weight: 500;
+  font-size: 0.75rem;
+}
+
+.language-picker-modal {
+  max-width: 22rem;
+}
+.language-picker-options {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.language-picker-option {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  min-height: 2.75rem;
+  padding: 0.625rem 0.75rem;
+  border: none;
+  border-radius: 0.375rem;
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.language-picker-option:hover,
+.language-picker-option[aria-pressed="true"] {
+  background: var(--bg-hover);
+}
+.language-picker-option:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+}
+.language-picker-check {
+  margin-left: auto;
+  font-size: 0.875rem;
 }
 
 /* One compact row of stateful choice buttons. The current choice is large and
@@ -14043,16 +14838,6 @@ kbd {
   }
 }
 
-/* The language Select fills the row. */
-.overflow-menu-control .overflow-language-select.p-select {
-  width: 100%;
-}
-.overflow-menu-control .language-dropdown-flag {
-  font-size: 1rem;
-  line-height: 1;
-  margin-right: 0.4rem;
-}
-
 /* =========================================================================
    Status-bar model picker (ModelPicker.vue) — one PrimeVue <Select> that
    carries both the model choice and the reasoning-effort pill row. PrimeVue
@@ -14062,7 +14847,7 @@ kbd {
    vars into PrimeVue's own token system. The only things hand-written here
    are the overlay's content-width behaviour and the bespoke option/footer
    markup. Scoped to the picker classes so nothing leaks to other PrimeVue
-   Selects (e.g. the overflow-menu language picker).
+   Selects.
    ========================================================================= */
 
 /* Trigger label: model name + quiet "· effort" suffix. */
@@ -14203,6 +14988,26 @@ kbd {
   gap: 0.125rem;
   min-width: 0;
 }
+.p-select-overlay.model-picker-panel
+  .p-select-option:has(.model-picker-option-recent):not([data-p-selected="true"]):not(
+    [data-p-focused="true"]
+  ):not(:hover) {
+  background: color-mix(in srgb, var(--blue-bg) 35%, var(--bg-tertiary));
+}
+.dark
+  .p-select-overlay.model-picker-panel
+  .p-select-option:has(.model-picker-option-recent):not([data-p-selected="true"]):not(
+    [data-p-focused="true"]
+  ):not(:hover) {
+  background: color-mix(in srgb, var(--blue-bg) 65%, var(--bg-base));
+}
+.p-select-overlay.model-picker-panel
+  .p-select-option:has(.model-picker-option-recent):not([data-p-selected="true"]):not(
+    [data-p-focused="true"]
+  ):not(:hover)
+  .model-picker-option-name {
+  color: color-mix(in srgb, var(--blue-text) 30%, var(--text-primary));
+}
 .p-select-overlay.model-picker-panel .model-picker-option-name {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -14227,6 +15032,48 @@ kbd {
   flex: 0 0 auto;
   color: var(--blue-text);
   margin-left: 0.5rem;
+}
+.p-select-overlay.model-picker-panel .model-picker-option-effort {
+  flex: 0 0 auto;
+  margin-left: 0.75rem;
+  padding: 0 0.4rem;
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-secondary);
+  font-size: 0.6875rem;
+  line-height: 1.3;
+}
+
+/* Option-group rows are only dividers. With no recent group the models
+   divider is first and hidden, so the list is flat. */
+.p-select-overlay.model-picker-panel .p-select-option-group {
+  padding: 0;
+}
+.p-select-overlay.model-picker-panel
+  .p-select-option-group:first-child:has(.model-picker-group-divider) {
+  display: none;
+}
+.p-select-overlay.model-picker-panel .model-picker-group-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0.75rem 0.1875rem;
+  color: var(--text-secondary);
+  font-size: 0.6875rem;
+}
+.p-select-overlay.model-picker-panel .model-picker-group-label::after {
+  display: none;
+}
+.p-select-overlay.model-picker-panel
+  .p-select-option-group:has(.model-picker-group-label)
+  + .p-select-option {
+  border-top: 1px solid var(--border);
+}
+.p-select-overlay.model-picker-panel .model-picker-group-divider {
+  display: block;
+  height: 1px;
+  background: var(--border);
 }
 
 .p-select-overlay.model-picker-panel .model-picker-divider {
@@ -14482,8 +15329,9 @@ kbd {
 
 .perf-hud-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 4px 8px;
   padding: 3px 8px;
   cursor: pointer;
   user-select: none;
@@ -14616,6 +15464,72 @@ kbd {
   border-top: 1px solid rgba(255, 255, 255, 0.08);
 }
 
+/* IndexedDB contention alert: the one thing in the HUD that should be
+   impossible to miss, so it is red and stays in the header when collapsed. */
+.perf-hud-alert {
+  background: #7f1d1d;
+  color: #fecaca;
+  border: 1px solid #ef4444;
+  border-radius: 3px;
+  font: inherit;
+  font-weight: 700;
+  padding: 0 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.perf-hud-alert:hover,
+.perf-hud-alert.active {
+  background: #991b1b;
+  color: #fff;
+}
+
+.perf-hud-contention-title {
+  color: #f87171;
+}
+
+.perf-hud-contention-explain {
+  padding: 2px 8px 4px;
+  color: #d0d6e0;
+  white-space: normal;
+  max-width: 320px;
+}
+
+.perf-hud-contention-explain code {
+  color: #7dd3fc;
+  font: inherit;
+}
+
+.perf-hud-stall td {
+  text-align: left;
+}
+
+.perf-hud-stall .perf-hud-name {
+  max-width: 120px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.perf-hud-stall-when {
+  color: #6b7280;
+}
+
+.perf-hud-stall-outcome {
+  max-width: 200px;
+  white-space: normal !important;
+  overflow-wrap: anywhere;
+  color: #fbbf24;
+}
+
+.perf-hud-stall-inflight .perf-hud-stall-outcome,
+.perf-hud-stall-failed .perf-hud-stall-outcome {
+  color: #f87171;
+}
+
+.perf-hud-stall-completed .perf-hud-stall-outcome {
+  color: #a7f3d0;
+}
+
 @media (max-width: 768px) {
   .perf-hud {
     max-width: 60vw;
@@ -14629,7 +15543,7 @@ kbd {
  * Users who ask for less motion should get it. This is also what makes the e2e
  * suite quick: PrimeVue's Dialog animates in and out over 0.3s, and Playwright
  * waits for an element to stop moving before clicking it, so every open/close
- * of a tool-detail modal cost ~0.6s of pure waiting. The universal rule below
+ * of a dialog costs ~0.6s of pure waiting. The universal rule below
  * covers PrimeVue's runtime-injected theme too -- !important outranks
  * specificity, so `*` beats its single-class .p-dialog-enter-active rule.
  *
@@ -14665,11 +15579,16 @@ kbd {
   /* Looping progress indicators keep looping. iteration-count is untouched by
      the rule above, so only the duration needs restoring. */
   .bash-tool-running,
+  .btw-inline-spinner,
   .command-palette-spinner,
   .conversation-loading-bar-fill,
   .export-spinner,
   .message-voice-btn.listening,
+  .msg-tour-building .working-indicator,
   .patch-tool-running,
+  .recording-status-dot.recording,
+  .recording-status-dot.starting,
+  .recording-status-dot.stopping,
   .reconnecting-dots,
   .screencast-tool-emoji,
   .screenshot-tool-running,
@@ -14678,9 +15597,6 @@ kbd {
   .streaming-cursor,
   .thinking-dots,
   .thinking-dots span,
-  .tool-detail-status-spinner,
-  .tool-detail-status-time,
-  .tool-pill-spinner,
   .tool-running,
   .tool-running-header,
   .tool-status-running,

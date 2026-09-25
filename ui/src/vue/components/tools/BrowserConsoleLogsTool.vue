@@ -36,6 +36,7 @@
       :plain-text="collapsedPlainText"
       body-class="tool-details"
     >
+      <RunningToolTime v-if="isRunning && isExpanded" :start-time="toolInvokedAt" />
       <div v-if="isComplete" class="tool-section">
         <div class="tool-label">
           Output{{ hasError ? " (Error)" : "" }}:
@@ -53,12 +54,15 @@ import type { LLMContent } from "../../../types";
 import { useToolExpanded } from "../../composables/toolDetail";
 import ToolAccessibleBody from "./ToolAccessibleBody.vue";
 import ToolChevron from "./ToolChevron.vue";
+import RunningToolTime from "./RunningToolTime.vue";
 import ToolStatusIcon from "./ToolStatusIcon.vue";
+import { toolOutcomeSuffix } from "../../utils/toolStatus";
 
 const props = defineProps<{
   toolName: string;
   toolInput?: unknown;
   isRunning?: boolean;
+  toolInvokedAt?: string | null;
   toolResult?: LLMContent[];
   hasError?: boolean;
   executionTime?: string;
@@ -88,10 +92,12 @@ const toolDescription = computed(() =>
     : "browser console logs",
 );
 const outputLabel = computed(() => `Output for ${toolDescription.value}`);
-const toggleLabel = computed(() =>
-  isExpanded.value
-    ? `Collapse output for ${toolDescription.value}`
-    : `Expand output for ${toolDescription.value}`,
+const toggleLabel = computed(
+  () =>
+    (isExpanded.value
+      ? `Collapse output for ${toolDescription.value}`
+      : `Expand output for ${toolDescription.value}`) +
+    toolOutcomeSuffix(isComplete.value, props.hasError),
 );
 const collapsedPlainText = computed(() =>
   isComplete.value

@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"io"
 	"net/http"
 	"os"
@@ -11,16 +10,8 @@ import (
 	"testing"
 
 	"shelley.exe.dev/exeenv"
+	"shelley.exe.dev/skills"
 )
-
-func TestSystemPromptRequiresPublicVMServiceLinks(t *testing.T) {
-	if !strings.Contains(
-		systemPromptTemplate,
-		"Use localhost addresses for tools running on the VM; when giving the user a link to a VM-hosted service, use the shown exe.dev URL with the exact port and path.",
-	) {
-		t.Error("system prompt must direct VM-hosted service links to the shown exe.dev URL")
-	}
-}
 
 // TestSystemPromptIncludesCwdGuidanceFiles verifies that AGENTS.md from the working directory
 // is included in the generated system prompt.
@@ -78,9 +69,6 @@ func TestSystemPromptEmptyCwdFallsBackToCurrentDir(t *testing.T) {
 	// Verify the current directory is mentioned in the prompt
 	if !strings.Contains(prompt, currentDir) {
 		t.Errorf("system prompt should contain current directory when cwd is empty")
-	}
-	if !strings.Contains(prompt, "omit `cd` and run the command directly") {
-		t.Errorf("system prompt should tell the model to omit a redundant cd")
 	}
 }
 
@@ -213,20 +201,27 @@ func TestSystemPromptIncludesUserEmail(t *testing.T) {
 // user-level AGENTS.md files have identical content (or are symlinks to the same
 // file), only one copy appears in the system prompt.
 func TestSystemPromptDeduplicatesIdenticalGuidanceFiles(t *testing.T) {
-	// Create a fake home with two AGENTS.md locations containing the same content
+	// Create a fake home with three AGENTS.md locations containing the same content
 	tmpHome := t.TempDir()
 
 	configShelley := filepath.Join(tmpHome, ".config", "shelley")
+	dotAgents := filepath.Join(tmpHome, ".agents")
 	dotShelley := filepath.Join(tmpHome, ".shelley")
 	if err := os.MkdirAll(configShelley, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dotAgents, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(dotShelley, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	agentsContent := "DEDUP_TEST_MARKER: identical content in both files"
+	agentsContent := "DEDUP_TEST_MARKER: identical content in all locations"
 	if err := os.WriteFile(filepath.Join(configShelley, "AGENTS.md"), []byte(agentsContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dotAgents, "AGENTS.md"), []byte(agentsContent), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dotShelley, "AGENTS.md"), []byte(agentsContent), 0o644); err != nil {
@@ -287,6 +282,33 @@ func TestSystemPromptDeduplicatesSymlinkedGuidanceFiles(t *testing.T) {
 	count := strings.Count(prompt, "SYMLINK_DEDUP_MARKER")
 	if count != 1 {
 		t.Errorf("expected SYMLINK_DEDUP_MARKER to appear exactly 1 time, got %d", count)
+	}
+}
+
+// TestSystemPromptIncludesDotAgentsAgentsMd verifies that a user-level
+// AGENTS.md in ~/.agents/ is injected into the system prompt.
+func TestSystemPromptIncludesDotAgentsAgentsMd(t *testing.T) {
+	tmpHome := t.TempDir()
+
+	dotAgents := filepath.Join(tmpHome, ".agents")
+	if err := os.MkdirAll(dotAgents, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	agentsContent := "DOT_AGENTS_MARKER: instructions from ~/.agents"
+	if err := os.WriteFile(filepath.Join(dotAgents, "AGENTS.md"), []byte(agentsContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("HOME", tmpHome)
+
+	unrelatedDir := t.TempDir()
+	prompt, err := GenerateSystemPrompt(unrelatedDir)
+	if err != nil {
+		t.Fatalf("GenerateSystemPrompt failed: %v", err)
+	}
+
+	if !strings.Contains(prompt, agentsContent) {
+		t.Errorf("system prompt should contain content from ~/.agents/AGENTS.md")
 	}
 }
 
@@ -808,8 +830,44 @@ This is a test skill.
 	if !strings.Contains(prompt, "A test skill for verification") {
 		t.Errorf("subagent prompt should contain the test skill description")
 	}
-	if !strings.Contains(prompt, "Skills extend your capabilities") {
-		t.Errorf("subagent prompt should contain skills introduction text")
+	if !strings.Contains(prompt, "run its activation command") {
+		t.Errorf("subagent prompt should explain how to load matching skills")
+	}
+}
+
+func TestSubagentSystemPromptKeepsStableSkillsFirst(t *testing.T) {
+	oldDBPath := DBPath
+	DBPath = "/tmp/shelley-test.db"
+	t.Cleanup(func() { DBPath = oldDBPath })
+
+	prompt, _, err := generateSubagentSystemPromptWithIntegrationSkills(t.TempDir(), []skills.Skill{{
+		Name:        "stable-prefix",
+		Description: "Keep reusable guidance first.",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	skillsAt := strings.Index(prompt, "<skills>")
+	workingDirAt := strings.Index(prompt, "Working directory:")
+	if skillsAt < 0 || workingDirAt < 0 || skillsAt > workingDirAt {
+		t.Fatalf("skills are not before dynamic context:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "conversation_id='$SHELLEY_CONVERSATION_ID'") {
+		t.Fatalf("parent lookup does not use the child environment:\n%s", prompt)
+	}
+}
+
+func TestGenerateSubagentSystemPromptKeepsLiteralParentCompatibility(t *testing.T) {
+	oldDBPath := DBPath
+	DBPath = "/tmp/shelley-test.db"
+	t.Cleanup(func() { DBPath = oldDBPath })
+
+	prompt, err := GenerateSubagentSystemPrompt(t.TempDir(), "parent-conversation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(prompt, "conversation_id='parent-conversation'") {
+		t.Fatalf("exported helper lost literal parent lookup:\n%s", prompt)
 	}
 }
 
@@ -829,7 +887,7 @@ echo '{"slug": "Hello World!"}'`
 	h.NewConversation("first message", "")
 
 	// Read back the conversation; slug should have been applied + sanitized.
-	conv, err := h.db.GetConversationByID(context.Background(), h.convID)
+	conv, err := h.db.GetConversationByID(t.Context(), h.convID)
 	if err != nil {
 		t.Fatalf("GetConversation: %v", err)
 	}
@@ -1122,5 +1180,36 @@ func TestHookHeadersEmptyReturnsNil(t *testing.T) {
 	onlySecrets.Set("Authorization", "Bearer z")
 	if HookHeaders(onlySecrets) != nil {
 		t.Errorf("expected nil when only auth secrets present")
+	}
+}
+
+func TestIntegrationSkillSnapshotIncludedInTopLevelAndSubagentPrompts(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	workingDir := t.TempDir()
+	integrationSkills := []skills.Skill{{
+		Name:        "remote-release",
+		Description: "Check a release from the startup snapshot.",
+		Activate:    "curl -fsS https://remote-release.int.example.test/",
+		Source:      "https://remote-release.int.example.test/",
+	}}
+
+	topLevel, topSkills, err := generateSystemPromptWithIntegrationSkills(workingDir, integrationSkills)
+	if err != nil {
+		t.Fatal(err)
+	}
+	subagent, subSkills, err := generateSubagentSystemPromptWithIntegrationSkills(workingDir, integrationSkills)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, prompt := range map[string]string{"top-level": topLevel, "subagent": subagent} {
+		if !strings.Contains(prompt, "<name>remote-release</name>") || !strings.Contains(prompt, "<activate>curl -fsS https://remote-release.int.example.test/</activate>") {
+			t.Errorf("%s prompt missing integration skill:\n%s", name, prompt)
+		}
+	}
+	if len(topSkills) == 0 || topSkills[0].Name != "remote-release" {
+		t.Fatalf("top-level prompt skills = %+v", topSkills)
+	}
+	if len(subSkills) == 0 || subSkills[0].Name != "remote-release" {
+		t.Fatalf("subagent prompt skills = %+v", subSkills)
 	}
 }

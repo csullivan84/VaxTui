@@ -1,6 +1,6 @@
 <template>
-  <div ref="viewRef" class="commit-tour-view">
-    <article class="commit-tour-document">
+  <div ref="viewRef" class="commit-tour-view" @scroll.passive="handleScroll">
+    <article ref="documentRef" class="commit-tour-document">
       <div v-if="!isMobile" class="commit-tour-toolbar">
         <button
           v-tooltip.top="sideBySide ? 'Switch to unified diffs' : 'Switch to side-by-side diffs'"
@@ -68,9 +68,11 @@
           :id="tourEntryAnchor(position)"
           :data-tour-anchor="tourEntryAnchor(position)"
           :entry="entry"
+          :expanded="!entry.trivial || expandedAnchors.has(tourEntryAnchor(position))"
           :theme-type="themeType"
           :side-by-side="sideBySide"
           :overflow="isMobile ? 'wrap' : 'scroll'"
+          @update:expanded="emit('expand-change', tourEntryAnchor(position), $event)"
           @comment="emit('open-comment', $event)"
           @line-comment="emit('open-comment', $event)"
         />
@@ -96,7 +98,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import type { ThemeTypes } from "@pierre/diffs";
 import type { GitTourEntry, GitTourHeaderEntry, GitTourResponse } from "../../services/api";
 import type { GitCommitMessage } from "../../types";
@@ -110,8 +112,13 @@ import { TOUR_OVERVIEW_ANCHOR, tourEntryAnchor } from "./commitTourContents";
 const props = defineProps<{
   tour: GitTourResponse;
   commitMessage: GitCommitMessage | null;
+  expandedAnchors: Set<string>;
 }>();
-const emit = defineEmits<{ (e: "open-comment", target: TourCommentTarget): void }>();
+const emit = defineEmits<{
+  (e: "open-comment", target: TourCommentTarget): void;
+  (e: "active-anchor-change", anchor: string): void;
+  (e: "expand-change", anchor: string, expanded: boolean): void;
+}>();
 
 const themeType = ref<ThemeTypes>(isDarkModeActive() ? "dark" : "light");
 const isMobile = ref(window.innerWidth < 768);
@@ -119,13 +126,67 @@ const { sideBySidePreference, setSideBySidePreference } = useSideBySidePreferenc
 const sideBySide = computed(() => !isMobile.value && sideBySidePreference.value);
 const shortHash = computed(() => props.tour.hash.slice(0, 8));
 const viewRef = ref<HTMLElement | null>(null);
+const documentRef = ref<HTMLElement | null>(null);
 const selectionPrompt = ref<{
   top: number;
   left: number;
   target: TourCommentTarget;
 } | null>(null);
 let themeObserver: MutationObserver | null = null;
+let tourResizeObserver: ResizeObserver | null = null;
 let selectionFrame: number | null = null;
+let scrollFrame: number | null = null;
+let activeAnchor = "";
+// Retain an explicit selection through lazy layout and bottom clamping, but
+// release it on any independent scroll (including focus and native scrollbars).
+let navigationTarget: HTMLElement | null = null;
+let navigationPosition = { top: 0, height: 0, viewport: 0 };
+
+function releaseMovedNavigation() {
+  const view = viewRef.value;
+  if (!view || !navigationTarget) return;
+  // Lazy diffs can change the scroll extent and clamp/anchor scrollTop. Only
+  // correct those layout shifts; all scrolling within a stable layout is free.
+  if (
+    view.scrollTop !== navigationPosition.top &&
+    view.scrollHeight === navigationPosition.height &&
+    view.clientHeight === navigationPosition.viewport
+  )
+    navigationTarget = null;
+}
+
+function handleScroll() {
+  releaseMovedNavigation();
+  scheduleActiveAnchor();
+  handleSelectionChange();
+}
+
+function alignNavigationTarget() {
+  releaseMovedNavigation();
+  const view = viewRef.value;
+  if (!view || !navigationTarget) return;
+  navigationTarget.scrollIntoView({ block: "start" });
+  navigationPosition = {
+    top: view.scrollTop,
+    height: view.scrollHeight,
+    viewport: view.clientHeight,
+  };
+}
+
+// Either eye controls or inline disclosure can change visibility. Release the
+// previous jump before that layout change, rather than pulling the reader back.
+watch(
+  () => Array.from(props.expandedAnchors),
+  () => {
+    navigationTarget = null;
+  },
+  { flush: "sync" },
+);
+
+function handleTourResize() {
+  alignNavigationTarget();
+  scheduleActiveAnchor();
+}
 
 function isHeaderEntry(entry: GitTourEntry): entry is GitTourHeaderEntry {
   return "header" in entry;
@@ -195,13 +256,65 @@ function openSelectionComment() {
   selectionPrompt.value = null;
 }
 
-function scrollToAnchor(anchor: string) {
-  const target = viewRef.value?.querySelector<HTMLElement>(`#${anchor}`);
-  if (!target) return;
-  target.tabIndex = -1;
-  target.scrollIntoView({ block: "start" });
-  target.focus({ preventScroll: true });
+function updateActiveAnchor() {
+  scrollFrame = null;
+  const view = viewRef.value;
+  if (!view) return;
+
+  const anchors = Array.from(view.querySelectorAll<HTMLElement>("[data-tour-anchor]"));
+  if (anchors.length === 0) return;
+
+  const activationTop = view.getBoundingClientRect().top + 24;
+  let current = anchors[0].dataset.tourAnchor ?? "";
+  for (const anchor of anchors) {
+    if (anchor.getBoundingClientRect().top > activationTop) break;
+    current = anchor.dataset.tourAnchor ?? current;
+  }
+
+  const canScroll = view.scrollHeight > view.clientHeight + 1;
+  if (canScroll && view.scrollTop + view.clientHeight >= view.scrollHeight - 1) {
+    current = anchors.at(-1)?.dataset.tourAnchor ?? current;
+  }
+  if (navigationTarget) {
+    current = navigationTarget.dataset.tourAnchor ?? current;
+  }
+  if (!current || current === activeAnchor) return;
+  activeAnchor = current;
+  emit("active-anchor-change", current);
 }
+
+function scheduleActiveAnchor() {
+  if (scrollFrame !== null) return;
+  scrollFrame = requestAnimationFrame(updateActiveAnchor);
+}
+
+function scrollToAnchor(anchor: string) {
+  const target = viewRef.value?.querySelector<HTMLElement>(`#${anchor}`) ?? null;
+  navigationTarget = target;
+  // Move focus with the jump so screen readers continue reading at the target.
+  if (target) target.tabIndex = -1;
+  const view = viewRef.value;
+  if (view) {
+    navigationPosition = {
+      top: view.scrollTop,
+      height: view.scrollHeight,
+      viewport: view.clientHeight,
+    };
+  }
+  alignNavigationTarget();
+  target?.focus({ preventScroll: true });
+  scheduleActiveAnchor();
+}
+
+watch(
+  () => props.tour,
+  () => {
+    activeAnchor = "";
+    navigationTarget = null;
+    nextTick(scheduleActiveAnchor);
+  },
+  { flush: "post" },
+);
 
 defineExpose({ scrollToAnchor });
 
@@ -216,17 +329,21 @@ onMounted(() => {
     }
   });
   themeObserver.observe(document.documentElement, { attributes: true });
+  tourResizeObserver = new ResizeObserver(handleTourResize);
+  if (viewRef.value) tourResizeObserver.observe(viewRef.value);
+  if (documentRef.value) tourResizeObserver.observe(documentRef.value);
   document.addEventListener("selectionchange", handleSelectionChange);
   window.addEventListener("resize", handleResize);
-  viewRef.value?.addEventListener("scroll", handleSelectionChange, { passive: true });
+  scheduleActiveAnchor();
 });
 
 onUnmounted(() => {
   themeObserver?.disconnect();
+  tourResizeObserver?.disconnect();
   document.removeEventListener("selectionchange", handleSelectionChange);
   window.removeEventListener("resize", handleResize);
-  viewRef.value?.removeEventListener("scroll", handleSelectionChange);
   if (selectionFrame !== null) cancelAnimationFrame(selectionFrame);
+  if (scrollFrame !== null) cancelAnimationFrame(scrollFrame);
 });
 </script>
 
@@ -241,7 +358,7 @@ onUnmounted(() => {
 
 .commit-tour-document {
   min-width: 0;
-  width: min(100%, 1100px);
+  width: 100%;
   margin: 0 auto;
   padding: 1rem clamp(1rem, 3vw, 2.5rem) 4rem;
   display: flex;

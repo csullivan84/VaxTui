@@ -56,9 +56,6 @@ type ToolSetConfig struct {
 	// PatchSimpleEnabled selects the simplified path-and-edits schema. When
 	// false, patch uses the full nested patches schema.
 	PatchSimpleEnabled func() bool
-	// PatchOpenAIRawEnabled lets capable OpenAI Responses services override the
-	// selected full/simple schema with the raw grammar-constrained apply_patch.
-	PatchOpenAIRawEnabled func() bool
 	// ReasoningLevel is the parent conversation's user-facing reasoning/thinking
 	// level (one of "off", "minimal", "low", "medium", "high", "xhigh", or ""
 	// for the service default). Subagents inherit this when their "reasoning"
@@ -199,14 +196,12 @@ func NewToolSet(ctx context.Context, cfg ToolSetConfig) *ToolSet {
 	if cfg.LLMProvider != nil && cfg.ModelID != "" {
 		if svc, err := cfg.LLMProvider.GetService(cfg.ModelID); err == nil {
 			patchProvider = svc.Provider()
-			if cfg.PatchOpenAIRawEnabled != nil && cfg.PatchOpenAIRawEnabled() && llm.PatchProfile(svc) == "codex_apply_patch" {
+			if llm.PatchProfile(svc) == "codex_apply_patch" {
 				patchProfile = "codex_apply_patch"
 			}
 		}
 	}
 	patchTool := &PatchTool{WorkingDir: wd, Provider: patchProvider, Profile: patchProfile}
-
-	keywordTool := NewKeywordToolWithWorkingDir(cfg.LLMProvider, cfg.ModelID, wd)
 
 	changeDirTool := &ChangeDirTool{
 		WorkingDir: wd,
@@ -228,7 +223,6 @@ func NewToolSet(ctx context.Context, cfg ToolSetConfig) *ToolSet {
 		bashTool.Tool(),
 		shellTool.Tool(),
 		patchTool.Tool(),
-		keywordTool.Tool(),
 		changeDirTool.Tool(),
 		outputIframeTool.Tool(),
 	}

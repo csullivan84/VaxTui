@@ -17,7 +17,7 @@ import (
 // queuedMessages reads the conversation's queued_messages array from the DB.
 func queuedMessages(t *testing.T, database *db.DB, convID string) []db.QueuedMessage {
 	t.Helper()
-	conv, err := database.GetConversationByID(context.Background(), convID)
+	conv, err := database.GetConversationByID(t.Context(), convID)
 	if err != nil {
 		t.Fatalf("GetConversationByID: %v", err)
 	}
@@ -27,7 +27,7 @@ func queuedMessages(t *testing.T, database *db.DB, convID string) []db.QueuedMes
 // userMessageRowExists reports whether a user messages row contains the text.
 func userMessageRowExists(t *testing.T, database *db.DB, convID, text string) bool {
 	t.Helper()
-	msgs, err := database.ListMessages(context.Background(), convID)
+	msgs, err := database.ListMessages(t.Context(), convID)
 	if err != nil {
 		t.Fatalf("ListMessages: %v", err)
 	}
@@ -75,7 +75,7 @@ func testQueuedMessageImmutableFlow(t *testing.T) {
 	server, database, _ := newTestServer(t)
 	defer stopActiveConversationLoops(server)
 
-	conversation, err := database.CreateConversation(context.Background(), nil, true, nil, nil, db.ConversationOptions{})
+	conversation, err := database.CreateConversation(t.Context(), nil, true, nil, nil, db.ConversationOptions{})
 	if err != nil {
 		t.Fatalf("CreateConversation: %v", err)
 	}
@@ -120,6 +120,63 @@ func testQueuedMessageImmutableFlow(t *testing.T) {
 		len(queuedMessages(t, database, convID)))
 }
 
+func TestSendQueuedNowInterruptsActiveTurnAndPreservesQueue(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		server, database, _ := newTestServer(t)
+		defer stopActiveConversationLoops(server)
+		conversation, err := database.CreateConversation(t.Context(), nil, true, nil, nil, db.ConversationOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		conversationID := conversation.ConversationID
+		sendChat(t, server, conversationID, "delay: 60", false)
+		synctest.Wait()
+		sendChat(t, server, conversationID, "echo: send this now", true)
+		synctest.Wait()
+		queued := queuedMessages(t, database, conversationID)
+		if len(queued) != 1 {
+			t.Fatalf("queued = %#v", queued)
+		}
+
+		request := httptest.NewRequest(http.MethodPost, "/api/conversation/"+conversationID+"/send-queued?queued_id="+queued[0].ID, nil)
+		response := httptest.NewRecorder()
+		server.handleSendQueuedNow(response, request, conversationID)
+		if response.Code != http.StatusAccepted {
+			t.Fatalf("send now = %d: %s", response.Code, response.Body.String())
+		}
+		synctest.Wait()
+		if !userMessageRowExists(t, database, conversationID, "send this now") {
+			t.Fatal("queued message was not sent after interruption")
+		}
+		if got := queuedMessages(t, database, conversationID); len(got) != 0 {
+			t.Fatalf("queue after send now = %#v", got)
+		}
+	})
+}
+
+func TestSendQueuedNowRejectsNonHeadItem(t *testing.T) {
+	server, database, _ := newTestServer(t)
+	conversation, err := database.CreateConversation(t.Context(), nil, true, nil, nil, db.ConversationOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"first", "second"} {
+		if _, err := database.AppendQueuedMessage(t.Context(), conversation.ConversationID, db.QueuedMessage{
+			ID: id, Llm: []byte(`{"Role":0,"Content":[{"Type":2,"Text":"queued"}]}`),
+			CreatedAt: time.Now(), Model: "predictable",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/conversation/"+conversation.ConversationID+"/send-queued?queued_id=second", nil)
+	response := httptest.NewRecorder()
+	server.handleSendQueuedNow(response, request, conversation.ConversationID)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("send non-head = %d, want %d", response.Code, http.StatusConflict)
+	}
+}
+
 // TestCancelQueuedClearsArray verifies whole-queue and per-message cancel clear
 // the conversation's queued_messages array.
 func TestCancelQueuedClearsArray(t *testing.T) {
@@ -131,7 +188,7 @@ func testCancelQueuedClearsArray(t *testing.T) {
 	server, database, _ := newTestServer(t)
 	defer stopActiveConversationLoops(server)
 
-	conversation, err := database.CreateConversation(context.Background(), nil, true, nil, nil, db.ConversationOptions{})
+	conversation, err := database.CreateConversation(t.Context(), nil, true, nil, nil, db.ConversationOptions{})
 	if err != nil {
 		t.Fatalf("CreateConversation: %v", err)
 	}
@@ -187,7 +244,7 @@ func TestQueuedMessageNoDoubleFeedOnRestart(t *testing.T) {
 func testQueuedMessageNoDoubleFeedOnRestart(t *testing.T) {
 	server, database, _ := newTestServer(t)
 	defer stopActiveConversationLoops(server)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	conversation, err := database.CreateConversation(ctx, nil, true, nil, nil, db.ConversationOptions{})
 	if err != nil {
@@ -265,7 +322,7 @@ func testQueuedMessageNoDoubleFeedOnRestart(t *testing.T) {
 func TestCancelQueuedNoActiveManager(t *testing.T) {
 	t.Parallel()
 	server, database, _ := newTestServer(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	conversation, err := database.CreateConversation(ctx, nil, true, nil, nil, db.ConversationOptions{})
 	if err != nil {
@@ -320,7 +377,7 @@ func TestCancelConversationClearsQueueUnconditionally(t *testing.T) {
 func testCancelConversationClearsQueueUnconditionally(t *testing.T) {
 	server, database, _ := newTestServer(t)
 	defer stopActiveConversationLoops(server)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	conversation, err := database.CreateConversation(ctx, nil, true, nil, nil, db.ConversationOptions{})
 	if err != nil {
@@ -362,7 +419,7 @@ func testCancelConversationClearsQueueUnconditionally(t *testing.T) {
 func TestHydrateDedupesQueuedAgainstInMemory(t *testing.T) {
 	t.Parallel()
 	server, database, _ := newTestServer(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	conversation, err := database.CreateConversation(ctx, nil, true, nil, nil, db.ConversationOptions{})
 	if err != nil {
@@ -382,7 +439,7 @@ func TestHydrateDedupesQueuedAgainstInMemory(t *testing.T) {
 
 	// Build a fresh (un-hydrated) manager and inject an in-memory user batch
 	// for "dup", mirroring QueueMessage having already enqueued it in memory.
-	mgr := NewConversationManager(convID, database, server.logger, server.toolSetConfig,
+	mgr := NewConversationManager(convID, database, server.logger, server.toolSetConfig, server.integrationSkills,
 		func(context.Context, llm.Message, llm.Usage, []llm.PurposedUsage) error { return nil },
 		func(context.Context, llm.Message, llm.Usage, []llm.PurposedUsage) (*generated.Message, error) {
 			return &generated.Message{}, nil
@@ -432,7 +489,7 @@ func TestDrainNoDoubleFeedWhenInMemoryAndArrayBothHaveID(t *testing.T) {
 	t.Parallel()
 	server, database, _ := newTestServer(t)
 	defer stopActiveConversationLoops(server)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	conversation, err := database.CreateConversation(ctx, nil, true, nil, nil, db.ConversationOptions{})
 	if err != nil {

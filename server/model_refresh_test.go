@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 	"shelley.exe.dev/llm"
 	"shelley.exe.dev/llm/predictable"
 	"shelley.exe.dev/models"
+	"shelley.exe.dev/modelsources"
 )
 
 type modelListReasoningService struct{ llm.Service }
@@ -18,6 +20,97 @@ type modelListReasoningService struct{ llm.Service }
 func (s *modelListReasoningService) SupportsReasoning() bool { return true }
 func (s *modelListReasoningService) SupportedReasoningLevels() []llm.ThinkingLevel {
 	return []llm.ThinkingLevel{llm.ThinkingLevelOff, llm.ThinkingLevelHigh, llm.ThinkingLevelMax}
+}
+
+func TestHandleModelsCarriesIntegrationMode(t *testing.T) {
+	var catalog struct {
+		Models []modelsources.IntegrationModel `json:"models"`
+	}
+	if err := json.Unmarshal([]byte(`{
+		"models": [
+			{"id":"openai/subscription","native_id":"gpt-5.6-luna","provider":"openai","apis":["openai_chat"],"exe_dev":{"mode":"chatgpt"}},
+			{"id":"openai/managed","provider":"openai","apis":["openai_chat"],"exe_dev":{"mode":"managed"}},
+			{"id":"openai/byok","provider":"openai","apis":["openai_chat"],"exe_dev":{"mode":"byok"}},
+			{"id":"openai/future-mode","provider":"openai","apis":["openai_chat"],"exe_dev":{"mode":"future"}},
+			{"id":"openai/chatgpt-name-only","provider":"openai","apis":["openai_chat"]}
+		]
+	}`), &catalog); err != nil {
+		t.Fatal(err)
+	}
+	integration := &modelsources.LLMIntegrationConfig{
+		Name:   "llm",
+		Host:   "llm.int.exe.xyz",
+		URL:    "https://llm.int.exe.xyz",
+		Models: catalog.Models,
+	}
+	requests := 0
+	httpc := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requests++
+		return nil, errors.New("unexpected LLM request to " + req.URL.String())
+	})}
+	built := modelsources.Build(nil, []modelsources.Source{modelsources.LLMIntegration(integration, "")}, httpc, nil)
+	mgr, err := models.NewManager(&models.Config{Models: built})
+	if err != nil {
+		t.Fatalf("NewManager failed: %v", err)
+	}
+	if info := mgr.GetModelInfo("subscription"); info == nil || info.Mode != "chatgpt" {
+		t.Fatalf("manager subscription info = %+v, want mode chatgpt", info)
+	}
+	s := &Server{llmManager: mgr, logger: slog.Default()}
+	rec := httptest.NewRecorder()
+	s.handleModels(rec, httptest.NewRequest(http.MethodGet, "/api/models", nil))
+	if requests != 0 {
+		t.Fatalf("made %d unexpected LLM requests", requests)
+	}
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %q", rec.Code, rec.Body.String())
+	}
+	var response []map[string]json.RawMessage
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]map[string]json.RawMessage{}
+	for _, model := range response {
+		var id string
+		if err := json.Unmarshal(model["id"], &id); err != nil {
+			t.Fatal(err)
+		}
+		got[id] = model
+	}
+	if len(got) != 5 {
+		t.Fatalf("models = %v, want five catalog models", got)
+	}
+	if name := string(got["subscription"]["api_model_name"]); name != `"gpt-5.6-luna"` {
+		t.Errorf("subscription API model name = %s, want native name gpt-5.6-luna", name)
+	}
+	if base := string(got["subscription"]["base_url"]); base != `"https://llm.int.exe.xyz"` {
+		t.Errorf("subscription base URL = %s, want integration URL", base)
+	}
+	for id, want := range map[string]string{
+		"subscription": "chatgpt",
+		"managed":      "managed",
+		"byok":         "byok",
+		"future-mode":  "future",
+	} {
+		model, ok := got[id]
+		if !ok {
+			t.Fatalf("model %q missing from response", id)
+		}
+		var mode string
+		if err := json.Unmarshal(model["mode"], &mode); err != nil {
+			t.Errorf("%s mode: %v", id, err)
+		} else if mode != want {
+			t.Errorf("%s mode = %q, want %q", id, mode, want)
+		}
+	}
+	model, ok := got["chatgpt-name-only"]
+	if !ok {
+		t.Fatal("model \"chatgpt-name-only\" missing from response")
+	}
+	if mode, ok := model["mode"]; ok {
+		t.Errorf("chatgpt-name-only response = %s, want mode omitted", mode)
+	}
 }
 
 func TestHandleModelsIncludesReasoningLevels(t *testing.T) {
@@ -68,13 +161,10 @@ func TestHandleModelsReportsMaxContextTokens(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]int{"sol": 1050000, "opus": 1000000, "mystery": 0}
+	want := map[string]int{"sol": 272000, "opus": 1000000, "mystery": 0}
 	for _, m := range got {
 		if m.MaxContextTokens != want[m.ID] {
 			t.Errorf("%s max_context_tokens = %d, want %d", m.ID, m.MaxContextTokens, want[m.ID])
-		}
-		if m.ID == "sol" && m.ContextPricingThreshold != 272000 {
-			t.Errorf("sol context_pricing_threshold = %d, want 272000", m.ContextPricingThreshold)
 		}
 	}
 }
@@ -143,7 +233,10 @@ func TestHandleModelsAssignsTiers(t *testing.T) {
 			{ID: "claude-opus-4.8", Provider: models.ProviderAnthropic, Service: predictable.NewService()},
 			{ID: "claude-opus-4.7", Provider: models.ProviderAnthropic, Service: predictable.NewService()},
 			{ID: "gpt-6-astra", Provider: models.ProviderOpenAI, Service: predictable.NewService()},
+			{ID: "gpt-6-sol", Provider: models.ProviderOpenAI, Service: predictable.NewService()},
+			{ID: "gpt-6-luna", Provider: models.ProviderOpenAI, Service: predictable.NewService()},
 			{ID: "gpt-5.6-sol", Provider: models.ProviderOpenAI, Service: predictable.NewService()},
+			{ID: "gpt-5.6-luna", Provider: models.ProviderOpenAI, Service: predictable.NewService()},
 		},
 		Logger: slog.Default(),
 	})
@@ -173,10 +266,16 @@ func TestHandleModelsAssignsTiers(t *testing.T) {
 	if tiers["claude-opus-4.7"] != models.Tier2 {
 		t.Errorf("opus-4.7 tier = %d, want %d", tiers["claude-opus-4.7"], models.Tier2)
 	}
-	for _, id := range []string{"gpt-6-astra", "gpt-5.6-sol"} {
+	for _, id := range []string{"gpt-6-astra", "gpt-6-sol", "gpt-6-luna"} {
 		if tiers[id] != models.Tier1 {
 			t.Errorf("%s tier = %d, want %d", id, tiers[id], models.Tier1)
 		}
+	}
+	if tiers["gpt-5.6-sol"] != models.Tier2 {
+		t.Errorf("gpt-5.6-sol tier = %d, want %d", tiers["gpt-5.6-sol"], models.Tier2)
+	}
+	if tiers["gpt-5.6-luna"] != models.Tier1 {
+		t.Errorf("gpt-5.6-luna tier = %d, want %d while subscription access lags", tiers["gpt-5.6-luna"], models.Tier1)
 	}
 }
 

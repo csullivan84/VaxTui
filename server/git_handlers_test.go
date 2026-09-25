@@ -688,6 +688,54 @@ func TestHandleGitDiffsMergeCommitStats(t *testing.T) {
 	}
 }
 
+func TestGitDiffRejectsFlagID(t *testing.T) {
+	t.Parallel()
+	h := NewTestHarness(t)
+	mux := http.NewServeMux()
+	h.server.RegisterRoutes(mux)
+	srv := httptest.NewServer(http.NewCrossOriginProtection().Handler(mux))
+	defer srv.Close()
+
+	for _, tt := range []struct {
+		name   string
+		path   string
+		target string
+	}{
+		{"files", "/api/git/diffs/--output=go.mod/files", "go.mod"},
+		{"file-diff", "/api/git/file-diff/--output=go.mod/test.txt", "go.mod:test.txt"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			gitDir := setupTestGitRepo(t)
+			target := filepath.Join(gitDir, tt.target)
+			const content = "must not be overwritten\n"
+			if err := os.WriteFile(target, []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s%s?cwd=%s&to=self", srv.URL, tt.path, gitDir), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Sec-Fetch-Site", "cross-site")
+			req.Header.Set("Sec-Fetch-Mode", "navigate")
+			resp, err := srv.Client().Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Errorf("status = %d, want 400", resp.StatusCode)
+			}
+			got, err := os.ReadFile(target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != content {
+				t.Errorf("GET overwrote %s: got %q", tt.target, got)
+			}
+		})
+	}
+}
+
 // TestHandleGitDiffFiles tests the handleGitDiffFiles function
 func TestHandleGitDiffFiles(t *testing.T) {
 	t.Parallel()
@@ -1634,5 +1682,70 @@ func TestParseNumstatZ(t *testing.T) {
 				t.Errorf("parseNumstatZ(%q) = (%d, %d), want (%d, %d)", tc.in, add, del, tc.wantAdd, tc.wantD)
 			}
 		})
+	}
+}
+
+func TestHandleGitGraphMarksTours(t *testing.T) {
+	t.Parallel()
+	h := NewTestHarness(t)
+	repo := t.TempDir()
+	run := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = repo
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("%v failed: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+
+	run("git", "init")
+	run("git", "config", "user.name", "Tour Test")
+	run("git", "config", "user.email", "tour@example.com")
+	if err := os.WriteFile(filepath.Join(repo, "example.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("git", "add", "example.txt")
+	run("git", "commit", "-m", "Base commit\n\nPrompt: graph tour base")
+	base := run("git", "rev-parse", "HEAD")
+	if err := os.WriteFile(filepath.Join(repo, "example.txt"), []byte("tour\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("git", "add", "example.txt")
+	run("git", "commit", "-m", "Tour commit\n\nPrompt: graph tour commit")
+	head := run("git", "rev-parse", "HEAD")
+	if err := committour.WriteNote(repo, head, []byte(`{"version":1,"chunks":[]}`)); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest("GET", "/api/git/graph?cwd="+repo, nil)
+	w := httptest.NewRecorder()
+	h.server.handleGitGraph(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var response struct {
+		Commits []struct {
+			Hash    string `json:"hash"`
+			HasTour bool   `json:"hasTour"`
+		} `json:"commits"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(response.Commits) != 2 {
+		t.Fatalf("commits = %+v, want only the two source commits", response.Commits)
+	}
+	tours := make(map[string]bool, len(response.Commits))
+	for _, commit := range response.Commits {
+		tours[commit.Hash] = commit.HasTour
+	}
+	if !tours[head] {
+		t.Errorf("tour commit %s was not marked", head)
+	}
+	if tours[base] {
+		t.Errorf("base commit %s was marked as having a tour", base)
 	}
 }

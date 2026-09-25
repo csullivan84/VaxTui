@@ -1,6 +1,4 @@
-// Shared coalescing logic + types for ChatInterface.vue, extracted from the
-// React ChatInterface.tsx so the SFC and ToolPillsRow can share the
-// CoalescedItem type. Mirrors the original coalescedItems useMemo body.
+// Shared message/tool coalescing logic and types for the conversation render model.
 import {
   type Message,
   type LLMContent,
@@ -25,6 +23,7 @@ export interface CoalescedItem {
   toolInput?: unknown;
   toolResult?: LLMContent[];
   toolError?: boolean;
+  toolInvokedAt?: string | null;
   toolStartTime?: string | null;
   toolEndTime?: string | null;
   hasResult?: boolean;
@@ -216,6 +215,10 @@ export function coalesceMessages(messages: Message[]): CoalescedItem[] {
               toolInput: toolUse.ToolInput,
               toolResult: resultData?.result || serverResult,
               toolError: resultData?.error || (wasTruncated && !resultData && !serverResult),
+              // Approximate while running: the exact start time is only sent
+              // with the result. Keep it separate so transcript timestamps
+              // still use the result's actual start time when available.
+              toolInvokedAt: message.created_at,
               toolStartTime: resultData?.startTime,
               toolEndTime: resultData?.endTime,
               hasResult: !!resultData || !!serverResult || wasTruncated || isServerSideToolUse,

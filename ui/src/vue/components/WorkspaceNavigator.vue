@@ -61,10 +61,14 @@
         {{ historyError }}
       </div>
       <div v-else-if="historyLoading" class="workspace-nav-state">Loading history…</div>
-      <div v-else-if="!gitAvailable" class="workspace-nav-state">This folder is not a Git repository.</div>
+      <div v-else-if="!gitAvailable" class="workspace-nav-state">
+        This folder is not a Git repository.
+      </div>
       <div v-else class="workspace-history-wrap">
         <table class="workspace-history-table">
-          <caption class="sr-only">Git commit index</caption>
+          <caption class="sr-only">
+            Git commit index
+          </caption>
           <thead>
             <tr>
               <th scope="col">Commit</th>
@@ -102,11 +106,15 @@
             <span>{{ file.path }}</span>
             <small>+{{ file.additions }} −{{ file.deletions }}</small>
           </button>
-          <Button label="Open full diff" size="small" severity="secondary" @click="emit('open-diff')" />
+          <Button
+            label="Open full diff"
+            size="small"
+            severity="secondary"
+            @click="emit('open-diff')"
+          />
         </section>
       </div>
     </template>
-
   </aside>
 </template>
 
@@ -157,7 +165,9 @@ async function loadFiles() {
   filesLoading.value = true;
   filesError.value = null;
   try {
-    const result = await api.findFiles(props.cwd, query.value.trim(), controller.signal, 500);
+    const result = await api.findFiles(props.cwd, query.value.trim(), controller.signal, {
+      limit: 500,
+    });
     if (controller.signal.aborted) return;
     files.value = result.matches;
     filesTruncated.value = result.truncated;
@@ -305,7 +315,11 @@ watch(view, (next) => {
   border: 0;
   background: transparent;
   color: var(--text-secondary);
-  font: 0.78rem ui-monospace, SFMono-Regular, Menlo, monospace;
+  font:
+    0.78rem ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
   text-align: left;
 }
 

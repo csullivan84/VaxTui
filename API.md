@@ -17,8 +17,9 @@ present; a client that doesn't recognize a capability just doesn't use
 it, and an older server that doesn't ship the field is equivalent to
 advertising none.
 
-The set is currently empty; it exists as a forward slot so we can add
-capabilities later without reshaping the response.
+Capabilities advertise optional behavior. Current capabilities include
+`thinking-levels`, `drafts`, and `queued-transcriptions`; clients that do not
+recognize one ignore it.
 
 ## Stream architecture
 
@@ -66,7 +67,24 @@ Unless noted, results exclude **archived** conversations.
   ```
 - `GET /api/conversations/archived` — archived list.
 - `POST /api/conversations/new` — create a conversation and post the
-  first user message.
+  first user message. The request accepts `message`, optional `model` and
+  `cwd`, and optional `conversation_options`:
+  ```json
+  {
+    "message": "run the tests",
+    "model": "glm-5.3-fireworks",
+    "conversation_options": {
+      "thinking_level": "high",
+      "tool_overrides": {"bash": "off"},
+      "disable_all_tools": false,
+      "disable_notifications": true
+    }
+  }
+  ```
+  `thinking_level` is one of `off`, `minimal`, `low`, `medium`, `high`,
+  `xhigh`, or `max`; the server also validates it against the selected model's
+  advertised levels. Tool override values are `on` or `off`. With
+  `disable_all_tools`, an explicit `on` override re-enables that tool.
 - `POST /api/conversations/distill-new-generation` — compact the current
   conversation into the next generation of the same conversation. The
   optional `method` field (`default` or `compact`) is accepted for
@@ -84,7 +102,16 @@ Unless noted, results exclude **archived** conversations.
 
 ### Single conversation
 
-- `GET /api/conversation/<id>` — full message history (compressed).
+- `GET /api/conversation/<id>` — full API message history (compressed) plus
+  conversation metadata. Message rows include `message_id`,
+  `conversation_id`, `sequence_id`, `type`, `llm_data`, `user_data`,
+  `usage_data`, `other_usage_data`, `created_at`, `display_data`, `generation`,
+  `end_of_turn`, `llm_api_url`, `model_name`, `forked_from_message_id`, and
+  `user_email`. The JSON-valued database columns (`llm_data`, `user_data`,
+  `usage_data`, `other_usage_data`, and `display_data`) are encoded as JSON
+  strings on the wire. `llm_data.Content` carries text, thinking, tool-use,
+  and tool-result blocks. Provider continuation secrets and inline image data
+  are removed before serving.
 - `GET /api/conversation/<id>/stream` — **legacy** SSE: messages, state,
   no list patches. Used by iOS, CLI, and Go tests; new clients should
   use `/api/stream2`. Query params:
@@ -92,10 +119,32 @@ Unless noted, results exclude **archived** conversations.
     - `?tail=<n>` — first frame contains only the last `n` messages.
   A `{"snapshot_complete": true}` frame follows the initial replay
   and precedes live updates.
-- `POST /api/conversation/<id>/chat` — send a user message.
+- `POST /api/conversation/<id>/chat` — send a user message. A message of
+  `/transcription <absolute uploaded-media path>` creates a durable specialized
+  queued message and returns `202 {"status":"queued"}`. The path must name a
+  regular file inside `/tmp/shelley-uploads`. A hidden low-reasoning child
+  performs the transcription independently of the HTTP request. While it is
+  working or failed, the item reserves its FIFO position; when ready, the
+  ordinary queue drainer creates the immutable parent user turn. Optional
+  context follows the path on subsequent lines of the command and is prepended
+  to the transcript, preserving text and ready attachments that were present
+  before recording. Video results include the original recording and generated
+  contact sheet paths in that turn.
+- `POST /api/conversation/<id>/send-queued?queued_id=<id>` — interrupt the
+  running turn and immediately drain the FIFO head. The supplied id must still
+  name that head item.
+- `POST /api/conversation/<id>/cancel-queued?queued_id=<id>` — cancel and remove
+  one queued item. Omitting `queued_id` cancels the entire queue. Cancelling a
+  working transcription also stops its hidden child.
+- `POST /api/conversation/<id>/retry-queued?queued_id=<id>` — retry a failed
+  queued transcription in place.
 - `POST /api/conversation/<id>/cancel` — interrupt the running loop.
 - `POST /api/conversation/<id>/archive` / `unarchive`.
 - `POST /api/conversation/<id>/hooks` — register an end-of-turn webhook.
+- `POST /api/conversation/<id>/tags` — replace the conversation's tag list.
+- `GET /api/conversation/<id>/subagents` — direct child conversations. Clients
+  can recurse through this endpoint when they need the complete descendant
+  tree (for example, aggregate usage reporting).
 - `GET /api/conversation-by-slug/<slug>` — lookup by slug.
 
 ### Unified stream
@@ -191,6 +240,16 @@ fresh reset event.
 
 ### Files & directories
 
+- `GET /api/find-files?dir=&q=&content=skip&include_dirs=true` — fuzzy name
+  search. `dir` is absolute; `q` is optional. `include_dirs` is an optional
+  boolean (default false); enabling it includes nested and empty folders in
+  name results. Invalid or repeated `include_dirs` values return 400.
+  Results contain `search_dir` and `matches`; paths are relative to
+  `search_dir`. Folder matches have `is_dir: true` and a trailing `/` in
+  `path`; file matches omit `is_dir`. `content=only` always returns file-content
+  hits, never folders. An explicit existing directory path without a trailing
+  slash offers that folder itself when `include_dirs` is true; a trailing
+  slash browses inside it. File-only callers retain their existing behavior.
 - `GET /api/list-directory?path=` — directory listing.
 - `POST /api/create-directory` — `mkdir -p`.
 - `POST /api/write-file` — write a file.
@@ -202,6 +261,7 @@ fresh reset event.
 - `GET /api/upload/raw` — empty `200 OK` if the server supports the raw
   upload endpoint; clients use this as a capability probe (older servers
   return 404/405).
+
 - `GET /api/read?path=` — read a file (images served as `image/*`).
 - `POST /api/validate-cwd` — check whether a path is a valid working
   directory.
@@ -213,6 +273,9 @@ fresh reset event.
 - `GET /api/models` — available models.
 - `GET /api/tools` — registered tool definitions.
 - `GET/POST/PUT/DELETE /api/custom-models[/<id>]` — custom model CRUD.
+  OpenAI-compatible models accept `reasoning_replay` as `auto`,
+  `reasoning_content`, or `none`; responses include
+  `resolved_reasoning_replay` when catalog resolution is known.
 - `POST /api/custom-models-test` — test a custom model config.
 - `GET/POST/PUT/DELETE /api/notification-channels[/<id>]`,
   `GET /api/notification-channel-types` — notification CRUD.

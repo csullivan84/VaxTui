@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -25,7 +24,7 @@ func makeForkTestMessage(text string) llm.Message {
 // returning the conversation ID and the recorded messages in order.
 func seedForkConversation(t *testing.T, database *db.DB) (string, []generated.Message) {
 	t.Helper()
-	ctx := context.Background()
+	ctx := t.Context()
 	model := "predictable"
 	conv, err := database.CreateConversation(ctx, nil, true, nil, &model, db.ConversationOptions{})
 	if err != nil {
@@ -55,8 +54,12 @@ func seedForkConversation(t *testing.T, database *db.DB) (string, []generated.Me
 func TestForkConversationCopiesUpToCutoff(t *testing.T) {
 	t.Parallel()
 	_, database, _ := newTestServer(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	sourceID, msgs := seedForkConversation(t, database)
+	source, err := database.UpdateConversationTags(ctx, sourceID, []string{"bug", "cheap"})
+	if err != nil {
+		t.Fatalf("tag source: %v", err)
+	}
 
 	forked, err := database.ForkConversation(ctx, sourceID, msgs[1].SequenceID)
 	if err != nil {
@@ -67,6 +70,9 @@ func TestForkConversationCopiesUpToCutoff(t *testing.T) {
 	}
 	if forked.ParentConversationID != nil {
 		t.Fatal("forked conversation should be top-level (no parent)")
+	}
+	if forked.Tags != source.Tags {
+		t.Fatalf("forked tags = %s, want %s", forked.Tags, source.Tags)
 	}
 
 	copied, err := database.ListMessages(ctx, forked.ConversationID)
@@ -109,8 +115,12 @@ func TestForkConversationCopiesUpToCutoff(t *testing.T) {
 func TestHandleForkConversationByMessageID(t *testing.T) {
 	t.Parallel()
 	server, database, _ := newTestServer(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	sourceID, msgs := seedForkConversation(t, database)
+	source, err := database.UpdateConversationTags(ctx, sourceID, []string{"bug", "cheap"})
+	if err != nil {
+		t.Fatalf("tag source: %v", err)
+	}
 
 	body, _ := json.Marshal(ForkRequest{MessageID: msgs[1].MessageID})
 	req := httptest.NewRequest("POST", "/api/conversation/"+sourceID+"/fork", strings.NewReader(string(body)))
@@ -131,6 +141,9 @@ func TestHandleForkConversationByMessageID(t *testing.T) {
 	if forked.Slug == nil || *forked.Slug == "" {
 		t.Fatal("forked conversation should have a slug")
 	}
+	if forked.Tags != source.Tags {
+		t.Fatalf("forked tags = %s, want %s", forked.Tags, source.Tags)
+	}
 	copied, err := database.ListMessages(ctx, forked.ConversationID)
 	if err != nil {
 		t.Fatalf("list forked messages: %v", err)
@@ -145,7 +158,7 @@ func TestHandleForkConversationByMessageID(t *testing.T) {
 func TestHandleForkConversationDefaultsToWholeConversation(t *testing.T) {
 	t.Parallel()
 	server, database, _ := newTestServer(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	sourceID, _ := seedForkConversation(t, database)
 
 	req := httptest.NewRequest("POST", "/api/conversation/"+sourceID+"/fork", strings.NewReader("{}"))
@@ -175,7 +188,7 @@ func TestHandleForkConversationDefaultsToWholeConversation(t *testing.T) {
 func TestForkConversationOnlyCopiesCurrentGeneration(t *testing.T) {
 	t.Parallel()
 	_, database, _ := newTestServer(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	sourceID, _ := seedForkConversation(t, database)
 
 	// Bump the source to generation 2 and add a message there.
@@ -229,7 +242,7 @@ func TestForkConversationOnlyCopiesCurrentGeneration(t *testing.T) {
 func TestForkConversationAtOlderGenerationMessage(t *testing.T) {
 	t.Parallel()
 	_, database, _ := newTestServer(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	sourceID, gen1Msgs := seedForkConversation(t, database)
 
 	// Bump the source to generation 2 and add a message there.

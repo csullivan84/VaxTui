@@ -274,10 +274,20 @@ type BtwParentPointer struct {
 	SequenceID int64 `json:"sequence_id"`
 }
 
+type CommitTourRequest struct {
+	Repository  string    `json:"repository"`
+	Worktree    string    `json:"worktree"`
+	Commit      string    `json:"commit"`
+	State       string    `json:"state"`
+	Error       string    `json:"error,omitempty"`
+	RequestedAt time.Time `json:"requested_at"`
+}
+
 type ConversationOptions struct {
 	// Kind identifies specialized child conversations. Empty is a normal chat.
-	Kind          string            `json:"kind,omitempty"`
-	ParentPointer *BtwParentPointer `json:"parent_pointer,omitempty"`
+	Kind          string             `json:"kind,omitempty"`
+	ParentPointer *BtwParentPointer  `json:"parent_pointer,omitempty"`
+	CommitTour    *CommitTourRequest `json:"commit_tour,omitempty"`
 	// ToolOverrides maps tool name to "on" or "off". Tools not listed use their default.
 	ToolOverrides map[string]string `json:"tool_overrides,omitempty"`
 	// DisableAllTools disables every tool by default; ToolOverrides with "on" re-enable individual tools.
@@ -529,6 +539,30 @@ func (db *DB) PromoteDraft(ctx context.Context, conversationID string, cwd, mode
 	return &conv, nil
 }
 
+// QueuedMessageKind identifies specialized queued work. Empty is an ordinary
+// user message.
+type QueuedMessageKind string
+
+const QueuedMessageKindTranscription QueuedMessageKind = "transcription"
+
+// QueuedMessageState is the durable lifecycle of specialized queued work.
+type QueuedMessageState string
+
+const (
+	QueuedMessageStateWorking QueuedMessageState = "working"
+	QueuedMessageStateReady   QueuedMessageState = "ready"
+	QueuedMessageStateFailed  QueuedMessageState = "failed"
+)
+
+// QueuedTranscription contains the durable inputs and audit for a
+// transcription queue item.
+type QueuedTranscription struct {
+	MediaPath        string          `json:"media_path"`
+	ContactSheetPath string          `json:"contact_sheet_path,omitempty"`
+	Context          string          `json:"context,omitempty"`
+	Audit            json.RawMessage `json:"audit,omitempty"`
+}
+
 // QueuedMessage is one user message held in a conversation's queued_messages
 // JSON array while the agent is busy or distilling. The array is the single
 // source of truth for queued user input (there is no `messages` row until the
@@ -539,8 +573,9 @@ type QueuedMessage struct {
 	// and so drain can remove exactly the item it consumed.
 	ID string `json:"id"`
 	// Llm is the raw JSON of the llm.Message to feed to the loop on drain.
+	// Working and failed specialized items omit it until their result is ready.
 	// Stored as RawMessage so package db stays decoupled from package llm.
-	Llm json.RawMessage `json:"llm"`
+	Llm json.RawMessage `json:"llm,omitempty"`
 	// CreatedAt is when the message was queued (RFC3339).
 	CreatedAt time.Time `json:"created_at"`
 	// Model is the model id chosen at queue time, used to start/continue the
@@ -552,6 +587,16 @@ type QueuedMessage struct {
 	// context with no request/header available. Stamped onto the messages row
 	// when the message drains. Empty when the request carried no header.
 	UserEmail string `json:"user_email,omitempty"`
+	// UserData is message provenance and other presentation metadata captured at
+	// queue time. It is copied to messages.user_data when the item drains.
+	UserData json.RawMessage `json:"user_data,omitempty"`
+	// ID, CreatedAt, Model, UserEmail, and UserData are shared queue metadata.
+	// Kind, State, Transcription, Error, and the optional ready Llm payload form
+	// the specialized-work variant.
+	Kind          QueuedMessageKind    `json:"kind,omitempty"`
+	State         QueuedMessageState   `json:"state,omitempty"`
+	Transcription *QueuedTranscription `json:"transcription,omitempty"`
+	Error         string               `json:"error,omitempty"`
 }
 
 // ParseQueuedMessagesStrict parses the queued_messages JSON array, returning an
@@ -594,11 +639,11 @@ func MarshalQueuedMessages(msgs []QueuedMessage) (string, error) {
 	return string(b), nil
 }
 
-// AppendQueuedMessage atomically appends qm to a conversation's
-// queued_messages array and bumps updated_at (which re-sorts the conversation
-// and triggers a list-patch recompute). Returns the conversation row after the
-// update so callers can broadcast it.
-func (db *DB) AppendQueuedMessage(ctx context.Context, conversationID string, qm QueuedMessage) (*generated.Conversation, error) {
+// mutateQueuedMessages runs mutate against the parsed queued_messages array
+// inside one transaction, persists the result (bumping updated_at, which
+// re-sorts the conversation and triggers a list-patch recompute), and returns
+// the conversation row after the update so callers can broadcast it.
+func (db *DB) mutateQueuedMessages(ctx context.Context, conversationID string, mutate func(msgs []QueuedMessage) ([]QueuedMessage, error)) (*generated.Conversation, error) {
 	var conv generated.Conversation
 	err := db.pool.Tx(ctx, func(ctx context.Context, tx *Tx) error {
 		q := generated.New(tx.Conn())
@@ -606,11 +651,13 @@ func (db *DB) AppendQueuedMessage(ctx context.Context, conversationID string, qm
 		if err != nil {
 			return err
 		}
-		existing, err := ParseQueuedMessagesStrict(raw)
+		msgs, err := ParseQueuedMessagesStrict(raw)
 		if err != nil {
 			return err
 		}
-		msgs := append(existing, qm)
+		if msgs, err = mutate(msgs); err != nil {
+			return err
+		}
 		jsonStr, err := MarshalQueuedMessages(msgs)
 		if err != nil {
 			return err
@@ -627,46 +674,124 @@ func (db *DB) AppendQueuedMessage(ctx context.Context, conversationID string, qm
 	return &conv, err
 }
 
+// AppendQueuedMessage atomically appends qm to a conversation's
+// queued_messages array.
+func (db *DB) AppendQueuedMessage(ctx context.Context, conversationID string, qm QueuedMessage) (*generated.Conversation, error) {
+	return db.mutateQueuedMessages(ctx, conversationID, func(msgs []QueuedMessage) ([]QueuedMessage, error) {
+		return append(msgs, qm), nil
+	})
+}
+
+var (
+	ErrQueuedMessageNotFound     = errors.New("queued message not found")
+	ErrQueuedMessageNotRetryable = errors.New("queued message is not a failed transcription")
+)
+
+func findQueuedMessage(msgs []QueuedMessage, queuedID string) (*QueuedMessage, error) {
+	for i := range msgs {
+		if msgs[i].ID == queuedID {
+			return &msgs[i], nil
+		}
+	}
+	return nil, ErrQueuedMessageNotFound
+}
+
+// GetQueuedMessages strictly reads the durable queued-message array.
+func (db *DB) GetQueuedMessages(ctx context.Context, conversationID string) ([]QueuedMessage, error) {
+	var msgs []QueuedMessage
+	err := db.pool.Rx(ctx, func(ctx context.Context, rx *Rx) error {
+		raw, err := generated.New(rx.Conn()).GetConversationQueuedMessages(ctx, conversationID)
+		if err != nil {
+			return err
+		}
+		msgs, err = ParseQueuedMessagesStrict(raw)
+		return err
+	})
+	return msgs, err
+}
+
+// GetQueuedMessage returns one durable queue item by id.
+func (db *DB) GetQueuedMessage(ctx context.Context, conversationID, queuedID string) (QueuedMessage, error) {
+	msgs, err := db.GetQueuedMessages(ctx, conversationID)
+	if err != nil {
+		return QueuedMessage{}, err
+	}
+	qm, err := findQueuedMessage(msgs, queuedID)
+	if err != nil {
+		return QueuedMessage{}, err
+	}
+	return *qm, nil
+}
+
+// UpdateQueuedMessage atomically mutates one queue item and returns the
+// updated conversation and item. The callback runs inside the transaction and
+// must not perform database work.
+func (db *DB) UpdateQueuedMessage(ctx context.Context, conversationID, queuedID string, update func(*QueuedMessage) error) (*generated.Conversation, QueuedMessage, error) {
+	var updated QueuedMessage
+	conv, err := db.mutateQueuedMessages(ctx, conversationID, func(msgs []QueuedMessage) ([]QueuedMessage, error) {
+		qm, err := findQueuedMessage(msgs, queuedID)
+		if err != nil {
+			return nil, err
+		}
+		if err := update(qm); err != nil {
+			return nil, err
+		}
+		updated = *qm
+		return msgs, nil
+	})
+	return conv, updated, err
+}
+
+// CreateQueuedTranscription atomically appends a working transcription item
+// to the parent queue.
+func (db *DB) CreateQueuedTranscription(ctx context.Context, parentID string, qm QueuedMessage) (*generated.Conversation, QueuedMessage, error) {
+	if qm.Kind != QueuedMessageKindTranscription || qm.State != QueuedMessageStateWorking || qm.Transcription == nil {
+		return nil, QueuedMessage{}, fmt.Errorf("invalid queued transcription")
+	}
+	parent, err := db.mutateQueuedMessages(ctx, parentID, func(msgs []QueuedMessage) ([]QueuedMessage, error) {
+		return append(msgs, qm), nil
+	})
+	return parent, qm, err
+}
+
+// RetryQueuedTranscription atomically moves a failed item back to working.
+// Concurrent retries serialize on state.
+func (db *DB) RetryQueuedTranscription(ctx context.Context, parentID, queuedID string) (*generated.Conversation, QueuedMessage, error) {
+	var updated QueuedMessage
+	parent, err := db.mutateQueuedMessages(ctx, parentID, func(msgs []QueuedMessage) ([]QueuedMessage, error) {
+		qm, err := findQueuedMessage(msgs, queuedID)
+		if err != nil {
+			return nil, err
+		}
+		if qm.Kind != QueuedMessageKindTranscription || qm.State != QueuedMessageStateFailed || qm.Transcription == nil {
+			return nil, ErrQueuedMessageNotRetryable
+		}
+		qm.State = QueuedMessageStateWorking
+		qm.Error = ""
+		qm.Transcription.ContactSheetPath = ""
+		qm.Transcription.Audit = nil
+		updated = *qm
+		return msgs, nil
+	})
+	return parent, updated, err
+}
+
 // RemoveQueuedMessages atomically removes the queued messages whose IDs are in
-// the given set and bumps updated_at. Returns the conversation row after the
-// update. IDs not present are ignored. Passing no ids is a no-op append-bump
-// avoided by the caller.
+// the given set. IDs not present are ignored.
 func (db *DB) RemoveQueuedMessages(ctx context.Context, conversationID string, ids ...string) (*generated.Conversation, error) {
 	remove := make(map[string]bool, len(ids))
 	for _, id := range ids {
 		remove[id] = true
 	}
-	var conv generated.Conversation
-	err := db.pool.Tx(ctx, func(ctx context.Context, tx *Tx) error {
-		q := generated.New(tx.Conn())
-		raw, err := q.GetConversationQueuedMessages(ctx, conversationID)
-		if err != nil {
-			return err
-		}
-		msgs, err := ParseQueuedMessagesStrict(raw)
-		if err != nil {
-			return err
-		}
+	return db.mutateQueuedMessages(ctx, conversationID, func(msgs []QueuedMessage) ([]QueuedMessage, error) {
 		kept := msgs[:0]
 		for _, m := range msgs {
 			if !remove[m.ID] {
 				kept = append(kept, m)
 			}
 		}
-		jsonStr, err := MarshalQueuedMessages(kept)
-		if err != nil {
-			return err
-		}
-		if err := q.UpdateConversationQueuedMessages(ctx, generated.UpdateConversationQueuedMessagesParams{
-			QueuedMessages: jsonStr,
-			ConversationID: conversationID,
-		}); err != nil {
-			return err
-		}
-		conv, err = q.GetConversation(ctx, conversationID)
-		return err
+		return kept, nil
 	})
-	return &conv, err
 }
 
 // ClearQueuedMessages resets a conversation's queued_messages array to '[]'
@@ -912,18 +1037,16 @@ func (db *DB) SearchConversations(ctx context.Context, query string, limit, offs
 	return items, err
 }
 
-// SearchConversationsWithMessages searches for conversations containing the query in slug or message content
+// SearchConversationsWithMessages searches slug or message content, with slug matches first.
 func (db *DB) SearchConversationsWithMessages(ctx context.Context, query string, limit, offset int64) ([]ConversationListItem, error) {
 	queryPtr := &query
 	var items []ConversationListItem
 	err := db.pool.Rx(ctx, func(ctx context.Context, rx *Rx) error {
 		q := generated.New(rx.Conn())
 		rows, err := q.SearchConversationsWithMessages(ctx, generated.SearchConversationsWithMessagesParams{
-			Column1: queryPtr,
-			Column2: queryPtr,
-			Column3: queryPtr,
-			Limit:   limit,
-			Offset:  offset,
+			Query:  queryPtr,
+			Limit:  limit,
+			Offset: offset,
 		})
 		if err != nil {
 			return err
@@ -962,8 +1085,9 @@ const (
 
 // SearchConversationsFTS performs a full-text search over user/agent message
 // content (via the messages_fts FTS5 virtual table) and slug substring across
-// ALL top-level conversations (active and archived). Active conversations are
-// returned first, then archived; both buckets are ordered by updated_at DESC.
+// ALL top-level conversations (active and archived). Slug matches come first;
+// within each match tier, active conversations precede archived conversations,
+// then results are ordered by updated_at DESC.
 // Each FTS hit comes with a Snippet drawn from the best-ranking message;
 // slug-only matches have an empty snippet.
 // The query is the raw user input; this function handles tokenisation and
@@ -1023,9 +1147,6 @@ func (db *DB) SearchConversationsFTS(ctx context.Context, query string, limit, o
 		}
 		snippets := make(map[string]string, len(convIDs))
 		for _, r := range snipRows {
-			if _, ok := snippets[r.ConversationID]; ok {
-				continue // first row per conv = best rank
-			}
 			// The FTS source column is built from raw message JSON, so
 			// snippets carry citation markup. Strip before centering: the
 			// mark sentinels are outside the marker range, and stripping
@@ -1084,6 +1205,35 @@ func (db *DB) UpdateConversationSlug(ctx context.Context, conversationID, slug s
 	return &conversation, err
 }
 
+// SetConversationSlugIfUnset installs slug only while the conversation remains
+// unnamed. The read and write share one write transaction so a manual rename or
+// hook assignment that wins while async slug generation is in flight cannot be
+// overwritten afterward.
+func (db *DB) SetConversationSlugIfUnset(ctx context.Context, conversationID, slug string) (*generated.Conversation, bool, error) {
+	var conversation generated.Conversation
+	updated := false
+	err := db.pool.Tx(ctx, func(ctx context.Context, tx *Tx) error {
+		q := generated.New(tx.Conn())
+		current, err := q.GetConversation(ctx, conversationID)
+		if err != nil {
+			return err
+		}
+		if current.Slug != nil && *current.Slug != "" {
+			conversation = current
+			return nil
+		}
+		conversation, err = q.UpdateConversationSlug(ctx, generated.UpdateConversationSlugParams{
+			Slug:           &slug,
+			ConversationID: conversationID,
+		})
+		if err == nil {
+			updated = true
+		}
+		return err
+	})
+	return &conversation, updated, err
+}
+
 // UpdateConversationTags replaces a conversation's tag list. Tags are stored
 // as a JSON array of strings; callers are responsible for normalizing/
 // deduplicating entries.
@@ -1139,8 +1289,8 @@ func (db *DB) SetConversationAgentWorking(ctx context.Context, conversationID st
 }
 
 // ResetAllAgentWorking clears agent_working = TRUE for every conversation.
-// Called once during server startup to recover from a previous process that
-// exited mid-loop and left stale TRUE values in the table.
+// Ordinary startup calls it in the same transaction that records durable
+// interruption state for top-level conversations left mid-turn.
 func (db *DB) ResetAllAgentWorking(ctx context.Context) error {
 	return db.pool.Tx(ctx, func(ctx context.Context, tx *Tx) error {
 		q := generated.New(tx.Conn())
@@ -1148,44 +1298,259 @@ func (db *DB) ResetAllAgentWorking(ctx context.Context) error {
 	})
 }
 
-// ResumeAfterUpgradeSettingKey marks that the current process is exiting to
+// ClaimInterruptedTurn atomically changes an interrupted, idle, top-level
+// conversation into a working conversation. A false result means another
+// request already claimed it or it is no longer eligible.
+func (db *DB) ClaimInterruptedTurn(ctx context.Context, conversationID string) (bool, error) {
+	var claimed bool
+	err := db.pool.Tx(ctx, func(ctx context.Context, tx *Tx) error {
+		rows, err := generated.New(tx.Conn()).ClaimInterruptedTurn(ctx, conversationID)
+		claimed = rows == 1
+		return err
+	})
+	return claimed, err
+}
+
+// UpgradeResume is a one-process claim token for a turn that was working when
+// an upgrade restart began. Its generation and latest user-message sequence
+// change whenever newer durable user work supersedes that turn.
+type UpgradeResume struct {
+	ConversationID    string
+	CurrentGeneration int64
+	MaxUserSequenceID int64
+}
+
+// ClaimUpgradeInterruptedTurn atomically validates that a startup resume token
+// still names the current stale working turn. A fresh turn changes its durable
+// version before a late worker can claim it.
+func (db *DB) ClaimUpgradeInterruptedTurn(ctx context.Context, resume UpgradeResume) (bool, error) {
+	var claimed bool
+	err := db.pool.Tx(ctx, func(ctx context.Context, tx *Tx) error {
+		rows, err := generated.New(tx.Conn()).ClaimUpgradeInterruptedTurn(ctx, generated.ClaimUpgradeInterruptedTurnParams{
+			ConversationID:    resume.ConversationID,
+			CurrentGeneration: resume.CurrentGeneration,
+			MaxUserSequenceID: resume.MaxUserSequenceID,
+		})
+		claimed = rows == 1
+		return err
+	})
+	return claimed, err
+}
+
+// FinishUpgradeInterruptedTurn clears the hidden claim immediately before the
+// automatic retry. A false result means the claimed state changed unexpectedly.
+func (db *DB) FinishUpgradeInterruptedTurn(ctx context.Context, conversationID string) (bool, error) {
+	var finished bool
+	err := db.pool.Tx(ctx, func(ctx context.Context, tx *Tx) error {
+		rows, err := generated.New(tx.Conn()).FinishUpgradeInterruptedTurn(ctx, conversationID)
+		finished = rows == 1
+		return err
+	})
+	return finished, err
+}
+
+// MarkUpgradeResumeInterrupted converts a failed automatic resume into the
+// ordinary manual-recovery state only if its startup token still names the same
+// durable turn. A false result means newer work or cancellation won the race.
+func (db *DB) MarkUpgradeResumeInterrupted(ctx context.Context, resume UpgradeResume) (bool, error) {
+	var marked bool
+	err := db.pool.Tx(ctx, func(ctx context.Context, tx *Tx) error {
+		rows, err := generated.New(tx.Conn()).MarkUpgradeResumeInterrupted(ctx, generated.MarkUpgradeResumeInterruptedParams{
+			ConversationID:    resume.ConversationID,
+			CurrentGeneration: resume.CurrentGeneration,
+			MaxUserSequenceID: resume.MaxUserSequenceID,
+		})
+		marked = rows == 1
+		return err
+	})
+	return marked, err
+}
+
+// ClearConversationRuntimeState cancels work that has no live loop, including
+// an automatic upgrade resume that has not claimed its token yet.
+func (db *DB) ClearConversationRuntimeState(ctx context.Context, conversationID string) error {
+	return db.pool.Tx(ctx, func(ctx context.Context, tx *Tx) error {
+		q := generated.New(tx.Conn())
+		if err := q.SetConversationAgentWorking(ctx, generated.SetConversationAgentWorkingParams{
+			AgentWorking:   false,
+			ConversationID: conversationID,
+		}); err != nil {
+			return err
+		}
+		return q.SetConversationTurnInterrupted(ctx, generated.SetConversationTurnInterruptedParams{
+			TurnInterrupted: false,
+			ConversationID:  conversationID,
+		})
+	})
+}
+
 // install an upgraded or customized binary and that the next process should
 // resume the conversations that were mid-turn instead of clearing their
 // agent_working flags. Written by restart paths that promise continuation,
 // consumed exactly once by ConsumeResumeAfterUpgrade on the next startup.
 const ResumeAfterUpgradeSettingKey = "resume_after_upgrade_restart"
 
+func interruptionMetadataFlag(value any) bool {
+	return value == true || value == "true"
+}
+
+func isInterruptionBookkeeping(message generated.Message) bool {
+	if message.UserData == nil || *message.UserData == "" {
+		return false
+	}
+	var data map[string]any
+	if err := json.Unmarshal([]byte(*message.UserData), &data); err != nil {
+		return false
+	}
+	return data["distill_status"] != nil || interruptionMetadataFlag(data["distilled"]) || interruptionMetadataFlag(data["cwd_change"])
+}
+
+// LatestTurnEndedWithAgent reports whether the current generation's latest
+// real turn message is a completed agent response. UI-only and synthetic
+// bookkeeping rows are ignored. An EOT error deliberately returns false:
+// Retry adds no new message, so working=true may mean that retry was interrupted.
+func LatestTurnEndedWithAgent(messages []generated.Message, currentGeneration int64) bool {
+	for i := len(messages) - 1; i >= 0; i-- {
+		message := messages[i]
+		if message.Generation != currentGeneration || isInterruptionBookkeeping(message) {
+			continue
+		}
+		switch MessageType(message.Type) {
+		case MessageTypeAgent:
+			if message.LlmData == nil {
+				return false
+			}
+			var data struct {
+				EndOfTurn bool `json:"EndOfTurn"`
+			}
+			return json.Unmarshal([]byte(*message.LlmData), &data) == nil && data.EndOfTurn
+		case MessageTypeUser, MessageTypeTool, MessageTypeError:
+			// An EOT error may be followed by Retry(), which deliberately adds
+			// no new message. working=true + terminal error is therefore valid
+			// evidence of an interrupted retry and must still set the bit.
+			return false
+		}
+	}
+	return false
+}
+
 // ConsumeResumeAfterUpgrade decides, in a single transaction, what startup does
 // with the agent_working flags left behind by the previous process:
 //
-//   - No ResumeAfterUpgradeSettingKey row: an ordinary restart or a crash.
-//     Clear all stale agent_working flags (ResetAllAgentWorking) and return nil.
+//   - No ResumeAfterUpgradeSettingKey row: an ordinary restart or a crash. Set
+//     turn_interrupted on every eligible top-level conversation still marked
+//     working, then clear all stale agent_working flags.
 //   - Row present: the previous process exited to install an upgrade. Delete the
-//     row and return the conversation IDs still marked agent_working, leaving the
-//     flags alone so the caller can resume those turns.
+//     row, capture a durable version token for each eligible top-level stale
+//     turn while leaving agent_working true, and return those tokens. Ineligible
+//     stale rows are cleared before listeners open.
 //
-// The delete happens in the same transaction as the reset/read, so recovery is
-// one-shot with no crash window: once this commits, a crash mid-resume leaves
-// the next boot on the normal (reset) path.
-func (db *DB) ConsumeResumeAfterUpgrade(ctx context.Context) ([]string, error) {
-	var ids []string
+// The interrupted/working updates share this transaction, so a crash can
+// neither lose the interruption nor expose an interrupted conversation as
+// still working. The upgrade flag delete is likewise one-shot: once it commits,
+// a crash mid-resume leaves the next boot on the ordinary interruption path.
+func (db *DB) ConsumeResumeAfterUpgrade(ctx context.Context) ([]UpgradeResume, error) {
+	var resumes []UpgradeResume
 	err := db.pool.Tx(ctx, func(ctx context.Context, tx *Tx) error {
 		q := generated.New(tx.Conn())
-		deleted, err := q.DeleteSetting(ctx, ResumeAfterUpgradeSettingKey)
+		upgradeResume, err := q.DeleteSetting(ctx, ResumeAfterUpgradeSettingKey)
 		if err != nil {
 			return err
 		}
-		if deleted == 0 {
-			ids = nil
-			return q.ResetAllAgentWorking(ctx)
+		workingIDs, err := q.ListAgentWorkingConversationIDs(ctx)
+		if err != nil {
+			return err
 		}
-		ids, err = q.ListAgentWorkingConversationIDs(ctx)
-		return err
+
+		if upgradeResume != 0 {
+			for _, conversationID := range workingIDs {
+				conversation, err := q.GetConversation(ctx, conversationID)
+				if err != nil {
+					return err
+				}
+				resumable := conversation.ParentConversationID == nil
+				var messages []generated.Message
+				if resumable {
+					messages, err = q.ListMessages(ctx, conversationID)
+					if err != nil {
+						return err
+					}
+					resumable = !LatestTurnEndedWithAgent(messages, conversation.CurrentGeneration)
+				}
+				if resumable {
+					// A prior upgrade process may have exited after claiming this
+					// turn but before Retry. Re-arm the hidden claim before listeners
+					// open so the new worker can claim the same durable version.
+					if err := q.SetConversationTurnInterrupted(ctx, generated.SetConversationTurnInterruptedParams{
+						TurnInterrupted: false,
+						ConversationID:  conversationID,
+					}); err != nil {
+						return err
+					}
+					var maxUserSequenceID int64
+					for _, message := range messages {
+						if message.Type == string(MessageTypeUser) {
+							maxUserSequenceID = message.SequenceID
+						}
+					}
+					resumes = append(resumes, UpgradeResume{
+						ConversationID:    conversationID,
+						CurrentGeneration: conversation.CurrentGeneration,
+						MaxUserSequenceID: maxUserSequenceID,
+					})
+					continue
+				}
+				if err := q.SetConversationAgentWorking(ctx, generated.SetConversationAgentWorkingParams{
+					AgentWorking:   false,
+					ConversationID: conversationID,
+				}); err != nil {
+					return err
+				}
+				if err := q.SetConversationTurnInterrupted(ctx, generated.SetConversationTurnInterruptedParams{
+					TurnInterrupted: false,
+					ConversationID:  conversationID,
+				}); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+
+		for _, conversationID := range workingIDs {
+			conversation, err := q.GetConversation(ctx, conversationID)
+			if err != nil {
+				return err
+			}
+			// Managed children already project an idle unfinished turn as
+			// interrupted in the BTW UI. Their parent owns their lifecycle.
+			if conversation.ParentConversationID != nil {
+				continue
+			}
+			messages, err := q.ListMessages(ctx, conversationID)
+			if err != nil {
+				return err
+			}
+			// Current terminal agent writes clear agent_working atomically, so
+			// this can only be legacy stale state. Do not turn a completed turn
+			// into a resumable interruption. EOT errors are intentionally not
+			// skipped: Retry() adds no row, so they can precede a real in-flight
+			// retry left behind by the stopped process.
+			if LatestTurnEndedWithAgent(messages, conversation.CurrentGeneration) {
+				continue
+			}
+			if err := q.SetConversationTurnInterrupted(ctx, generated.SetConversationTurnInterruptedParams{
+				TurnInterrupted: true,
+				ConversationID:  conversationID,
+			}); err != nil {
+				return err
+			}
+		}
+		return q.ResetAllAgentWorking(ctx)
 	})
 	if err != nil {
 		return nil, err
 	}
-	return ids, nil
+	return resumes, nil
 }
 
 // UpdateConversationCwd updates the working directory for a conversation
@@ -1436,10 +1801,16 @@ func insertMessageTx(ctx context.Context, q *generated.Queries, params CreateMes
 			return generated.Message{}, err
 		}
 		kept := msgs[:0]
+		found := false
 		for _, m := range msgs {
-			if m.ID != params.RemoveQueuedID {
-				kept = append(kept, m)
+			if m.ID == params.RemoveQueuedID {
+				found = true
+				continue
 			}
+			kept = append(kept, m)
+		}
+		if !found {
+			return generated.Message{}, ErrQueuedMessageNotFound
 		}
 		jsonStr, err := MarshalQueuedMessages(kept)
 		if err != nil {
@@ -1781,6 +2152,18 @@ func (db *DB) QueriesTx(ctx context.Context, fn func(*generated.Queries) error) 
 	})
 }
 
+// ListConversationsWithQueuedTranscriptions returns every conversation, archived
+// or not, whose queued_messages array holds a transcription item.
+func (db *DB) ListConversationsWithQueuedTranscriptions(ctx context.Context) ([]generated.Conversation, error) {
+	var conversations []generated.Conversation
+	err := db.pool.Rx(ctx, func(ctx context.Context, rx *Rx) error {
+		var err error
+		conversations, err = generated.New(rx.Conn()).ListConversationsWithQueuedTranscriptions(ctx)
+		return err
+	})
+	return conversations, err
+}
+
 // ListArchivedConversations retrieves archived conversations with pagination
 func (db *DB) ListArchivedConversations(ctx context.Context, limit, offset int64) ([]generated.Conversation, error) {
 	var conversations []generated.Conversation
@@ -1895,6 +2278,13 @@ func (db *DB) ForkConversation(ctx context.Context, sourceConversationID string,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to create forked conversation: %w", err)
+		}
+		conversation, err = q.UpdateConversationTags(ctx, generated.UpdateConversationTagsParams{
+			Tags:           source.Tags,
+			ConversationID: conversationID,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to copy conversation tags: %w", err)
 		}
 		// Copy the generation active at the fork point, renumbered to
 		// generation 1 in the fork. The new conversation keeps CreateConversation's
@@ -2160,6 +2550,9 @@ func (db *DB) GetModel(ctx context.Context, modelID string) (*generated.Model, e
 
 // CreateModel creates a new model
 func (db *DB) CreateModel(ctx context.Context, params generated.CreateModelParams) (*generated.Model, error) {
+	if params.ReasoningReplay == "" {
+		params.ReasoningReplay = "auto"
+	}
 	var model generated.Model
 	err := db.pool.Tx(ctx, func(ctx context.Context, tx *Tx) error {
 		q := generated.New(tx.Conn())
@@ -2175,6 +2568,9 @@ func (db *DB) CreateModel(ctx context.Context, params generated.CreateModelParam
 
 // UpdateModel updates a model
 func (db *DB) UpdateModel(ctx context.Context, params generated.UpdateModelParams) (*generated.Model, error) {
+	if params.ReasoningReplay == "" {
+		params.ReasoningReplay = "auto"
+	}
 	var model generated.Model
 	err := db.pool.Tx(ctx, func(ctx context.Context, tx *Tx) error {
 		q := generated.New(tx.Conn())
@@ -2358,14 +2754,6 @@ func (db *DB) UpsertCacheSession(ctx context.Context, tokenHash, userID string) 
 			TokenHash: tokenHash,
 			UserID:    userID,
 		})
-	})
-}
-
-// TouchCacheSession bumps last_seen_at. No error if the row is missing.
-func (db *DB) TouchCacheSession(ctx context.Context, tokenHash string) error {
-	return db.pool.Tx(ctx, func(ctx context.Context, tx *Tx) error {
-		q := generated.New(tx.Conn())
-		return q.TouchCacheSession(ctx, tokenHash)
 	})
 }
 

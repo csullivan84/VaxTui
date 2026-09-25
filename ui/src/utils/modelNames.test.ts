@@ -16,6 +16,7 @@ function eq(input: string, want: string) {
 }
 
 // Anthropic
+eq("claude-opus-5.5", "Claude Opus 5.5");
 eq("claude-opus-4.8", "Claude Opus 4.8");
 eq("claude-opus-4-5", "Claude Opus 4.5");
 eq("claude-opus-4-1", "Claude Opus 4.1");
@@ -26,6 +27,8 @@ eq("claude-fable-5", "Claude Fable 5");
 
 // OpenAI gpt-*
 eq("gpt-6-astra", "GPT-6 Astra");
+eq("gpt-6-sol", "GPT-6 Sol");
+eq("gpt-6-luna", "GPT-6 Luna");
 eq("gpt-5.6-sol", "GPT-5.6 Sol");
 eq("gpt-5.6-terra", "GPT-5.6 Terra");
 eq("gpt-5.4-mini", "GPT-5.4 Mini");
@@ -48,8 +51,13 @@ eq("codex-mini-latest", "codex-mini-latest");
 // Other families
 eq("glm-5.2-fireworks", "GLM 5.2");
 eq("glm-5p2", "GLM 5.2");
+eq("glm-5.3-fireworks", "GLM 5.3");
+eq("glm-5.3-flash-fireworks", "GLM 5.3 Flash");
 eq("deepseek-v4-pro-fireworks", "DeepSeek V4 Pro");
 eq("deepseek-v4-flash-0731-fireworks", "DeepSeek V4 Flash 0731");
+// Dot-versioned family token: "v4.1" must survive as a version, not veto.
+eq("deepseek-v4.1-flash-fireworks", "DeepSeek V4.1 Flash");
+eq("deepseek-v4p1-flash", "DeepSeek V4.1 Flash");
 eq("grok-4.5", "Grok 4.5");
 eq("kimi-k3-fireworks", "Kimi K3");
 eq("kimi-k2.7-code-fireworks", "Kimi K2.7 Code");

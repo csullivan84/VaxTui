@@ -1,7 +1,6 @@
 package claudetool
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"sort"
@@ -41,6 +40,10 @@ func TestIsToolEnabled(t *testing.T) {
 		{"override off", "bash", map[string]string{"bash": "off"}, false, false},
 		{"override on trumps disable-all", "bash", map[string]string{"bash": "on"}, true, true},
 		{"disable all turns default on to off", "bash", nil, true, false},
+		{"apply_patch uses patch default", "apply_patch", nil, false, true},
+		{"apply_patch uses patch off", "apply_patch", map[string]string{"patch": "off"}, false, false},
+		{"apply_patch uses patch on", "apply_patch", map[string]string{"patch": "on"}, true, true},
+		{"apply_patch follows disable all", "apply_patch", nil, true, false},
 		{"unknown tool permissive", "new_experimental_tool", nil, false, true},
 		{"unknown tool under disable-all is off", "new_experimental_tool", nil, true, false},
 	}
@@ -58,6 +61,7 @@ func TestFilterTools(t *testing.T) {
 	tools := []*llm.Tool{
 		{Name: "bash"},
 		{Name: "patch"},
+		{Name: "apply_patch"},
 		{Name: "browser"},
 	}
 	filtered := FilterTools(tools, map[string]string{"patch": "off"}, false)
@@ -78,7 +82,7 @@ func TestFilterTools(t *testing.T) {
 }
 
 func TestNewToolSetRespectsOverrides(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ts := NewToolSet(ctx, ToolSetConfig{
 		ToolOverrides: map[string]string{"bash": "off"},
 	})
@@ -91,7 +95,7 @@ func TestNewToolSetRespectsOverrides(t *testing.T) {
 }
 
 func TestNewToolSetDisableAllTools(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	ts := NewToolSet(ctx, ToolSetConfig{
 		DisableAllTools: true,
 		ToolOverrides:   map[string]string{"bash": "on"},

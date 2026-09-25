@@ -1,7 +1,6 @@
 package modelsources
 
 import (
-	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -68,6 +67,9 @@ func TestEnvSourceLabels(t *testing.T) {
 		{"gpt-5.5", "$OPENAI_API_KEY"},
 		{"gemini-3.8-flash", "$GEMINI_API_KEY"},
 		{"deepseek-v4-flash-0731-fireworks", "$FIREWORKS_API_KEY"},
+		// Also pins that the embedded models.dev snapshot knows this model: the
+		// loop below requires a non-empty release date, which the UI sorts by.
+		{"deepseek-v4.1-flash-fireworks", "$FIREWORKS_API_KEY"},
 	} {
 		b := findBuilt(bs, tt.id)
 		if b == nil {
@@ -155,11 +157,69 @@ func TestGatewaySourceLabels(t *testing.T) {
 	}
 }
 
+func TestAnthropicThinkingBindingSources(t *testing.T) {
+	gateway := Build(models.All(), []Source{Gateway("https://gw.example.com", "", "", "")}, &http.Client{}, nil)
+	gatewayModel := findBuilt(gateway, "claude-opus-4.6")
+	if gatewayModel == nil {
+		t.Fatal("gateway did not build claude-opus-4.6")
+	}
+	gatewayService, ok := gatewayModel.Service.(*ant.Service)
+	if !ok || !gatewayService.EnableThinkingBinding {
+		t.Fatalf("gateway Anthropic service = %#v, want explicit binding support", gatewayService)
+	}
+
+	env := Build(models.All(), []Source{Env("key", "", "", "")}, &http.Client{}, nil)
+	envModel := findBuilt(env, "claude-opus-4.6")
+	if envModel == nil {
+		t.Fatal("env source did not build claude-opus-4.6")
+	}
+	envService, ok := envModel.Service.(*ant.Service)
+	if !ok || !envService.EnableThinkingBinding {
+		t.Fatalf("native Anthropic service = %#v, want binding support", envService)
+	}
+
+	integration := &LLMIntegrationConfig{
+		Name: "llm", Host: "llm.int.exe.xyz", URL: "https://llm.int.exe.xyz",
+		Models: []IntegrationModel{{
+			ID: "anthropic/claude-opus-4-6", Provider: "anthropic",
+			NativeID: "claude-opus-4-6", APIs: []string{"anthropic_messages"},
+		}},
+	}
+	built := Build(models.All(), []Source{LLMIntegration(integration, "")}, &http.Client{}, nil)
+	integrationModel := findBuilt(built, "claude-opus-4.6")
+	if integrationModel == nil {
+		t.Fatal("catalog integration did not build claude-opus-4.6")
+	}
+	integrationService, ok := integrationModel.Service.(*ant.Service)
+	if !ok || !integrationService.EnableThinkingBinding {
+		t.Fatalf("catalog integration service = %#v, want explicit binding support", integrationService)
+	}
+
+	proxy := &LLMIntegrationConfig{
+		Name: "proxy", Host: "proxy.int.exe.xyz", URL: "https://proxy.int.exe.xyz",
+		Models: []IntegrationModel{{
+			ID: "fireworks/claude-opus-4-6", Provider: "fireworks",
+			NativeID: "claude-opus-4-6", APIs: []string{"anthropic_messages"},
+		}},
+	}
+	built = Build(models.All(), []Source{LLMIntegration(proxy, "")}, &http.Client{}, nil)
+	proxyModel := findBuilt(built, "claude-opus-4-6")
+	if proxyModel == nil {
+		t.Fatal("third-party integration did not build claude-opus-4-6")
+	}
+	proxyService, ok := proxyModel.Service.(*ant.Service)
+	if !ok || proxyService.EnableThinkingBinding {
+		t.Fatalf("third-party Anthropic-compatible service = %#v, want binding disabled", proxyService)
+	}
+}
+
 func TestLLMIntegrationSourceLabelsAndFiltering(t *testing.T) {
 	integ := &LLMIntegrationConfig{
 		Name: "llm", Host: "llm.int.exe.xyz", URL: "https://llm.int.exe.xyz",
 		Models: []IntegrationModel{
 			{ID: "openai/gpt-6-astra", Provider: "openai", NativeID: "gpt-6-astra", APIs: []string{"openai_chat", "openai_responses"}},
+			{ID: "openai/gpt-6-sol", Provider: "openai", NativeID: "gpt-6-sol", APIs: []string{"openai_chat", "openai_responses"}},
+			{ID: "openai/gpt-6-luna", Provider: "openai", NativeID: "gpt-6-luna", APIs: []string{"openai_chat", "openai_responses"}},
 			{ID: "anthropic/claude-opus-4-8", Provider: "anthropic", NativeID: "claude-opus-4-8", APIs: []string{"anthropic_messages"}},
 			{ID: "anthropic/claude-opus-4-7", Provider: "anthropic", NativeID: "claude-opus-4-7", APIs: []string{"anthropic_messages"}},
 			{ID: "anthropic/claude-opus-4-6", Provider: "anthropic", NativeID: "claude-opus-4-6", APIs: []string{"anthropic_messages"}},
@@ -169,15 +229,20 @@ func TestLLMIntegrationSourceLabelsAndFiltering(t *testing.T) {
 			{ID: "openai/gpt-5.6-luna", Provider: "openai", NativeID: "gpt-5.6-luna", APIs: []string{"openai_chat", "openai_responses"}},
 			{ID: "openai/gpt-5.5", Provider: "openai", NativeID: "gpt-5.5", APIs: []string{"openai_responses"}},
 			{ID: "fireworks/glm-5p2", Provider: "fireworks", NativeID: "accounts/fireworks/models/glm-5p2", APIs: []string{"openai_chat"}},
+			{ID: "fireworks/glm-5p3", Provider: "fireworks", NativeID: "accounts/fireworks/models/glm-5p3", APIs: []string{"openai_chat"}},
+			{ID: "fireworks/glm-5p3-flash", Provider: "fireworks", NativeID: "accounts/fireworks/models/glm-5p3-flash", APIs: []string{"openai_chat"}},
 			{ID: "fireworks/kimi-k2p6", Provider: "fireworks", NativeID: "accounts/fireworks/models/kimi-k2p6", APIs: []string{"openai_chat"}},
 			{ID: "fireworks/deepseek-v4-pro-0813", Provider: "fireworks", NativeID: "accounts/fireworks/models/deepseek-v4-pro-0813", APIs: []string{"openai_chat"}},
 			{ID: "fireworks/deepseek-v4-flash-0731", Provider: "fireworks", NativeID: "accounts/fireworks/models/deepseek-v4-flash-0731", APIs: []string{"openai_chat"}},
+			{ID: "fireworks/deepseek-v4p1-flash", Provider: "fireworks", NativeID: "accounts/fireworks/models/deepseek-v4p1-flash", APIs: []string{"openai_chat"}},
 		},
 	}
 	bs := Build(models.All(), []Source{LLMIntegration(integ, ""), Predictable()}, &http.Client{}, nil)
 	wantLabel := "llm.int.exe.xyz"
 	for _, id := range []string{
 		"gpt-6-astra",
+		"gpt-6-sol",
+		"gpt-6-luna",
 		"claude-opus-4.8",
 		"claude-opus-4.7",
 		"claude-opus-4.6",
@@ -187,9 +252,15 @@ func TestLLMIntegrationSourceLabelsAndFiltering(t *testing.T) {
 		"gpt-5.6-luna",
 		"gpt-5.5",
 		"glm-5.2-fireworks",
+		"glm-5.3-fireworks",
+		"glm-5.3-flash-fireworks",
 		"kimi-k2.6-fireworks",
 		"deepseek-v4-pro-fireworks",
 		"deepseek-v4-flash-0731-fireworks",
+		// The gateway advertises this as fireworks/deepseek-v4p1-flash; it must
+		// resolve to the catalog entry (reasoning, images, Shelley's ID) rather
+		// than being materialized as a bare unknown model.
+		"deepseek-v4.1-flash-fireworks",
 	} {
 		b := findBuilt(bs, id)
 		if b == nil {
@@ -200,18 +271,26 @@ func TestLLMIntegrationSourceLabelsAndFiltering(t *testing.T) {
 			t.Errorf("%s source = %q, want %q", id, b.Source, wantLabel)
 		}
 	}
-	if astra := findBuilt(bs, "gpt-6-astra"); astra == nil {
-		t.Fatal("gpt-6-astra should be built")
-	} else {
-		if astra.APIType != models.APITypeOpenAIResponses {
-			t.Errorf("gpt-6-astra APIType = %q, want %q", astra.APIType, models.APITypeOpenAIResponses)
+	for id, want := range map[string]oai.Model{
+		"gpt-6-astra": oai.GPT6Astra,
+		"gpt-6-sol":   oai.GPT6Sol,
+		"gpt-6-luna":  oai.GPT6Luna,
+	} {
+		built := findBuilt(bs, id)
+		if built == nil {
+			t.Errorf("%s should be built", id)
+			continue
 		}
-		svc, ok := astra.Service.(*oai.ResponsesService)
+		if built.APIType != models.APITypeOpenAIResponses {
+			t.Errorf("%s APIType = %q, want %q", id, built.APIType, models.APITypeOpenAIResponses)
+		}
+		svc, ok := built.Service.(*oai.ResponsesService)
 		if !ok {
-			t.Fatalf("gpt-6-astra service = %T, want *oai.ResponsesService", astra.Service)
+			t.Errorf("%s service = %T, want *oai.ResponsesService", id, built.Service)
+			continue
 		}
-		if svc.Model != oai.GPT6Astra {
-			t.Errorf("gpt-6-astra model = %+v, want built-in Astra model", svc.Model)
+		if svc.Model != want {
+			t.Errorf("%s model = %+v, want built-in model %+v", id, svc.Model, want)
 		}
 	}
 	for _, id := range []string{
@@ -219,9 +298,12 @@ func TestLLMIntegrationSourceLabelsAndFiltering(t *testing.T) {
 		"openai/gpt-5.5",
 		"claude-opus-4-7",
 		"glm-5p2",
+		"glm-5p3",
+		"glm-5p3-flash",
 		"kimi-k2p6",
 		"deepseek-v4-pro",
 		"deepseek-v4-flash-0731",
+		"deepseek-v4p1-flash",
 		"gemini-3.8-flash",
 	} {
 		if b := findBuilt(bs, id); b != nil {
@@ -719,7 +801,7 @@ func TestDiscoverLLMIntegrationsFallsBackWhenReflectionRequestFails(t *testing.T
 				}, nil
 			})}
 
-			result := discoverLLMIntegrations(context.Background(), client, slog.New(slog.NewTextHandler(io.Discard, nil)), exeenv.FromHostname("box.exe.xyz"))
+			result := discoverLLMIntegrations(t.Context(), client, slog.New(slog.NewTextHandler(io.Discard, nil)), exeenv.FromHostname("box.exe.xyz"))
 			if result.Found != tt.wantFound {
 				t.Fatalf("Found = %v, want %v", result.Found, tt.wantFound)
 			}
@@ -758,7 +840,7 @@ func TestDiscoverLLMIntegrationsDoesNotFallbackAfterSuccessfulReflection(t *test
 		}, nil
 	})}
 
-	result := discoverLLMIntegrations(context.Background(), client, slog.New(slog.NewTextHandler(io.Discard, nil)), exeenv.FromHostname("box.exe.xyz"))
+	result := discoverLLMIntegrations(t.Context(), client, slog.New(slog.NewTextHandler(io.Discard, nil)), exeenv.FromHostname("box.exe.xyz"))
 	if result.Found {
 		t.Fatal("Found = true, want false")
 	}
@@ -783,7 +865,7 @@ func TestDiscoverLLMIntegrationsKeepsFoundWhenReflectedCatalogFails(t *testing.T
 		}, nil
 	})}
 
-	result := discoverLLMIntegrations(context.Background(), client, slog.New(slog.NewTextHandler(io.Discard, nil)), exeenv.FromHostname("box.exe.xyz"))
+	result := discoverLLMIntegrations(t.Context(), client, slog.New(slog.NewTextHandler(io.Discard, nil)), exeenv.FromHostname("box.exe.xyz"))
 	if !result.Found || len(result.Integrations) != 0 {
 		t.Fatalf("result = %+v, want found integration with unavailable catalog", result)
 	}
@@ -812,7 +894,7 @@ func TestDiscoverLLMIntegrationsFallbackUsesEnvironmentURLs(t *testing.T) {
 		}, nil
 	})}
 
-	result := discoverLLMIntegrations(context.Background(), client, slog.New(slog.NewTextHandler(io.Discard, nil)), env)
+	result := discoverLLMIntegrations(t.Context(), client, slog.New(slog.NewTextHandler(io.Discard, nil)), env)
 	if !result.Found || len(result.Integrations) != 1 {
 		t.Fatalf("result = %+v, want one found integration", result)
 	}
@@ -830,7 +912,7 @@ func TestDiscoverLLMIntegrationsDoesNotProbeOutsideExeVM(t *testing.T) {
 		t.Fatalf("unexpected discovery request outside exe VM: %s", req.URL.String())
 		return nil, nil
 	})}
-	result := DiscoverLLMIntegrations(context.Background(), client, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	result := DiscoverLLMIntegrations(t.Context(), client, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if result.Found || len(result.Integrations) != 0 {
 		t.Fatalf("result = %+v, want no discovered integration", result)
 	}
@@ -849,7 +931,8 @@ func TestDiscoverLLMIntegrationsReadsModelsJSONCatalog(t *testing.T) {
 					{"id":"anthropic/claude-opus-4-7","provider":"anthropic","native_id":"claude-opus-4-7","apis":["anthropic_messages"]},
 					{"id":"openai/gpt-5.6-sol","provider":"openai","native_id":"gpt-5.6-sol","apis":["openai_chat","openai_responses"]},
 					{"id":"openai/gpt-5.5","provider":"openai","native_id":"gpt-5.5","apis":["openai_responses"]},
-					{"id":"fireworks/glm-5p2","provider":"fireworks","native_id":"accounts/fireworks/models/glm-5p2","apis":["openai_chat"]}
+					{"id":"fireworks/glm-5p2","provider":"fireworks","native_id":"accounts/fireworks/models/glm-5p2","apis":["openai_chat"]},
+					{"id":"openai/gpt-transcribe","provider":"openai","native_id":"gpt-transcribe","apis":["openai_transcriptions"]}
 				]
 			}`
 		default:
@@ -863,7 +946,7 @@ func TestDiscoverLLMIntegrationsReadsModelsJSONCatalog(t *testing.T) {
 		}, nil
 	})}
 
-	result := discoverLLMIntegrations(context.Background(), client, slog.New(slog.NewTextHandler(io.Discard, nil)), exeenv.FromHostname("box.exe.xyz"))
+	result := discoverLLMIntegrations(t.Context(), client, slog.New(slog.NewTextHandler(io.Discard, nil)), exeenv.FromHostname("box.exe.xyz"))
 	if !result.Found {
 		t.Fatal("Found = false, want true")
 	}
@@ -881,6 +964,12 @@ func TestDiscoverLLMIntegrationsReadsModelsJSONCatalog(t *testing.T) {
 		if integ.Models[i].apiModelName() != want {
 			t.Fatalf("model %d apiModelName = %q, want %q", i, integ.Models[i].apiModelName(), want)
 		}
+	}
+	transcriptionModels := TranscriptionModels([]Source{LLMIntegration(integ, "")})
+	if len(transcriptionModels) != 1 ||
+		transcriptionModels[0].Model != "gpt-transcribe" ||
+		transcriptionModels[0].Endpoint != "https://llm.int.exe.xyz/v1/audio/transcriptions" {
+		t.Fatalf("transcription models = %+v", transcriptionModels)
 	}
 }
 
@@ -908,7 +997,7 @@ func TestDiscoverLLMIntegrationsUsesTeamHost(t *testing.T) {
 		}, nil
 	})}
 
-	result := discoverLLMIntegrations(context.Background(), client, slog.New(slog.NewTextHandler(io.Discard, nil)), exeenv.FromHostname("box.exe.xyz"))
+	result := discoverLLMIntegrations(t.Context(), client, slog.New(slog.NewTextHandler(io.Discard, nil)), exeenv.FromHostname("box.exe.xyz"))
 	if !result.Found {
 		t.Fatal("Found = false, want true")
 	}
@@ -962,7 +1051,7 @@ func TestDiscoverLLMIntegrationsUsesEnvironmentURLs(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			result := discoverLLMIntegrations(context.Background(), client, slog.New(slog.NewTextHandler(io.Discard, nil)), env)
+			result := discoverLLMIntegrations(t.Context(), client, slog.New(slog.NewTextHandler(io.Discard, nil)), env)
 			if !result.Found {
 				t.Fatal("Found = false, want true")
 			}

@@ -40,6 +40,7 @@
       :plain-text="collapsedPlainText"
       body-class="tool-details"
     >
+      <RunningToolTime v-if="isRunning && isExpanded" :start-time="toolInvokedAt" />
       <div class="tool-section">
         <div class="tool-label">
           Path:
@@ -48,7 +49,7 @@
         <div :class="`tool-code ${hasError ? 'error' : ''}`">{{ path || "(no path)" }}</div>
       </div>
       <div v-if="isComplete" class="tool-section">
-        <div class="tool-label">Result:</div>
+        <div class="tool-label">Result{{ hasError ? " (Error)" : "" }}:</div>
         <div :class="`tool-code ${hasError ? 'error' : ''}`">{{ resultText || "(no output)" }}</div>
       </div>
     </ToolAccessibleBody>
@@ -61,11 +62,14 @@ import type { LLMContent } from "../../../types";
 import { useToolExpanded } from "../../composables/toolDetail";
 import ToolAccessibleBody from "./ToolAccessibleBody.vue";
 import ToolChevron from "./ToolChevron.vue";
+import RunningToolTime from "./RunningToolTime.vue";
 import ToolStatusIcon from "./ToolStatusIcon.vue";
+import { toolOutcomeSuffix } from "../../utils/toolStatus";
 
 const props = defineProps<{
   toolInput?: unknown;
   isRunning?: boolean;
+  toolInvokedAt?: string | null;
   toolResult?: LLMContent[];
   hasError?: boolean;
   executionTime?: string;
@@ -97,13 +101,15 @@ const resultText = computed(
 const isComplete = computed(() => !props.isRunning && props.toolResult !== undefined);
 const dest = computed(() => path.value || "directory");
 const outputLabel = computed(() => `Change directory result for \`${dest.value}\``);
-const toggleLabel = computed(() =>
-  isExpanded.value
-    ? `Collapse change directory for \`${dest.value}\``
-    : `Expand change directory for \`${dest.value}\``,
+const toggleLabel = computed(
+  () =>
+    (isExpanded.value
+      ? `Collapse change directory for \`${dest.value}\``
+      : `Expand change directory for \`${dest.value}\``) +
+    toolOutcomeSuffix(isComplete.value, props.hasError),
 );
 const collapsedPlainText = computed(() => {
   if (!isComplete.value) return `Path:\n${path.value || "(no path)"}`;
-  return `Path:\n${path.value || "(no path)"}\n\nResult:\n${resultText.value || "(no output)"}`;
+  return `Path:\n${path.value || "(no path)"}\n\nResult${props.hasError ? " (Error)" : ""}:\n${resultText.value || "(no output)"}`;
 });
 </script>

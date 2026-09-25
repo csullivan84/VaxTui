@@ -3,6 +3,7 @@ package claudetool
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -42,6 +44,11 @@ type BashTool struct {
 	// Env holds the conversation context exposed to invoked commands as
 	// SHELLEY_* environment variables.
 	Env ShelleyEnv
+
+	// cdHinted records that the chained-cd hint has been shown. The hint
+	// is shown at most once per BashTool, that is, once per conversation:
+	// repeating it does not change model behavior, it only adds noise.
+	cdHinted atomic.Bool
 }
 
 const (
@@ -101,27 +108,20 @@ func isNoTrailerSet() bool {
 const (
 	bashName        = "bash"
 	bashDescription = `Executes shell commands via bash --login -c, returning combined stdout/stderr.
-Bash state changes (working dir, variables, aliases) don't persist between calls.
+Shell state (cwd, variables, aliases) does not persist; use change_dir for cwd.
 
 For long-running processes (servers, watch modes), use tmux instead.
 Do NOT use &, nohup, or disown — the bash tool kills its process group on exit.
 
-To wake yourself later (longer than the 15-min cap), detach a tmux session that
-sleeps then calls the Shelley client. Use double quotes so THIS shell expands
-$SHELLEY_CONVERSATION_ID (tmux's server env may be stale):
-  tmux new-session -d "sleep 3600 && shelley client chat -c $SHELLEY_CONVERSATION_ID -p 'Resume: <what next>'"
+For delayed wakeups or scheduled tasks, use the schedule skill.
 
-MUST set slow_ok=true for potentially slow commands: builds, downloads,
-installs, tests, or any other substantive operation.
+Set slow_ok=true for potentially slow commands (increases timeout).
 
-Avoid overly destructive cleanup commands. Commands that could delete .git
-directories, home directories, or use broad wildcards require explicit paths.
-Confirm with the user before running destructive operations.
+Destructive commands (deleting .git, home directories, broad wildcards, etc) require
+explicit paths and user confirmation.
 
-Use the change_dir tool instead of 'cd <path> && ...'; 'cd' does not persist across calls.
-
-IMPORTANT: Keep commands concise. The command input must be less than 60k tokens.
-For complex scripts, write them to a file first and then execute the file.
+Keep commands under a dozen lines, excluding file contents. For complex scripts,
+write a file and run it; both can share one call.
 `
 	// If you modify this, update the termui template for prettier rendering.
 	bashInputSchema = `
@@ -150,6 +150,7 @@ type bashInput struct {
 // BashDisplayData is the display data sent to the UI for bash tool results.
 type BashDisplayData struct {
 	WorkingDir string `json:"workingDir"`
+	ExitCode   *int   `json:"exitCode,omitempty"`
 }
 
 func (i *bashInput) timeout(t *Timeouts) time.Duration {
@@ -201,19 +202,40 @@ func (b *BashTool) run(ctx context.Context, req bashInput) llm.ToolOut {
 
 	out, execErr := b.executeBashInDir(ctx, req, timeout, wd)
 	if execErr != nil {
-		return llm.ErrorToolOut(execErr)
+		var exitErr *exec.ExitError
+		if errors.As(execErr, &exitErr) && exitErr.ProcessState.Exited() {
+			exitCode := exitErr.ExitCode()
+			display.ExitCode = &exitCode
+		}
+		toolOut := llm.ErrorToolOut(execErr)
+		toolOut.Display = display
+		return toolOut
 	}
-	if paths := bashkit.ChainedCdPaths(req.Command); len(paths) > 0 {
-		out = chainedCdHint(paths, wd) + "\n\n" + out
+	exitCode := 0
+	display.ExitCode = &exitCode
+	if chainedCdLeavesDir(bashkit.ChainedCdPaths(req.Command), wd) && b.cdHinted.CompareAndSwap(false, true) {
+		out = chainedCdHint(wd) + "\n\n" + out
 	}
 	return llm.ToolOut{LLMContent: llm.TextContent(out), Display: display}
 }
 
-func chainedCdHint(paths []string, workingDir string) string {
-	if len(paths) == 1 && paths[0] != "" && cdPathIsCurrentDir(paths[0], workingDir) {
-		return "[shelley hint: this command chained `cd <path>` with another command, but that path is already the current working directory. Drop the redundant `cd` and run the remaining command directly.]"
+// chainedCdLeavesDir reports whether any chained `cd <path>` in a command
+// (see bashkit.ChainedCdPaths) targets a directory other than workingDir.
+// A `cd` to the current directory is a harmless no-op and gets no hint.
+// A non-literal path (reported as "") is assumed to leave the directory.
+func chainedCdLeavesDir(paths []string, workingDir string) bool {
+	for _, p := range paths {
+		if p == "" || !cdPathIsCurrentDir(p, workingDir) {
+			return true
+		}
 	}
-	return "[shelley hint: this command chained `cd <path>` with another command. `cd` inside a bash invocation does not persist across tool calls. Prefer calling the change_dir tool once, then running subsequent commands directly.]"
+	return false
+}
+
+// chainedCdHint tells the model the one fact it can act on: the cwd it
+// will see on the next call, and how to change it.
+func chainedCdHint(workingDir string) string {
+	return "[shelley: `cd` inside a bash call does not persist; the working directory is still " + workingDir + ". Use change_dir to move.]"
 }
 
 func cdPathIsCurrentDir(path, workingDir string) bool {
@@ -398,7 +420,11 @@ func (b *BashTool) executeBashInDir(ctx context.Context, req bashInput, timeout 
 	}
 
 	if execCtx.Err() == context.DeadlineExceeded {
-		return "", fmt.Errorf("[command timed out after %s, showing output until timeout]\n%s", timeout, out)
+		hint := " For a longer timeout, set slow_ok: true."
+		if req.SlowOK {
+			hint = " To run longer, use tmux and write output to a log file."
+		}
+		return "", fmt.Errorf("[Command timed out after %s, showing output until timeout.%s]\n%s", timeout, hint, out)
 	}
 	if execCtx.Err() == context.Canceled {
 		// cmd.Wait commonly reports only "signal: killed" after CommandContext

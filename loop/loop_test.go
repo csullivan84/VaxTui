@@ -16,6 +16,7 @@ import (
 
 	"shelley.exe.dev/gitstate"
 	"shelley.exe.dev/llm"
+	"shelley.exe.dev/llm/llmhttp"
 	"shelley.exe.dev/llm/predictable"
 )
 
@@ -47,6 +48,36 @@ func TestNewLoop(t *testing.T) {
 	}
 }
 
+type promptCacheCapturingService struct {
+	*predictable.Service
+	key string
+}
+
+func (s *promptCacheCapturingService) Do(ctx context.Context, req *llm.Request) (*llm.Response, error) {
+	s.key = llmhttp.PromptCacheKeyFromContext(ctx)
+	return s.Service.Do(ctx, req)
+}
+
+func TestLoopAppliesPromptCacheKeyToMainRequest(t *testing.T) {
+	service := &promptCacheCapturingService{Service: predictable.NewService()}
+	agentLoop := NewLoop(Config{
+		LLM:            service,
+		PromptCacheKey: "shared-subagent-prefix",
+		RecordMessage:  func(context.Context, llm.Message, llm.Usage, []llm.PurposedUsage) error { return nil },
+	})
+	agentLoop.QueueUserMessage(llm.UserStringMessage("hello"))
+	ctx := llmhttp.WithConversationID(t.Context(), "child-conversation")
+	if err := agentLoop.ProcessOneTurn(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if service.key != "shared-subagent-prefix" {
+		t.Fatalf("prompt cache key = %q, want shared-subagent-prefix", service.key)
+	}
+	if got := llmhttp.PromptCacheKeyFromContext(ctx); got != "child-conversation" {
+		t.Fatalf("base context cache key = %q, want conversation-local fallback", got)
+	}
+}
+
 func TestQueueUserMessage(t *testing.T) {
 	loop := NewLoop(Config{
 		LLM:     predictable.NewService(),
@@ -74,7 +105,7 @@ func TestPredictableFixture(t *testing.T) {
 	service := predictable.NewService()
 
 	// Test simple hello response
-	ctx := context.Background()
+	ctx := t.Context()
 	req := &llm.Request{
 		Messages: []llm.Message{
 			{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "hello"}}},
@@ -106,7 +137,7 @@ func TestPredictableFixture(t *testing.T) {
 func TestPredictableFixtureEcho(t *testing.T) {
 	service := predictable.NewService()
 
-	ctx := context.Background()
+	ctx := t.Context()
 	req := &llm.Request{
 		Messages: []llm.Message{
 			{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "echo: foo"}}},
@@ -137,7 +168,7 @@ func TestPredictableFixtureEcho(t *testing.T) {
 func TestPredictableFixtureBashTool(t *testing.T) {
 	service := predictable.NewService()
 
-	ctx := context.Background()
+	ctx := t.Context()
 	req := &llm.Request{
 		Messages: []llm.Message{
 			{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "bash: ls -la"}}},
@@ -188,7 +219,7 @@ func TestPredictableFixtureBashTool(t *testing.T) {
 func TestPredictableFixtureDefaultResponse(t *testing.T) {
 	service := predictable.NewService()
 
-	ctx := context.Background()
+	ctx := t.Context()
 	req := &llm.Request{
 		Messages: []llm.Message{
 			{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "some unknown input"}}},
@@ -208,7 +239,7 @@ func TestPredictableFixtureDefaultResponse(t *testing.T) {
 func TestPredictableFixtureDelay(t *testing.T) {
 	service := predictable.NewService()
 
-	ctx := context.Background()
+	ctx := t.Context()
 	req := &llm.Request{
 		Messages: []llm.Message{
 			{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "delay: 0.1"}}},
@@ -258,7 +289,7 @@ func TestLoopWithPredictableFixture(t *testing.T) {
 	loop.QueueUserMessage(userMessage)
 
 	// Run the loop with a short timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
 	defer cancel()
 
 	err := loop.Go(ctx)
@@ -313,7 +344,7 @@ func TestLoopWithTools(t *testing.T) {
 	loop.QueueUserMessage(userMessage)
 
 	// Run the loop with a short timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
 	defer cancel()
 
 	err := loop.Go(ctx)
@@ -334,6 +365,9 @@ func TestLoopWithTools(t *testing.T) {
 func TestGetHistory(t *testing.T) {
 	initialHistory := []llm.Message{
 		{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "Hello"}}},
+		{Role: llm.MessageRoleAssistant, Origin: &llm.MessageOrigin{
+			Provider: "anthropic", Transport: "anthropic-messages:https://api.anthropic.com/v1/messages", Model: "claude-opus-4-6",
+		}},
 	}
 
 	loop := NewLoop(Config{
@@ -343,8 +377,8 @@ func TestGetHistory(t *testing.T) {
 	})
 
 	history := loop.GetHistory()
-	if len(history) != 1 {
-		t.Errorf("expected history length 1, got %d", len(history))
+	if len(history) != 2 {
+		t.Errorf("expected history length 2, got %d", len(history))
 	}
 
 	// Modify returned slice to ensure it's a copy
@@ -355,134 +389,13 @@ func TestGetHistory(t *testing.T) {
 	if original[0].Content[0].Text != "Hello" {
 		t.Error("GetHistory should return a copy, not the original slice")
 	}
-}
-
-func TestLoopWithKeywordTool(t *testing.T) {
-	// Test that keyword tool doesn't crash with nil pointer dereference
-	service := predictable.NewService()
-
-	var messages []llm.Message
-	recordMessage := func(ctx context.Context, message llm.Message, usage llm.Usage, otherUsage []llm.PurposedUsage) error {
-		messages = append(messages, message)
-		return nil
+	if original[1].Origin == nil || original[1].Origin.Model != "claude-opus-4-6" {
+		t.Fatal("GetHistory lost message origin")
 	}
-
-	// Add a mock keyword tool that doesn't actually search
-	tools := []*llm.Tool{
-		{
-			Name:        "keyword_search",
-			Description: "Mock keyword search",
-			InputSchema: llm.MustSchema(`{"type": "object", "properties": {"query": {"type": "string"}, "search_terms": {"type": "array", "items": {"type": "string"}}}, "required": ["query", "search_terms"]}`),
-			Run: func(ctx context.Context, input json.RawMessage) llm.ToolOut {
-				// Simple mock implementation
-				return llm.ToolOut{LLMContent: []llm.Content{{Type: llm.ContentTypeText, Text: "mock keyword search result"}}}
-			},
-		},
+	history[1].Origin.Model = "changed"
+	if original := loop.GetHistory(); original[1].Origin.Model != "claude-opus-4-6" {
+		t.Fatal("GetHistory leaked origin pointer")
 	}
-
-	loop := NewLoop(Config{
-		LLM:           service,
-		History:       []llm.Message{},
-		Tools:         tools,
-		RecordMessage: recordMessage,
-	})
-
-	// Send a user message that will trigger the default response
-	userMessage := llm.Message{
-		Role: llm.MessageRoleUser,
-		Content: []llm.Content{
-			{Type: llm.ContentTypeText, Text: "Please search for some files"},
-		},
-	}
-
-	loop.QueueUserMessage(userMessage)
-
-	// Process one turn
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	err := loop.ProcessOneTurn(ctx)
-	if err != nil {
-		t.Fatalf("ProcessOneTurn failed: %v", err)
-	}
-
-	// Verify we got expected messages
-	// Note: User messages are recorded by ConversationManager, not by Loop,
-	// so we only expect the assistant response to be recorded here
-	if len(messages) < 1 {
-		t.Fatalf("Expected at least 1 message (assistant), got %d", len(messages))
-	}
-
-	// Should have assistant response
-	if messages[0].Role != llm.MessageRoleAssistant {
-		t.Errorf("Expected first recorded message to be assistant, got %s", messages[0].Role)
-	}
-}
-
-func TestLoopWithActualKeywordTool(t *testing.T) {
-	// Test that actual keyword tool works with Loop
-	service := predictable.NewService()
-
-	var messages []llm.Message
-	recordMessage := func(ctx context.Context, message llm.Message, usage llm.Usage, otherUsage []llm.PurposedUsage) error {
-		messages = append(messages, message)
-		return nil
-	}
-
-	// Use the actual keyword tool from claudetool package
-	// Note: We need to import it first
-	tools := []*llm.Tool{
-		// Add a simplified keyword tool to avoid file system dependencies in tests
-		{
-			Name:        "keyword_search",
-			Description: "Search for files by keyword",
-			InputSchema: llm.MustSchema(`{"type": "object", "properties": {"query": {"type": "string"}, "search_terms": {"type": "array", "items": {"type": "string"}}}, "required": ["query", "search_terms"]}`),
-			Run: func(ctx context.Context, input json.RawMessage) llm.ToolOut {
-				// Simple mock implementation - no context dependencies
-				return llm.ToolOut{LLMContent: []llm.Content{{Type: llm.ContentTypeText, Text: "mock keyword search result"}}}
-			},
-		},
-	}
-
-	loop := NewLoop(Config{
-		LLM:           service,
-		History:       []llm.Message{},
-		Tools:         tools,
-		RecordMessage: recordMessage,
-	})
-
-	// Send a user message that will trigger the default response
-	userMessage := llm.Message{
-		Role: llm.MessageRoleUser,
-		Content: []llm.Content{
-			{Type: llm.ContentTypeText, Text: "Please search for some files"},
-		},
-	}
-
-	loop.QueueUserMessage(userMessage)
-
-	// Process one turn
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	err := loop.ProcessOneTurn(ctx)
-	if err != nil {
-		t.Fatalf("ProcessOneTurn failed: %v", err)
-	}
-
-	// Verify we got expected messages
-	// Note: User messages are recorded by ConversationManager, not by Loop,
-	// so we only expect the assistant response to be recorded here
-	if len(messages) < 1 {
-		t.Fatalf("Expected at least 1 message (assistant), got %d", len(messages))
-	}
-
-	// Should have assistant response
-	if messages[0].Role != llm.MessageRoleAssistant {
-		t.Errorf("Expected first recorded message to be assistant, got %s", messages[0].Role)
-	}
-
-	t.Log("Keyword tool test passed - no nil pointer dereference occurred")
 }
 
 func TestInsertMissingToolResults(t *testing.T) {
@@ -961,7 +874,7 @@ func TestGitStateTracking(t *testing.T) {
 		Content: []llm.Content{{Type: llm.ContentTypeText, Text: "hello"}},
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 
 	err := loop.ProcessOneTurn(ctx)
@@ -1075,7 +988,7 @@ func TestGitStateTrackingWorktree(t *testing.T) {
 		Content: []llm.Content{{Type: llm.ContentTypeText, Text: "hello"}},
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 
 	err = loop.ProcessOneTurn(ctx)
@@ -1119,7 +1032,7 @@ func TestPredictableFixtureMaxImageDimension(t *testing.T) {
 func TestPredictableFixtureThinking(t *testing.T) {
 	service := predictable.NewService()
 
-	ctx := context.Background()
+	ctx := t.Context()
 	req := &llm.Request{
 		Messages: []llm.Message{
 			{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "think: This is a test thought"}}},
@@ -1158,7 +1071,7 @@ func TestPredictableFixtureThinking(t *testing.T) {
 func TestPredictableFixturePatchTool(t *testing.T) {
 	service := predictable.NewService()
 
-	ctx := context.Background()
+	ctx := t.Context()
 	req := &llm.Request{
 		Messages: []llm.Message{
 			{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "patch: /tmp/test.txt"}}},
@@ -1201,7 +1114,7 @@ func TestPredictableFixturePatchTool(t *testing.T) {
 func TestPredictableFixtureMalformedPatchTool(t *testing.T) {
 	service := predictable.NewService()
 
-	ctx := context.Background()
+	ctx := t.Context()
 	req := &llm.Request{
 		Messages: []llm.Message{
 			{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "patch bad json"}}},
@@ -1240,7 +1153,7 @@ func TestPredictableFixtureMalformedPatchTool(t *testing.T) {
 func TestPredictableFixtureError(t *testing.T) {
 	service := predictable.NewService()
 
-	ctx := context.Background()
+	ctx := t.Context()
 	req := &llm.Request{
 		Messages: []llm.Message{
 			{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "error: test error"}}},
@@ -1276,7 +1189,7 @@ func TestPredictableFixtureRequestTracking(t *testing.T) {
 	}
 
 	// Make a request
-	ctx := context.Background()
+	ctx := t.Context()
 	req := &llm.Request{
 		Messages: []llm.Message{
 			{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "hello"}}},
@@ -1349,7 +1262,7 @@ func TestPredictableFixtureRequestTracking(t *testing.T) {
 func TestPredictableFixtureScreenshotTool(t *testing.T) {
 	service := predictable.NewService()
 
-	ctx := context.Background()
+	ctx := t.Context()
 	req := &llm.Request{
 		Messages: []llm.Message{
 			{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "screenshot: .test-class"}}},
@@ -1392,7 +1305,7 @@ func TestPredictableFixtureScreenshotTool(t *testing.T) {
 func TestPredictableFixtureToolSmorgasbord(t *testing.T) {
 	service := predictable.NewService()
 
-	ctx := context.Background()
+	ctx := t.Context()
 	req := &llm.Request{
 		Messages: []llm.Message{
 			{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "tool smorgasbord"}}},
@@ -1446,7 +1359,7 @@ func TestProcessLLMRequestError(t *testing.T) {
 	}
 	loop.QueueUserMessage(userMessage)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 1*time.Second)
 	defer cancel()
 
 	err := loop.ProcessOneTurn(ctx)
@@ -1592,7 +1505,7 @@ func TestLLMRequestRetryOnEOF(t *testing.T) {
 	}
 	loop.QueueUserMessage(userMessage)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 
 	err := loop.ProcessOneTurn(ctx)
@@ -1642,7 +1555,7 @@ func TestLLMRequestRetryExhausted(t *testing.T) {
 	}
 	loop.QueueUserMessage(userMessage)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 
 	err := loop.ProcessOneTurn(ctx)
@@ -1685,6 +1598,7 @@ func TestIsRetryableError(t *testing.T) {
 		{"timeout", fmt.Errorf("i/o timeout"), true},
 		{"idle stall timeout", fmt.Errorf("stream: %w", newIdleStallError(3*time.Minute)), true},
 		{"structured retryable", &testRequestError{message: "provider hint", info: llm.RequestErrorInfo{Retryable: true}}, true},
+		{"structured automatic retry suppressed", &testRequestError{message: "provider hint", info: llm.RequestErrorInfo{Retryable: true, NoImmediateRetry: true}}, false},
 		{"structured non-retryable overrides EOF text", &testRequestError{message: "EOF", info: llm.RequestErrorInfo{}}, false},
 		{"rate limit not in tight set", fmt.Errorf("rate limit exceeded"), false},
 		{"503 not in tight set", fmt.Errorf("upstream returned 503"), false},
@@ -1718,6 +1632,7 @@ func TestIsRetryableLLMError(t *testing.T) {
 		{"deadline exceeded retryable", fmt.Errorf("context deadline exceeded"), true},
 		{"idle stall timeout retryable", fmt.Errorf("stream: %w", newIdleStallError(3*time.Minute)), true},
 		{"structured retryable", &testRequestError{message: "provider hint", info: llm.RequestErrorInfo{Retryable: true}}, true},
+		{"structured manual-only retry remains retryable", &testRequestError{message: "provider hint", info: llm.RequestErrorInfo{Retryable: true, NoImmediateRetry: true}}, true},
 		{"structured non-retryable overrides rate-limit text", &testRequestError{message: "rate limit exceeded", info: llm.RequestErrorInfo{}}, false},
 		{"deployment scaling retryable", fmt.Errorf("DEPLOYMENT_SCALING_UP scale-up in progress"), true},
 		{"credits exhausted not retryable", fmt.Errorf("LLM credits exhausted; credits refresh over time"), false},
@@ -1766,7 +1681,7 @@ func TestCheckGitStateChange(t *testing.T) {
 	})
 
 	// This should not panic
-	loop.checkGitStateChange(context.Background())
+	loop.checkGitStateChange(t.Context())
 
 	// Test with actual callback
 	var gitStateChanges []*gitstate.GitState
@@ -1791,14 +1706,14 @@ func TestCheckGitStateChange(t *testing.T) {
 	runGit(t, tmpDir, "commit", "-m", "update")
 
 	// Check git state change
-	loop.checkGitStateChange(context.Background())
+	loop.checkGitStateChange(t.Context())
 
 	if len(gitStateChanges) != 1 {
 		t.Errorf("expected 1 git state change, got %d", len(gitStateChanges))
 	}
 
 	// Call again - should not trigger another change since state is the same
-	loop.checkGitStateChange(context.Background())
+	loop.checkGitStateChange(t.Context())
 
 	if len(gitStateChanges) != 1 {
 		t.Errorf("expected still 1 git state change (no new changes), got %d", len(gitStateChanges))
@@ -1826,7 +1741,7 @@ func TestExecuteToolCallsDoesNotPublishUnpersistedResults(t *testing.T) {
 		},
 	})
 
-	err := loop.executeToolCalls(context.Background(), []llm.Content{toolUse})
+	err := loop.executeToolCalls(t.Context(), []llm.Content{toolUse})
 	if err == nil || !strings.Contains(err.Error(), "database unavailable") {
 		t.Fatalf("executeToolCalls error = %v", err)
 	}
@@ -1885,7 +1800,7 @@ func TestExecuteToolCallsRunsConcurrently(t *testing.T) {
 		{ID: "second", Type: llm.ContentTypeToolUse, ToolName: testTool.Name, ToolInput: json.RawMessage(`{"name":"second"}`)},
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
@@ -1958,7 +1873,7 @@ func TestExecuteToolCallsWithMissingTool(t *testing.T) {
 		},
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 1*time.Second)
 	defer cancel()
 
 	err := loop.executeToolCalls(ctx, content)
@@ -2041,7 +1956,7 @@ func TestExecuteToolCallsWithErrorTool(t *testing.T) {
 		},
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 1*time.Second)
 	defer cancel()
 
 	err := loop.executeToolCalls(ctx, content)
@@ -2116,7 +2031,7 @@ func TestMaxTokensTruncation(t *testing.T) {
 	loop.QueueUserMessage(userMessage)
 
 	// Run the loop - it should stop after handling truncation
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
 	defer cancel()
 
 	err := loop.Go(ctx)
@@ -2211,7 +2126,7 @@ func TestRefusal(t *testing.T) {
 
 	// The loop should end the turn after handling the refusal, so Go returns
 	// when the queue drains (context deadline) rather than spinning.
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
 	defer cancel()
 
 	if err := loop.Go(ctx); err != context.DeadlineExceeded {
@@ -2338,7 +2253,7 @@ func TestRefusalThenRephraseNotInContext(t *testing.T) {
 		RecordMessage: func(context.Context, llm.Message, llm.Usage, []llm.PurposedUsage) error { return nil },
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 	defer cancel()
 
 	// First turn triggers a refusal. Drive it as its own complete turn so the
@@ -2483,7 +2398,7 @@ func TestPredictableFixtureFailEmitsRetryWarning(t *testing.T) {
 	service := predictable.NewService()
 	var warnings []llm.RetryEvent
 
-	ctx := context.Background()
+	ctx := t.Context()
 	req := &llm.Request{
 		Messages: []llm.Message{
 			{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "fail nope"}}},
@@ -2577,7 +2492,7 @@ func TestLoopRetryAfterPersistentFailure(t *testing.T) {
 		Content: []llm.Content{{Type: llm.ContentTypeText, Text: "hi"}},
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 
 	// First turn: exhausts retries and records an error message.
@@ -2605,7 +2520,7 @@ func TestLoopRetryAfterPersistentFailure(t *testing.T) {
 	loop.Retry()
 
 	// Use the loop's Go() so the retry signal is consumed.
-	goCtx, goCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	goCtx, goCancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer goCancel()
 	done := make(chan error, 1)
 	go func() { done <- loop.Go(goCtx) }()
@@ -2710,7 +2625,7 @@ func TestLoopResolvesPauseTurn(t *testing.T) {
 
 	loop.QueueUserMessage(llm.UserStringMessage("search the web for the answer"))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 	defer cancel()
 	if err := loop.ProcessOneTurn(ctx); err != nil {
 		t.Fatalf("ProcessOneTurn: %v", err)
@@ -2813,7 +2728,7 @@ func TestUserFacingLLMError(t *testing.T) {
 	}
 
 	// Trace diagnostics are appended when present.
-	_, trace := llm.WithRequestTrace(context.Background())
+	_, trace := llm.WithRequestTrace(t.Context())
 	trace.Set("shelley_request_id", "local_123")
 	trace.Set("upstream_request_id", "req_abc")
 	withIDs := userFacingLLMError(idleErr, trace)
@@ -2867,7 +2782,7 @@ func TestToolOtherUsageAttachedToToolResult(t *testing.T) {
 		Role:    llm.MessageRoleUser,
 		Content: []llm.Content{{Type: llm.ContentTypeText, Text: "bash: echo hello"}},
 	})
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
 	defer cancel()
 	if err := loop.Go(ctx); err != context.DeadlineExceeded {
 		t.Errorf("expected context deadline exceeded, got %v", err)
@@ -2913,7 +2828,7 @@ func TestToolOtherUsageAttachedToToolResult(t *testing.T) {
 // verifies that ordinary errors from those siblings are not rewritten merely
 // because their shared context is now cancelled.
 func TestExecuteToolCallsBarrierStartsAllSiblings(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
 	started := make(chan string, 3)
@@ -2985,7 +2900,7 @@ func TestExecuteToolCallsCancellationPreservesOutput(t *testing.T) {
 		return nil
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
 	testTool := &llm.Tool{
@@ -3088,7 +3003,7 @@ func TestExecuteToolCallsCancelActiveSuccessWins(t *testing.T) {
 		return nil
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
 	testTool := &llm.Tool{
@@ -3138,7 +3053,7 @@ func TestExecuteToolCallsAbandonsContextIgnoringTool(t *testing.T) {
 		return nil
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
 	release := make(chan struct{})

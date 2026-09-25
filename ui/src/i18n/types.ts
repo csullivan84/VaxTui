@@ -137,8 +137,20 @@ export interface TranslationKeys {
   messagePlaceholderShort: string;
   attachFile: string;
   sendMessage: string;
-  startVoiceInput: string;
-  stopVoiceInput: string;
+  recordingTitle: string;
+  recordingReturn: string;
+  recordingStop: string;
+  recordingStopTranscription: string;
+  recordingStarting: string;
+  recordingInProgress: string;
+  recordingScreenInProgress: string;
+  recordingStopping: string;
+  recordingTooShort: string;
+  recordingFailed: string;
+  recordingInvalidResponse: string;
+  recordingScreenAction: string;
+  recordingTranscribing: string;
+  recordingScreenEnded: string;
   dropFilesHere: string;
   uploading: string;
   uploadFailed: string;
@@ -149,6 +161,7 @@ export interface TranslationKeys {
   refreshModels: string;
   refreshingModels: string;
   searchModels: string;
+  recentModels: string;
   noModelsFound: string;
   notReadyBadge: string;
   showAllModels: string;
@@ -198,6 +211,11 @@ export interface TranslationKeys {
   reasoningSupportYes: string;
   reasoningSupportNo: string;
   reasoningSupportHelp: string;
+  reasoningReplay: string;
+  reasoningReplayAuto: string;
+  reasoningReplayNone: string;
+  reasoningReplayHelp: string;
+  reasoningReplayAutoResolved: string;
   reasoningLevelMapping: string;
   reasoningMappingUnsupported: string;
   reasoningMappingHelp: string;
@@ -281,7 +299,6 @@ export interface TranslationKeys {
   editUserAgentsMd: string;
   editFile: string;
   editFileShortcut: string;
-  editFileShortcutFirefox: string;
 
   // Sidebar buttons
   openConversations: string;

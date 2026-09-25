@@ -3,7 +3,12 @@
      bar, terminal/diff/git panels, model/thinking pickers, distill, TOC,
      scroll behavior. Preserves the e2e DOM/ARIA/CSS contract. -->
 <template>
-  <div ref="chatRootRef" class="full-height flex flex-col" role="main" aria-label="Shelley conversation">
+  <div
+    ref="chatRootRef"
+    class="full-height flex flex-col"
+    role="main"
+    aria-label="Shelley conversation"
+  >
     <a href="#shelley-message-input" class="skip-link">Skip to message input</a>
     <StatusAnnouncer
       :agent-working="agentWorking"
@@ -71,9 +76,11 @@
           </svg>
         </button>
 
-        <!-- Overflow menu (PrimeVue Popover + Select) -->
+        <!-- Overflow menu (PrimeVue Popover + language Modal) -->
         <ChatOverflowMenu
           :has-cwd="hasCwd"
+          :show-directory="statusSlotInline"
+          :cwd="currentConversation?.cwd || selectedCwd"
           :links="links"
           :can-archive="
             !!(conversationId && onArchiveConversation && !currentConversation?.archived)
@@ -81,6 +88,7 @@
           :can-export="!!(conversationId && messages.length > 0)"
           :has-update="hasUpdate"
           @open-command-palette="props.onOpenCommandPalette?.()"
+          @open-directory-picker="showDirectoryPicker = true"
           @open-diffs="showDiffViewer = true"
           @open-git-graph="showGitGraph = true"
           @open-terminal="openInAppTerminal"
@@ -98,195 +106,206 @@
          floating TOC/scroll controls sit as siblings so focusing them does
          not also announce "Conversation transcript region". -->
     <div class="messages-area-wrapper" :aria-busy="loading">
-      <div
-        class="messages-transcript-region"
-        role="region"
-        aria-label="Conversation transcript"
-      >
-      <div v-if="showResumeUnread" class="resume-unread-row">
-        <button
-          type="button"
-          class="status-button status-button-primary resume-unread-button"
-          data-testid="resume-unread"
-          @click="resumeFromUnread"
+      <div class="messages-transcript-region" role="region" aria-label="Conversation transcript">
+        <div v-if="showResumeUnread" class="resume-unread-row">
+          <button
+            type="button"
+            class="status-button status-button-primary resume-unread-button"
+            data-testid="resume-unread"
+            @click="resumeFromUnread"
+          >
+            Resume from unread
+          </button>
+        </div>
+        <div
+          ref="messagesContainerRef"
+          class="messages-container scrollable"
+          data-a11y-transcript
+          tabindex="-1"
+          @focusin="markTranscriptReviewed"
         >
-          Resume from unread
-        </button>
-      </div>
-      <div
-        ref="messagesContainerRef"
-        class="messages-container scrollable"
-        data-a11y-transcript
-        tabindex="-1"
-        @focusin="markTranscriptReviewed"
-      >
-        <div v-if="!loading || renderingConversation" ref="messagesListRef" class="messages-list">
-          <!-- empty state -->
-          <div v-if="messages.length === 0" class="empty-state">
-            <div class="empty-state-content">
-              <p class="text-base chat-welcome-text">
-                <template v-for="(part, i) in welcomeParts" :key="i">
-                  <strong v-if="part === '{hostname}'">{{ hostname }}</strong>
-                  <a
-                    v-else-if="part === '{openSourceLink}'"
-                    href="https://github.com/boldsoftware/shelley/"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    class="chat-welcome-link"
-                    >{{ t("welcomeOpenSource") }}</a
-                  >
-                  <a
-                    v-else-if="part === '{customizeLink}'"
-                    href="https://github.com/boldsoftware/shelley/"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    class="chat-welcome-link"
-                    >{{ t("welcomeCustomize") }}</a
-                  >
-                  <a
-                    v-else-if="part === '{docsLink}'"
-                    href="https://exe.dev/docs/proxy"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    class="chat-welcome-link"
-                    >docs</a
-                  >
-                  <a
-                    v-else-if="part === '{proxyLink}'"
-                    :href="proxyURL"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    class="chat-welcome-link"
-                    >{{ proxyURL }}</a
-                  >
-                  <template v-else>{{ part }}</template>
-                </template>
-              </p>
-              <PvMessage v-if="models.length === 0" severity="warn" class="no-models-message">
-                <p class="no-models-title">{{ t(modelSetupHint.title) }}</p>
-                <p v-if="modelSetupHint.note">{{ t(modelSetupHint.note) }}</p>
-                <!-- Render each remedy as the literal command it runs, so the
+          <div v-if="!loading || renderingConversation" ref="messagesListRef" class="messages-list">
+            <!-- empty state -->
+            <div v-if="messages.length === 0" class="empty-state">
+              <div class="empty-state-content">
+                <p class="text-base chat-welcome-text">
+                  <template v-for="(part, i) in welcomeParts" :key="i">
+                    <strong v-if="part === '{hostname}'">{{ hostname }}</strong>
+                    <a
+                      v-else-if="part === '{openSourceLink}'"
+                      href="https://github.com/boldsoftware/shelley/"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      class="chat-welcome-link"
+                      >{{ t("welcomeOpenSource") }}</a
+                    >
+                    <a
+                      v-else-if="part === '{customizeLink}'"
+                      href="https://github.com/boldsoftware/shelley/"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      class="chat-welcome-link"
+                      >{{ t("welcomeCustomize") }}</a
+                    >
+                    <a
+                      v-else-if="part === '{docsLink}'"
+                      href="https://exe.dev/docs/proxy"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      class="chat-welcome-link"
+                      >docs</a
+                    >
+                    <a
+                      v-else-if="part === '{proxyLink}'"
+                      :href="proxyURL"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      class="chat-welcome-link"
+                      >{{ proxyURL }}</a
+                    >
+                    <template v-else>{{ part }}</template>
+                  </template>
+                </p>
+                <PvMessage v-if="models.length === 0" severity="warn" class="no-models-message">
+                  <p class="no-models-title">{{ t(modelSetupHint.title) }}</p>
+                  <p v-if="modelSetupHint.note">{{ t(modelSetupHint.note) }}</p>
+                  <!-- Render each remedy as the literal command it runs, so the
                      user can see what a click does (and copy it to a terminal
                      instead if they prefer). -->
-                <ul v-if="modelSetupHint.actions.length" class="no-models-commands">
-                  <li v-for="action in modelSetupHint.actions" :key="action.command">
-                    <a :href="suggestURL(action.command)" target="_blank" rel="noopener noreferrer"
-                      ><code>{{ sshCommandLine(action.command) }}</code></a
-                    >
-                  </li>
-                </ul>
-                <p v-if="modelSetupHint.footer">{{ t(modelSetupHint.footer) }}</p>
-              </PvMessage>
-              <p v-else class="text-sm chat-secondary-text">{{ t("sendMessageToStart") }}</p>
-            </div>
-          </div>
-          <!-- generations -->
-          <template v-for="block in renderModel" :key="`gen-${block.generation}`">
-            <div v-if="block.divider" class="generation-divider">
-              <span
-                >New generation started — older messages are retained here but no longer sent to the
-                LLM.</span
-              >
-            </div>
-            <div :class="block.sectionClass">
-              <div
-                v-if="block.modelBar.model || block.systemPrompts.length > 0"
-                class="generation-context"
-                data-testid="generation-context"
-              >
-                <ModelBar
-                  :key="block.modelBar.key"
-                  :model="block.modelBar.model"
-                  :models-used="block.modelBar.modelsUsed"
-                  :models="models"
-                  :thinking-level="conversationThinkingLevel"
-                  :health-revision="modelHealthRevision"
-                />
-                <SystemPromptView
-                  v-for="sp in block.systemPrompts"
-                  :key="sp.key"
-                  :message="sp.message"
-                />
+                  <ul v-if="modelSetupHint.actions.length" class="no-models-commands">
+                    <li v-for="action in modelSetupHint.actions" :key="action.command">
+                      <a
+                        :href="suggestURL(action.command)"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        ><code>{{ sshCommandLine(action.command) }}</code></a
+                      >
+                    </li>
+                  </ul>
+                  <p v-if="modelSetupHint.footer">{{ t(modelSetupHint.footer) }}</p>
+                </PvMessage>
+                <p v-else class="text-sm chat-secondary-text">{{ t("sendMessageToStart") }}</p>
               </div>
-              <ChunkHost
-                v-for="chunk in block.chunks"
-                :key="chunk.key"
-                :chunk="chunk"
-                :conversation-id="conversationId"
-                :on-open-diff-viewer="handleOpenDiffViewer"
-                :on-comment-text-change="setDiffCommentText"
-                :on-fork="forkHandler"
-              />
             </div>
-          </template>
-          <!-- streaming preview -->
-          <div
-            v-if="showStreamingPreview || showStreamingThinking"
-            class="message message-agent streaming-message"
-          >
-            <div class="message-content" data-testid="message-content">
-              <ThinkingContent v-if="showStreamingThinking" :thinking="streamingThinking" />
-              <div
-                v-if="showStreamingPreview && markdownMode === 'off'"
-                class="whitespace-pre-wrap break-words"
-              >
-                <InlineText :text="streamingText" rewrite-localhost-links /><span
-                  class="streaming-cursor"
-                  >▊</span
+            <!-- generations -->
+            <template v-for="block in renderModel" :key="`gen-${block.generation}`">
+              <div v-if="block.divider" class="generation-divider">
+                <span
+                  >New generation started — older messages are retained here but no longer sent to
+                  the LLM.</span
                 >
               </div>
-              <div v-else-if="showStreamingPreview" class="streaming-markdown">
-                <MarkdownContent :text="streamingText" rewrite-localhost-links />
-                <span class="streaming-cursor">▊</span>
+              <div :class="block.sectionClass">
+                <div
+                  v-if="block.modelBar.model || block.systemPrompts.length > 0"
+                  class="generation-context"
+                  data-testid="generation-context"
+                >
+                  <ModelBar
+                    :key="block.modelBar.key"
+                    :model="block.modelBar.model"
+                    :models-used="block.modelBar.modelsUsed"
+                    :models="models"
+                    :thinking-level="conversationThinkingLevel"
+                    :health-revision="modelHealthRevision"
+                  />
+                  <SystemPromptView
+                    v-for="sp in block.systemPrompts"
+                    :key="sp.key"
+                    :message="sp.message"
+                  />
+                </div>
+                <ChunkHost
+                  v-for="chunk in block.chunks"
+                  :key="chunk.key"
+                  :chunk="chunk"
+                  :conversation-id="conversationId"
+                  :on-open-diff-viewer="handleOpenDiffViewer"
+                  :can-request-tour="
+                    !!currentConversation &&
+                    !currentConversation.parent_conversation_id &&
+                    !currentConversation.is_draft
+                  "
+                  :on-comment-text-change="setDiffCommentText"
+                  :on-fork="forkHandler"
+                />
+              </div>
+            </template>
+            <!-- streaming preview -->
+            <div
+              v-if="showStreamingPreview || showStreamingThinking"
+              class="message message-agent streaming-message"
+            >
+              <div class="message-content" data-testid="message-content">
+                <ThinkingContent v-if="showStreamingThinking" :thinking="streamingThinking" />
+                <div
+                  v-if="showStreamingPreview && markdownMode === 'off'"
+                  class="whitespace-pre-wrap break-words"
+                >
+                  <InlineText :text="streamingText" rewrite-localhost-links /><span
+                    class="streaming-cursor"
+                    >▊</span
+                  >
+                </div>
+                <div v-else-if="showStreamingPreview" class="streaming-markdown">
+                  <MarkdownContent
+                    :text="streamingText"
+                    rewrite-localhost-links
+                    defer-code-highlighting
+                  />
+                  <span class="streaming-cursor">▊</span>
+                </div>
               </div>
             </div>
+            <!-- Durable queued items render in their exact server order. Working
+               and failed transcriptions get a specialized card; ready
+               transcriptions are ordinary queued user-message ghosts. -->
+            <template v-for="(qm, queuedIndex) in queuedGhosts" :key="`queued-${qm.id}`">
+              <TranscriptionTask
+                v-if="queuedTranscriptionTaskState(qm)"
+                :path="queuedTranscriptionPath(qm)"
+                :state="queuedTranscriptionTaskState(qm)!"
+                :error="qm.error"
+                :context="qm.transcription?.context"
+                :user-data="qm.user_data"
+                @stop="cancelQueuedMessage(qm.id)"
+                @retry="retryQueuedMessage(qm.id)"
+                @cancel="cancelQueuedMessage(qm.id)"
+              />
+              <QueuedGhostMessage
+                v-else
+                :queued="qm"
+                :on-send-now="
+                  conversationId && queuedIndex === 0 && !isDistilling
+                    ? sendQueuedMessageNow
+                    : undefined
+                "
+                :send-now-pending="sendingQueuedNow === qm.id"
+                :on-cancel="conversationId ? cancelQueuedMessage : undefined"
+              />
+            </template>
+            <div v-if="queuedGhosts.length > 1 && conversationId" class="queued-cancel-all-row">
+              <button
+                class="queued-message-badge-cancel"
+                data-testid="cancel-all-queued"
+                v-tooltip.top="'Cancel all queued messages'"
+                @click="cancelQueuedMessages"
+              >
+                Cancel all queued
+              </button>
+            </div>
+            <div ref="bottomSentinelRef" class="messages-bottom-sentinel" aria-hidden="true" />
           </div>
-          <!-- ghost pending (queued) messages at the bottom -->
-          <QueuedGhostMessage
-            v-for="qm in queuedGhosts"
-            :key="`queued-${qm.id}`"
-            :queued="qm"
-            :on-cancel="conversationId ? cancelQueuedMessage : undefined"
-          />
-          <div v-if="queuedGhosts.length > 1 && conversationId" class="queued-cancel-all-row">
-            <button
-              class="queued-message-badge-cancel"
-              data-testid="cancel-all-queued"
-              v-tooltip.top="'Cancel all queued messages'"
-              @click="cancelQueuedMessages"
-            >
-              Cancel all queued
-            </button>
-          </div>
-          <div ref="bottomSentinelRef" class="messages-bottom-sentinel" aria-hidden="true" />
         </div>
-      </div>
       </div>
 
       <div v-if="loading" class="conversation-loading-overlay">
         <div v-if="showLoadingProgressUI" class="conversation-loading">
           <div class="spinner" />
           <div class="conversation-loading-title" role="status" aria-live="polite">
-            {{
-              loadingProgress?.phase === "parsing"
-                ? "Rendering conversation\u2026"
-                : "Loading conversation\u2026"
-            }}
+            {{ loadingTitle }}
           </div>
-          <div class="conversation-loading-subtitle">
-            <template v-if="loadingProgress">
-              <template v-if="loadingProgress.bytesTotal && loadingProgress.bytesTotal > 0">
-                {{ formatBytes(loadingProgress.bytesDownloaded) }} of {{ formatBytes(loadingProgress.bytesTotal) }}
-              </template>
-              <template v-else>{{ formatBytes(loadingProgress.bytesDownloaded) }} downloaded</template>
-            </template>
-            <template v-else>Starting…</template>
-            {{
-              lastKnownMessageCount !== null
-                ? ` \u2022 ~${lastKnownMessageCount} messages last time`
-                : ""
-            }}
-          </div>
+          <div class="conversation-loading-subtitle">{{ loadingSubtitle }}</div>
           <div class="conversation-loading-bar">
             <div :class="loadingBarFillClass" :style="loadingBarFillStyle" />
           </div>
@@ -296,22 +315,14 @@
         </div>
       </div>
 
-      <!-- Floating nav cluster: sibling of the transcript region, not a child. -->
+      <!-- Floating scroll-to-bottom button: sibling of the transcript region, not a child. -->
       <div v-if="conversationId && messages.length > 0" class="chat-nav-cluster">
-        <ConversationTOC
-          :messages="visibleMessages"
-          :container-ref="messagesContainerRef"
-          :near-bottom="!showScrollToBottom"
-          :conversation-id="conversationId"
-          @scroll-bottom="scrollToBottom"
-          @scroll-away="markUserScrolledUp"
-        />
         <button
           v-if="showScrollToBottom"
           class="scroll-to-bottom-button"
           aria-label="Scroll to bottom"
           v-tooltip.top="scrollToBottomTooltip"
-          @click="scrollToBottom"
+          @click="handleScrollToBottomClick"
         >
           <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" class="chat-scroll-icon">
             <path
@@ -374,48 +385,59 @@
     <div :class="statusBarClass" role="region" aria-label="Conversation status">
       <div class="status-bar-content">
         <ChatStatusContent v-if="showStatusContent" v-bind="statusContentProps" />
+        <span :id="`${tocTargetId}-desktop`" class="status-navigation" />
       </div>
     </div>
 
     <!-- Message input -->
     <div role="region" aria-label="Message composer">
-    <!-- No :key here, matching React: MessageInput must NOT remount on the
+      <!-- No :key here, matching React: MessageInput must NOT remount on the
          first-message conversationId flip, or its post-await setMessage("")
          would run on a destroyed instance and the fresh instance would
          re-seed from a stale draft seed. Text sync across conversation
          switches is handled by MessageInput's draftSeed watch. -->
-    <MessageInput
-      v-if="!currentConversation?.archived"
-      :on-send="sendMessage"
-      :on-queue="queueMessage"
-      :on-compact="
-        conversationId && onDistillNewGeneration ? handleDistillCompactNewGeneration : undefined
-      "
-      :show-queue-option="!!conversationId"
-      :can-queue="canQueue"
-      :auto-queue="autoQueue"
-      :disabled="sending || loading"
-      :auto-focus="true"
-      :injected-text="messageInputInjectedText"
-      :draft-seed="draftSeed"
-      :initial-rows="messageInputInitialRows"
-      :conversation-id="conversationId"
-      :lazy-draft-id="lazyDraftId"
-      :model-options="readyModels"
-      :current-model-id="selectedModel"
-      :is-child-conversation="!!currentConversation?.parent_conversation_id"
-      @clear-injected-text="
-        diffCommentText = '';
-        terminalInjectedText = null;
-      "
-      @draft-change="handleDraftChange"
-      @draft-send-started="handleDraftSendStarted"
-      @draft-cleared="handleDraftCleared"
-    >
-      <template v-if="statusSlotInline" #status>
-        <ChatStatusContent v-bind="statusContentProps" />
-      </template>
-    </MessageInput>
+      <MessageInput
+        ref="messageInputRef"
+        v-show="!currentConversation?.archived"
+        :on-send="sendMessage"
+        :on-start-recording="prepareRecording"
+        :recording-inline-available="!currentConversation?.archived"
+        :on-queue="queueMessage"
+        :on-compact="
+          conversationId && onDistillNewGeneration ? handleDistillCompactNewGeneration : undefined
+        "
+        :show-queue-option="!!conversationId"
+        :can-queue="canQueue"
+        :auto-queue="autoQueue"
+        :compact-send-level="compactSendLevel"
+        :disabled="sending || loading"
+        :auto-focus="true"
+        :injected-text="messageInputInjectedText"
+        :draft-seed="draftSeed"
+        :initial-rows="messageInputInitialRows"
+        :conversation-id="conversationId"
+        :cwd="
+          !conversationId || currentConversation?.is_draft
+            ? selectedCwd
+            : currentConversation?.cwd || selectedCwd
+        "
+        :lazy-draft-id="lazyDraftId"
+        :model-options="readyModels"
+        :current-model-id="selectedModel"
+        :is-child-conversation="!!currentConversation?.parent_conversation_id"
+        @clear-injected-text="
+          diffCommentText = '';
+          terminalInjectedText = null;
+        "
+        @draft-change="handleDraftChange"
+        @draft-send-started="handleDraftSendStarted"
+        @draft-cleared="handleDraftCleared"
+      >
+        <template v-if="statusSlotInline" #status>
+          <ChatStatusContent v-bind="statusContentProps" />
+          <span :id="`${tocTargetId}-mobile`" class="status-navigation" />
+        </template>
+      </MessageInput>
     </div>
 
     <KeyboardHelpDialog
@@ -425,6 +447,23 @@
       @close="showKeyboardHelp = false"
       @export-tools="exportLastTurnTools"
     />
+
+    <!-- Keep one TOC alive across responsive/status host changes: remounting
+         would restart fragment navigation and jump to an old message link. -->
+    <Teleport
+      v-if="conversationId && messages.length > 0"
+      defer
+      :to="`#${tocTargetId}-${statusSlotInline ? 'mobile' : 'desktop'}`"
+    >
+      <ConversationTOC
+        :messages="visibleMessages"
+        :container-ref="messagesContainerRef"
+        :near-bottom="!showScrollToBottom"
+        :conversation-id="conversationId"
+        @scroll-bottom="scrollToBottom"
+        @scroll-away="markUserScrolledUp"
+      />
+    </Teleport>
 
     <!-- Directory Picker Modal -->
     <DirectoryPickerModal
@@ -442,6 +481,12 @@
       :is-open="showGitGraph"
       :covered="showDiffViewer"
       :can-open-diff="true"
+      :conversation-id="conversationId"
+      :can-request-tour="
+        !!currentConversation &&
+        !currentConversation.parent_conversation_id &&
+        !currentConversation.is_draft
+      "
       @close="
         showGitGraph = false;
         focusMessageInputIfUnfocused();
@@ -492,11 +537,22 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, provide, reactive, ref, watch } from "vue";
+import {
+  computed,
+  nextTick,
+  onMounted,
+  onUnmounted,
+  provide,
+  reactive,
+  ref,
+  useId,
+  watch,
+} from "vue";
 import Button from "primevue/button";
 import PvMessage from "primevue/message";
 import {
   type Message,
+  type Model,
   type Conversation,
   type ChatRequest,
   type BtwExchange,
@@ -508,6 +564,9 @@ import {
   distillStatus,
   parseQueuedMessages,
   queuedMessageText,
+  queuedMessageRestoreText,
+  queuedTranscriptionPath,
+  queuedTranscriptionTaskState,
 } from "../../types";
 import { api } from "../../services/api";
 import { announceA11y } from "../../services/a11yAnnouncer";
@@ -551,7 +610,6 @@ import { buildMessageQuote } from "../../utils/messageQuote";
 import { hasMultipleUsers } from "../../utils/messageAuthors";
 import { tildifyPath } from "../../utils/tildify";
 import { handleModifiedNavClick } from "../utils/openInNewTab";
-import { isAutoExpandTool } from "../../utils/toolMeta";
 import { formatDay } from "../../utils/messageTime";
 import {
   clearConversationViewCache,
@@ -559,6 +617,17 @@ import {
   isVisibleConversationMessage,
 } from "../../utils/conversationView";
 import { SLASH_COMMANDS } from "../../utils/slashCommands";
+import { replaceLocationFragment } from "../../utils/locationFragment";
+import {
+  announceCommitTourRequest,
+  applyCommitTourStatus,
+  commitTourStatusKey,
+  loadCommitTourStatus,
+  subscribeCommitTourRequests,
+  subscribeCommitTourStatus,
+  type CommitTourRequest,
+} from "../../services/commitTourStatus";
+import { contextUsageLevel } from "../../utils/contextUsage";
 import {
   btwAnchor,
   btwExchangesByAnchor,
@@ -593,6 +662,7 @@ import {
 import { SELECTED_MODEL_KEY, pickReadyModel, storedSelectedModel } from "./selectedModel";
 
 import MessageInput from "./MessageInput.vue";
+import type { RecordingDestination, RecordingMode } from "./recordingDestination";
 import ConversationTOC from "./ConversationTOC.vue";
 import ModelBar from "./ModelBar.vue";
 import SystemPromptView from "./SystemPromptView.vue";
@@ -609,6 +679,7 @@ import { matchChatInterfaceAction } from "../../utils/menuShortcuts";
 import ChunkHost from "./ChunkHost.vue";
 import { chunkMountKey } from "./chunkMount";
 import QueuedGhostMessage from "./QueuedGhostMessage.vue";
+import TranscriptionTask from "./TranscriptionTask.vue";
 import ChatStatusContent from "./ChatStatusContent.vue";
 import StatusAnnouncer from "./StatusAnnouncer.vue";
 import KeyboardHelpDialog from "./KeyboardHelpDialog.vue";
@@ -698,7 +769,7 @@ watch(conversationViewMode, () => {
   resetTailFirst();
   primeTailFirstMount();
 });
-const toolPillsEnabled = useFeatureFlag("tool-pills");
+const compactSendThresholdsEnabled = useFeatureFlag("compact-send-thresholds");
 const {
   hasUpdate,
   versionInfo,
@@ -709,6 +780,14 @@ const {
 } = useVersionChecker();
 
 // ---- core state ----
+const messageInputRef = ref<InstanceType<typeof MessageInput> | null>(null);
+// Call through synchronously: screen capture must retain the user gesture.
+defineExpose({
+  canRecordAudio: computed(() => messageInputRef.value?.canRecordAudio ?? false),
+  canRecordScreen: computed(() => messageInputRef.value?.canRecordScreen ?? false),
+  beginRecording: (mode: RecordingMode) => messageInputRef.value?.beginRecording(mode),
+});
+
 const messages = ref<Message[]>([]);
 const btwExchanges = ref<BtwExchange[]>([]);
 
@@ -768,18 +847,7 @@ async function dismissDiskSpaceNotice() {
     error.value = e instanceof Error ? e.message : String(e);
   }
 }
-const models = ref<
-  Array<{
-    id: string;
-    display_name?: string;
-    source?: string;
-    ready: boolean;
-    max_context_tokens?: number;
-    context_pricing_threshold?: number;
-    supports_reasoning?: boolean;
-    reasoning_levels?: Exclude<ThinkingLevel, "default">[];
-  }>
->(window.__SHELLEY_INIT__?.models || []);
+const models = ref<Model[]>(window.__SHELLEY_INIT__?.models || []);
 
 // Ready model ids, surfaced to MessageInput for /model argument autocomplete.
 const readyModelIds = computed(() => models.value.filter((m) => m.ready).map((m) => m.id));
@@ -898,6 +966,17 @@ function switchConversationModel(model: string) {
   return sendModelCommand(arg);
 }
 
+function switchConversationCombination(
+  model: string,
+  level: Exclude<ThinkingLevel, "default"> | null,
+) {
+  if (level === null) {
+    return switchConversationModel(model);
+  }
+  if (model === selectedModel.value && level === thinkingLevel.value) return;
+  return sendModelCommand(`${model} ${level}`);
+}
+
 // Reasoning pills in the status readout's picker. Same policy as the model
 // above: don't touch local state, let the server's echo drive the pill, so a
 // rejected level doesn't leave the UI (and the stored default) claiming a
@@ -943,8 +1022,31 @@ function setSelectedModel(model: string) {
   if (draftId) putDraftModel(draftId, model);
 }
 
+function setSelectedCombination(model: string, level: Exclude<ThinkingLevel, "default"> | null) {
+  if (level !== null) setThinkingLevel(level);
+  setSelectedModel(model);
+}
+
 const selectedCwd = ref<string>("");
 const cwdInitialized = ref(false);
+// A reopened draft owns its cwd, even when this browser last used another
+// directory. Seed the local picker state so completion and promotion agree.
+// Watching only these fields leaves an optimistic pick intact while its
+// persistence request is in flight (unrelated draft echoes must not reset it).
+watch(
+  [
+    () => props.conversationId,
+    () => props.currentConversation?.is_draft,
+    () => props.currentConversation?.cwd,
+  ],
+  ([id, isDraft, cwd]) => {
+    if (id && isDraft && cwd) {
+      selectedCwd.value = cwd;
+      cwdInitialized.value = true;
+    }
+  },
+  { immediate: true },
+);
 function setSelectedCwd(cwd: string) {
   selectedCwd.value = cwd;
   props.onCwdChange?.(cwd);
@@ -1008,6 +1110,7 @@ const showKeyboardHelp = ref(false);
 /** Highest sequence_id the user has reviewed in the current conversation. */
 const lastReviewedSeq = ref(0);
 const showResumeUnread = ref(false);
+const resumingInterrupted = ref(false);
 const cancelling = ref(false);
 const contextWindowSize = ref(0);
 const toolProgress = ref<Record<string, ToolProgress>>({});
@@ -1055,8 +1158,11 @@ let loadingFlag = false;
 let pendingScroll: number | null | undefined = undefined;
 let loadingProgressDelay: number | null = null;
 let currentConversationId: string | null = props.conversationId;
-let activeModelHealth: { modelId: string; startSequence: number; handledErrors: Set<string> } | null =
-  null;
+let activeModelHealth: {
+  modelId: string;
+  startSequence: number;
+  handledErrors: Set<string>;
+} | null = null;
 let conversationWatchInitialized = false;
 let lastScrollToBottomTrigger = props.scrollToBottomTrigger ?? 0;
 let conversationLoadEpoch = 0;
@@ -1087,6 +1193,12 @@ let sentinelAtBottom = true;
 // first; the ResizeObserver uses these to retroactively undo that misread.
 let inferredScrollUpAt = -Infinity;
 let inferredScrollUpDelta = 0;
+// A persisted bottom restore remains semantic until confirmed user
+// navigation. Transient startup clamps must not replace it with a pixel
+// offset; a bare scroll waits for the bottom sentinel to confirm navigation.
+let savedBottomRestoration: "seeking" | "following" | null = null;
+let pendingBareRestorationScroll = false;
+let restorationConfirmationFrame: number | null = null;
 // Last upward wheel / touch gesture; a scroll-up near a real gesture must
 // never be undone as a clamp misread.
 let lastScrollGestureAt = -Infinity;
@@ -1325,14 +1437,6 @@ function collectChunkTargets(node: RenderNode, index: number, into: ChunkTargetI
         into.byMessageFrag.set(fragPrefix(node.item.message.message_id), index);
       }
       break;
-    case "tool-pills":
-      for (const item of node.items) {
-        if (item.toolUseId) {
-          into.byTool.set(item.toolUseId, index);
-          into.byToolFrag.set(fragPrefix(item.toolUseId), index);
-        }
-      }
-      break;
     case "tool-call":
       if (node.item.toolUseId) {
         into.byTool.set(node.item.toolUseId, index);
@@ -1504,12 +1608,19 @@ function saveScroll(scrollTop: number) {
   // off-screen content, so a saved offset can no longer sit at the bottom
   // after a reload (scrollHeight is inflated) — which silently disarmed
   // auto-follow. Restoring the sentinel re-pins to the real bottom instead.
-  localStorage.setItem(key, atBottom ? "bottom" : String(scrollTop));
+  localStorage.setItem(
+    key,
+    savedBottomRestoration !== null || atBottom ? "bottom" : String(scrollTop),
+  );
 }
 function loadScroll(): number | null {
   const key = scrollKey();
   if (!key) return null;
   const v = localStorage.getItem(key);
+  // A fresh visit needs the same protection from startup layout clamps as a
+  // saved bottom position; neither is released until the user navigates away.
+  savedBottomRestoration = v == null || v === "bottom" ? "seeking" : null;
+  clearPendingRestorationScroll();
   // null (no value) and the "bottom" sentinel both mean "restore to bottom".
   if (v == null || v === "bottom") return null;
   const n = Number(v);
@@ -1534,13 +1645,25 @@ const isDistilling = computed(() => {
   return inProgress;
 });
 
+const conversationInterrupted = computed(() => {
+  const conversation = props.currentConversation;
+  return (
+    !!conversation?.turn_interrupted && !conversation.parent_conversation_id && !agentWorking.value
+  );
+});
+watch(conversationInterrupted, (interrupted) => {
+  if (!interrupted) resumingInterrupted.value = false;
+});
+
 const selectedModelInfo = computed(() => models.value.find((m) => m.id === selectedModel.value));
 // 0 when the model's context window is unknown: the readout then shows the
 // count alone rather than a made-up denominator.
 const maxContextTokens = computed(() => selectedModelInfo.value?.max_context_tokens || 0);
-const contextPricingThreshold = computed(
-  () => selectedModelInfo.value?.context_pricing_threshold || 0,
-);
+const compactSendLevel = computed(() => {
+  if (!compactSendThresholdsEnabled.value) return "";
+  const level = contextUsageLevel(contextWindowSize.value, maxContextTokens.value);
+  return level === "warn" ? "" : level;
+});
 
 // Content type constants mirror llm/llm.go.
 const LLM_TYPE_TEXT = 2;
@@ -2011,19 +2134,6 @@ function buildRenderModel(): GenerationBlock[] {
         exchanges: generationStartBtws,
       });
     }
-    let pillBuf: CoalescedItem[] = [];
-    let pillSink: RenderNode[] = sectionNodes;
-
-    const flushPills = (keySuffix: string | number) => {
-      if (pillBuf.length === 0) return;
-      const buf = pillBuf;
-      pillBuf = [];
-      pillSink.push({
-        kind: "tool-pills",
-        key: `tool-pills-${generation}-${buf[0].toolUseId || keySuffix}`,
-        items: buf,
-      });
-    };
     const appendBtws = (sink: RenderNode[], item: CoalescedItem) => {
       const exchanges = btwsByAnchor.get(item.anchorKey);
       if (exchanges?.length) {
@@ -2036,22 +2146,13 @@ function buildRenderModel(): GenerationBlock[] {
     };
 
     const renderItemInto = (sink: RenderNode[], item: CoalescedItem, index: number) => {
-      const isPillable =
-        toolPillsEnabled.value &&
-        item.type === "tool" &&
-        !isAutoExpandTool(item.toolName, item.toolInput, item.display);
-      if (!isPillable || pillBuf.length === 0) {
-        const tsNodes = maybeTimestamp(
+      sink.push(
+        ...maybeTimestamp(
           itemTime(item),
           item.message?.message_id || item.toolUseId || `g${generation}-i${index}`,
-        );
-        if (tsNodes.length > 0) {
-          flushPills(index);
-          tsNodes.forEach((n) => sink.push(n));
-        }
-      }
+        ),
+      );
       if (item.type === "message" && item.message) {
-        flushPills(index);
         sink.push({
           kind: "message",
           key: item.message.message_id,
@@ -2064,24 +2165,12 @@ function buildRenderModel(): GenerationBlock[] {
         );
         if (tokNode) sink.push(tokNode);
       } else if (item.type === "tool") {
-        if (isPillable) {
-          pillBuf.push(item);
-          // A pill row is normally one group, but an inline BTW is a real
-          // transcript boundary. Flush through its anchored tool before
-          // inserting it, then begin a new pill group for later tools.
-          if (btwsByAnchor.has(item.anchorKey)) {
-            flushPills(index);
-            appendBtws(sink, item);
-          }
-        } else {
-          flushPills(index);
-          sink.push({
-            kind: "tool-call",
-            key: item.toolUseId || `tool-${generation}-${item.toolName || "unknown"}-${index}`,
-            item,
-          });
-          appendBtws(sink, item);
-        }
+        sink.push({
+          kind: "tool-call",
+          key: item.toolUseId || `tool-${generation}-${item.toolName || "unknown"}-${index}`,
+          item,
+        });
+        appendBtws(sink, item);
       }
     };
 
@@ -2090,8 +2179,6 @@ function buildRenderModel(): GenerationBlock[] {
       if (items[i].carried) {
         const start = i;
         const band: RenderNode[] = [];
-        flushPills(`pre-carried-${start}`);
-        pillSink = band;
         const tsSnapshot = { ...tsState };
         let count = 0;
         while (i < items.length && items[i].carried) {
@@ -2099,8 +2186,6 @@ function buildRenderModel(): GenerationBlock[] {
           if (items[i].type === "message") count++;
           i++;
         }
-        flushPills(`carried-${start}`);
-        pillSink = sectionNodes;
         tsState.lastMin = tsSnapshot.lastMin;
         tsState.lastDay = tsSnapshot.lastDay;
         sectionNodes.push({
@@ -2114,7 +2199,6 @@ function buildRenderModel(): GenerationBlock[] {
       renderItemInto(sectionNodes, items[i], i);
       i++;
     }
-    flushPills("end");
 
     blocks.push({
       generation,
@@ -2234,17 +2318,42 @@ function stopBottomPin() {
   bottomPinFrame = null;
 }
 
+function clearPendingRestorationScroll() {
+  pendingBareRestorationScroll = false;
+  if (restorationConfirmationFrame !== null) {
+    cancelAnimationFrame(restorationConfirmationFrame);
+    restorationConfirmationFrame = null;
+  }
+}
+
+function stopSavedBottomRestoration() {
+  savedBottomRestoration = null;
+  clearPendingRestorationScroll();
+}
+
 function markUserScrolledUp() {
   stopBottomPin();
   followExplicitSelectionToBottom = false;
   suppressExplicitSelectionClamp = false;
+  stopSavedBottomRestoration();
+  userScrolled = true;
+  atBottom = false;
+  showScrollToBottom.value = true;
+}
+
+function inferUserScrolledUp() {
+  stopBottomPin();
+  followExplicitSelectionToBottom = false;
+  suppressExplicitSelectionClamp = false;
+  if (savedBottomRestoration === "following") pendingBareRestorationScroll = true;
   userScrolled = true;
   atBottom = false;
   showScrollToBottom.value = true;
 }
 
 function releaseBottomPinForUser() {
-  if (!bottomPinActive && !followExplicitSelectionToBottom) return;
+  if (!bottomPinActive && !followExplicitSelectionToBottom && savedBottomRestoration === null)
+    return;
   markUserScrolledUp();
 }
 
@@ -2320,6 +2429,11 @@ function scrollToBottom() {
     bottomPinFrame = requestAnimationFrame(step);
   };
   step();
+}
+
+function handleScrollToBottomClick() {
+  replaceLocationFragment("");
+  scrollToBottom();
 }
 
 function requestCurrentConversationBottom() {
@@ -2577,8 +2691,15 @@ async function loadMessages(focusedId: string) {
     !!cached &&
     cached.hasFullHistory &&
     (cached.maxSequenceIdKnown <= 0 || cached.maxSequenceId >= cached.maxSequenceIdKnown);
+  // Archived conversations are absent from the live list, so nothing seeds
+  // maxSequenceIdKnown for them and a cached prefix that fell behind (say,
+  // while every tab was hidden) would read as complete. Confirm the tail with
+  // the server; for a complete cache that is one cheap ?last_sequence_id= call.
+  const isArchived =
+    !!props.currentConversation?.archived &&
+    props.currentConversation.conversation_id === focusedId;
 
-  if (cacheIsComplete && !cached!.needsRefresh) {
+  if (cacheIsComplete && !cached!.needsRefresh && !isArchived) {
     cacheDiag("hit", "load.served_from_cache", {
       conversation_id: focusedId,
       messages: cached!.messages.length,
@@ -2742,6 +2863,21 @@ async function queueMessage(message: string) {
   }
 }
 
+const sendingQueuedNow = ref<string | null>(null);
+
+async function sendQueuedMessageNow(queuedId: string) {
+  if (!props.conversationId || sendingQueuedNow.value) return;
+  sendingQueuedNow.value = queuedId;
+  try {
+    await api.sendQueuedMessageNow(props.conversationId, queuedId);
+  } catch (err) {
+    console.error("Failed to send queued message now:", err);
+    error.value = err instanceof Error ? err.message : "Failed to send queued message now";
+  } finally {
+    sendingQueuedNow.value = null;
+  }
+}
+
 async function cancelQueuedMessages() {
   if (!props.conversationId) return;
   try {
@@ -2755,13 +2891,23 @@ async function cancelQueuedMessages() {
 async function cancelQueuedMessage(queuedId: string) {
   if (!props.conversationId) return;
   const queued = queuedGhosts.value.find(({ id }) => id === queuedId);
-  const text = queued ? queuedMessageText(queued) : "";
+  const text = queued ? queuedMessageRestoreText(queued) : "";
   try {
     await api.cancelQueuedMessage(props.conversationId, queuedId);
     announceA11y("Queued message cancelled.");
     if (!draftText && text) seedComposer(text);
   } catch (err) {
     console.error("Failed to cancel queued message:", err);
+  }
+}
+
+async function retryQueuedMessage(queuedId: string) {
+  if (!props.conversationId) return;
+  try {
+    await api.retryQueuedMessage(props.conversationId, queuedId);
+  } catch (err) {
+    console.error("Failed to retry queued message:", err);
+    error.value = err instanceof Error ? err.message : "Failed to retry queued message";
   }
 }
 
@@ -2826,13 +2972,85 @@ const forkHandler = (messageId: string) => {
   void forkConversation(messageId);
 };
 
+async function submitTranscriptionCommand(path: string, transcriptionContext: string) {
+  try {
+    sending.value = true;
+    error.value = null;
+    const destination = await prepareRecording(inflightDraft?.text ?? draftText);
+    await destination.complete(path, transcriptionContext);
+  } finally {
+    sending.value = false;
+  }
+}
+
+async function prepareRecording(text: string): Promise<RecordingDestination> {
+  error.value = null;
+  // Snapshot every submission option before awaiting draft creation. The user
+  // can navigate and edit another composer while this recording is alive.
+  const isDraft = !props.conversationId || !!props.currentConversation?.is_draft;
+  const options = {
+    model: selectedModel.value,
+    cwd: isDraft ? selectedCwd.value || undefined : undefined,
+    conversation_options: isDraft ? buildConversationOptions() : undefined,
+  };
+  try {
+    const conversationId = props.conversationId || (await ensureDraftConversation(text));
+    return {
+      conversationId,
+      async returnTo() {
+        try {
+          const conversation = await api.getConversationBySlug(conversationId);
+          if (!conversation) throw new Error("The recording's conversation no longer exists.");
+          props.onSelectConversation?.(conversation);
+        } catch (err) {
+          error.value = err instanceof Error ? err.message : String(err);
+        }
+      },
+      async complete(path, context) {
+        const suffix = context.trim();
+        try {
+          await api.sendMessage(conversationId, {
+            message: `${SLASH_COMMANDS.TRANSCRIPTION.command} ${path}${suffix ? `\n${suffix}` : ""}`,
+            ...options,
+          });
+          clearSubmittedDraft(conversationId, text);
+        } catch (err) {
+          const detail = err instanceof Error ? err.message : String(err);
+          error.value = `Failed to submit recording to ${conversationId}: ${detail}. Retry in that conversation with /transcription ${path}`;
+          throw err;
+        }
+      },
+    };
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : String(err);
+    throw err;
+  }
+}
+
+function clearSubmittedDraft(conversationId: string, text: string) {
+  // Acceptance belongs to the submitted composer even if it is now offscreen.
+  // Leave subsequent edits, and the newly selected conversation, untouched.
+  if (loadCachedDraft(conversationId)?.value === text) clearCachedDraft(conversationId);
+  if (props.conversationId === conversationId && draftText === text) {
+    draftAutosave.cancel();
+    seedComposer("");
+    lastSeededValue = "";
+  }
+}
+
 async function sendMessage(message: string) {
   if (!message.trim() || sending.value) return;
   const trimmedMessage = message.trim();
+  const transcriptionCommand =
+    trimmedMessage === SLASH_COMMANDS.TRANSCRIPTION.command ||
+    trimmedMessage.startsWith(`${SLASH_COMMANDS.TRANSCRIPTION.command} `);
+  const tourCommand =
+    trimmedMessage === SLASH_COMMANDS.TOUR.command ||
+    trimmedMessage.startsWith(`${SLASH_COMMANDS.TOUR.command} `);
   const dispatch = composerDispatch(message, {
     isChildConversation: !!props.currentConversation?.parent_conversation_id,
   });
-  if (dispatch.route === "queue") {
+  if (dispatch.route === "queue" && !transcriptionCommand && !tourCommand) {
     await queueMessage(trimmedMessage);
     return;
   }
@@ -2857,6 +3075,14 @@ async function sendMessage(message: string) {
     const err = new Error(noModelErrorMessage());
     error.value = err.message;
     throw err;
+  }
+
+  if (transcriptionCommand) {
+    const [commandLine, ...contextLines] = trimmedMessage.split("\n");
+    const path = commandLine.slice(SLASH_COMMANDS.TRANSCRIPTION.command.length).trim();
+    if (!path) throw new Error("Provide a recording path to transcribe.");
+    await submitTranscriptionCommand(path, contextLines.join("\n").trim());
+    return;
   }
 
   if (dispatch.route === "btw") {
@@ -2887,6 +3113,48 @@ async function sendMessage(message: string) {
     } catch (err) {
       error.value = err instanceof Error ? err.message : "Failed to start BTW";
       throw err;
+    }
+    return;
+  }
+
+  if (tourCommand) {
+    if (!props.conversationId || props.currentConversation?.is_draft) {
+      const err = new Error("Start a conversation before requesting a tour.");
+      error.value = err.message;
+      throw err;
+    }
+    if (props.currentConversation?.parent_conversation_id) {
+      const err = new Error("Commit tours can only be requested from top-level conversations.");
+      error.value = err.message;
+      throw err;
+    }
+    try {
+      sending.value = true;
+      error.value = null;
+      const path = window.location.pathname;
+      const startedAt = performance.now();
+      const accepted = await api.sendMessage(props.conversationId, {
+        message: trimmedMessage,
+        model: selectedModel.value,
+      });
+      const cwd =
+        trimmedMessage.split("\n")[1]?.trim() ||
+        props.currentConversation?.cwd ||
+        selectedCwd.value;
+      if (accepted.tour && cwd) {
+        applyCommitTourStatus(cwd, accepted.tour.hash, accepted.tour);
+        if (accepted.tour.status === "present") {
+          handleOpenDiffViewer(accepted.tour.hash, cwd);
+        } else if (accepted.tour.status === "building") {
+          announceCommitTourRequest(props.conversationId, cwd, accepted.tour.hash, path, startedAt);
+        }
+      }
+    } catch (err) {
+      console.error("Failed to run /tour:", err);
+      error.value = err instanceof Error ? err.message : "Failed to request tour";
+      throw err;
+    } finally {
+      sending.value = false;
     }
     return;
   }
@@ -3035,35 +3303,24 @@ async function sendMessage(message: string) {
     streamingText.value = "";
     streamingThinking.value = "";
 
-    if (!props.conversationId && inflightCreate) {
-      try {
-        await inflightCreate;
-      } catch {
-        /* fall through */
-      }
-    }
-    const isDraftConv = !!props.currentConversation?.is_draft;
-    const effectiveId = props.conversationId || draftConvId;
+    // A pending autosave now finishes without pulling navigation back to its
+    // origin. Bind normal sends just like recordings before waiting for it.
+    const submittedDraft = inflightDraft?.text ?? draftText;
+    const isDraft = !props.conversationId || !!props.currentConversation?.is_draft;
+    const request: ChatRequest = {
+      message: message.trim(),
+      model: selectedModel.value,
+      cwd: isDraft ? selectedCwd.value || undefined : undefined,
+      conversation_options: isDraft ? buildConversationOptions() : undefined,
+    };
+    let effectiveId = props.conversationId || draftConvId;
+    if (!effectiveId && inflightCreate) effectiveId = await inflightCreate;
     if (!effectiveId && props.onFirstMessage) {
       await sendFirstMessage(message.trim());
     } else if (effectiveId) {
-      // When this send promotes an autosaved draft, carry the composer's
-      // conversation_options (thinking level, tool overrides).
-      // The draft was created without them, and PromoteDraft only preserves
-      // what's stored — so without this the selection is lost and reasoning
-      // is silently disabled for adaptive models. Follow-up messages on an
-      // already-promoted conversation must NOT resend options (they're locked).
-      const promoting = isDraftConv || (!props.conversationId && !!draftConvId);
       beginModelHealthRequest();
-      await api.sendMessage(effectiveId, {
-        message: message.trim(),
-        model: selectedModel.value,
-        cwd:
-          (isDraftConv || !props.conversationId) && selectedCwd.value
-            ? selectedCwd.value
-            : undefined,
-        conversation_options: promoting ? buildConversationOptions() : undefined,
-      });
+      await api.sendMessage(effectiveId, request);
+      clearSubmittedDraft(effectiveId, submittedDraft);
     }
   } catch (err) {
     console.error("Failed to send message:", err);
@@ -3076,6 +3333,23 @@ async function sendMessage(message: string) {
   }
 }
 
+async function handleResumeInterrupted() {
+  const conversationId = props.conversationId;
+  if (!conversationId || resumingInterrupted.value || !conversationInterrupted.value) return;
+  try {
+    resumingInterrupted.value = true;
+    error.value = null;
+    const status = await api.resumeConversation(conversationId);
+    if (status !== "resuming") resumingInterrupted.value = false;
+  } catch (err) {
+    console.error("Failed to resume interrupted conversation:", err);
+    resumingInterrupted.value = false;
+    if (props.conversationId === conversationId) {
+      error.value = err instanceof Error ? err.message : "Failed to resume conversation";
+    }
+  }
+}
+
 async function handleCancel() {
   if (!props.conversationId || cancelling.value) return;
   const queued = queuedGhosts.value;
@@ -3083,9 +3357,9 @@ async function handleCancel() {
     ({ conversationId }) => conversationId === props.conversationId,
   );
   const pendingText = pending.map(({ text }) => text).join("\n");
-  const queuedText = [...queued.map(queuedMessageText), ...pending.map(({ text }) => text)].join(
-    "\n",
-  );
+  const queuedText = [...queued.map(queuedMessageRestoreText), ...pending.map(({ text }) => text)]
+    .filter(Boolean)
+    .join("\n");
   pending.forEach(({ controller }) => controller.abort());
   try {
     cancelling.value = true;
@@ -3138,6 +3412,58 @@ function handleOpenDiffViewer(commit: string, cwd?: string) {
   diffViewerInitialCommit.value = commit;
   diffViewerCwd.value = cwd;
   showDiffViewer.value = true;
+}
+
+const activeTourRequests = new Map<string, () => void>();
+let unsubscribeTourRequests: (() => void) | null = null;
+let lastUserActivityAt = 0;
+const tourActivityEvents = ["pointerdown", "keydown", "wheel", "touchstart"] as const;
+
+function markTourUserActivity() {
+  lastUserActivityAt = performance.now();
+}
+
+function watchRequestedTour({ conversationId, cwd, hash, path, startedAt }: CommitTourRequest) {
+  const key = commitTourStatusKey(cwd, hash);
+  if (activeTourRequests.has(key)) return;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let unsubscribe = () => {};
+  const stop = () => {
+    if (timer) clearTimeout(timer);
+    unsubscribe();
+    activeTourRequests.delete(key);
+  };
+  activeTourRequests.set(key, stop);
+  unsubscribe = subscribeCommitTourStatus(cwd, hash, (status) => {
+    if (status.status === "building") return;
+    stop();
+    if (status.status === "present" || status.status === "failed") {
+      announceA11y(
+        `Tour for ${hash.slice(0, 8)} ${status.status === "present" ? "is ready" : "could not be built"}.`,
+      );
+    }
+    if (
+      status.status === "present" &&
+      props.conversationId === conversationId &&
+      window.location.pathname === path &&
+      lastUserActivityAt <= startedAt &&
+      document.visibilityState === "visible" &&
+      !showDiffViewer.value &&
+      !draftText.trim()
+    ) {
+      handleOpenDiffViewer(hash, cwd);
+    }
+  });
+  const poll = async () => {
+    try {
+      await loadCommitTourStatus(cwd, hash, true);
+    } catch (error) {
+      console.error("Failed to check commit tour:", error);
+    } finally {
+      if (activeTourRequests.has(key)) timer = setTimeout(() => void poll(), 2_000);
+    }
+  };
+  if (activeTourRequests.has(key)) timer = setTimeout(() => void poll(), 2_000);
 }
 
 function handleMessageComment(messageId: string, snippet: string) {
@@ -3214,7 +3540,7 @@ async function archiveFromMenu() {
 // rather than always opening a new one), and is gated by the same availability
 // the menu uses (see the ChatOverflowMenu props bound in the template) so a
 // shortcut never fires for a hidden item. The palette (Cmd/Ctrl+K) and file
-// finder (Cmd/Ctrl+Shift+P) are handled in App.vue, which owns those modals.
+// finder (Cmd/Ctrl+P) are handled in App.vue, which owns those modals.
 // See utils/menuShortcuts.ts for the combos.
 function handleMenuShortcut(e: KeyboardEvent) {
   // Don't hijack keystrokes while typing in a field.
@@ -3290,17 +3616,65 @@ function appendBtwSummaryToComposer(answer: string) {
 }
 const lazyDraftId = ref<string | null>(null);
 let draftConvId: string | null = props.conversationId;
+let draftIsDraft = !!props.currentConversation?.is_draft;
 let inflightCreate: Promise<string> | null = null;
+let draftSessionVersion = 0;
+let newDraftSessionVersion = 0;
+let inflightDraft: { text: string; newSessionVersion: number } | null = null;
 // The server `updated_at` of the draft row we last successfully synced to.
 // Keystrokes stamp the localStorage mirror with this so a reload can tell
 // whether the cached text is ahead of what the server acknowledged. "" before
 // any server row exists (new-conversation view). See draftCache.
 let draftSyncedAt = "";
 
+async function ensureDraftConversation(value = draftText): Promise<string> {
+  if (draftConvId) return draftConvId;
+  if (inflightCreate) return inflightCreate;
+  const sessionVersion = draftSessionVersion;
+  const draft = { text: value, newSessionVersion: newDraftSessionVersion };
+  inflightDraft = draft;
+  const p = api
+    .createDraft({
+      draft: value,
+      model: selectedModel.value,
+      cwd: selectedCwd.value || undefined,
+    })
+    .then((conv) => {
+      // The pending create owns its latest text even after leaving /new. Move
+      // that cache to the saved id, without clearing a newer /new composer.
+      saveCachedDraft(conv.conversation_id, draft.text, conv.updated_at);
+      if (draft.newSessionVersion === newDraftSessionVersion) clearCachedDraft(null);
+      // A late draft response still belongs to its caller (e.g. a recording),
+      // but must not navigate away from the conversation selected meanwhile.
+      if (sessionVersion !== draftSessionVersion) return conv.conversation_id;
+      draftConvId = conv.conversation_id;
+      draftSyncedAt = conv.updated_at;
+      // A model picked while this createDraft was in flight had no draft id
+      // to PUT onto and would otherwise be dropped (and the row echo would
+      // revert the picker). Reconcile: the picker is authoritative.
+      if (conv.model && conv.model !== selectedModel.value) {
+        putDraftModel(conv.conversation_id, selectedModel.value);
+      }
+      // App receives the complete draft row before switching conversation ids,
+      // so its currentConversation fallback can identify this as a draft and
+      // skip message loading without pretending the empty cache is history.
+      lazyDraftId.value = conv.conversation_id;
+      props.onDraftCreated?.(conv);
+      return conv.conversation_id;
+    });
+  inflightCreate = p;
+  try {
+    return await p;
+  } finally {
+    if (inflightCreate === p) inflightCreate = null;
+    if (inflightDraft === draft) inflightDraft = null;
+  }
+}
+
 async function saveDraft(value: string) {
   const id = draftConvId;
   if (id) {
-    if (props.currentConversation?.is_draft) {
+    if (draftIsDraft) {
       const conv = await api.updateDraft(id, { draft: value });
       // The server advanced updated_at to acknowledge this text. Re-base the
       // live cache entry onto it so keystrokes typed while this PUT was
@@ -3319,52 +3693,14 @@ async function saveDraft(value: string) {
     return;
   }
   if (!value.trim()) return;
-  if (inflightCreate) {
-    await inflightCreate;
-    return;
-  }
-  const p = api
-    .createDraft({
-      draft: value,
-      model: selectedModel.value,
-      cwd: selectedCwd.value || undefined,
-    })
-    .then((conv) => {
-      draftConvId = conv.conversation_id;
-      draftSyncedAt = conv.updated_at;
-      // A model picked while this createDraft was in flight had no draft id
-      // to PUT onto and would otherwise be dropped (and the row echo would
-      // revert the picker). Reconcile: the picker is authoritative.
-      if (conv.model && conv.model !== selectedModel.value) {
-        putDraftModel(conv.conversation_id, selectedModel.value);
-      }
-      // Migrate the `null` new-view cache to the real id so a reload of
-      // /c/<id> finds the keystrokes (same session; see lazyDraftId). Re-base
-      // onto the new row's updated_at so the migrated text stays ahead.
-      const cached = loadCachedDraft(null);
-      if (cached) {
-        saveCachedDraft(conv.conversation_id, cached.value, conv.updated_at);
-        clearCachedDraft(null);
-      }
-      // App receives the complete draft row before switching conversation ids,
-      // so its currentConversation fallback can identify this as a draft and
-      // skip message loading without pretending the empty cache is history.
-      lazyDraftId.value = conv.conversation_id;
-      props.onDraftCreated?.(conv);
-      return conv.conversation_id;
-    });
-  inflightCreate = p;
-  try {
-    await p;
-  } finally {
-    if (inflightCreate === p) inflightCreate = null;
-  }
+  await ensureDraftConversation(value);
 }
 
 const draftAutosave = useDraftAutosave(saveDraft);
 function handleDraftChange(value: string) {
   perfCount("chat.draftChange");
   draftText = value;
+  if (inflightDraft) inflightDraft.text = value;
   // Mirror to localStorage SYNCHRONOUSLY before the debounced server autosave:
   // if the tab reloads (or the network silently dropped) before the PUT lands,
   // the keystroke survives, stamped with the last server updated_at we synced
@@ -3402,23 +3738,31 @@ const messageInputInitialRows = computed(() =>
 const canQueue = computed(() => agentWorking.value && !!props.conversationId);
 const autoQueue = computed(() => isDistilling.value && !!props.conversationId);
 
+const tocTargetId = useId();
+
 // Status content visibility on mobile (mirrors the renderStatusContent gate)
 const showStatusContent = computed(
   () =>
     !isMobile.value ||
+    conversationInterrupted.value ||
     !props.conversationId ||
     props.currentConversation?.is_draft ||
     props.currentConversation?.archived,
 );
 const statusSlotInline = computed(
-  () => !!props.conversationId && !props.currentConversation?.is_draft && isMobile.value,
+  () =>
+    !!props.conversationId &&
+    !props.currentConversation?.is_draft &&
+    !props.currentConversation?.archived &&
+    !conversationInterrupted.value &&
+    isMobile.value,
 );
 
 const statusBarClass = computed(
   () =>
     `status-bar${props.currentConversation?.archived ? " status-bar-archived" : ""}${
-      !props.conversationId || props.currentConversation?.is_draft ? " status-bar-new" : ""
-    }`,
+      conversationInterrupted.value ? " status-bar-interrupted" : ""
+    }${!props.conversationId || props.currentConversation?.is_draft ? " status-bar-new" : ""}`,
 );
 
 // compact callback for the context bar (only when handler available)
@@ -3485,11 +3829,12 @@ const statusContentProps = computed(() => {
     streamStatus: props.streamStatus,
     error: error.value,
     agentWorking: agentWorking.value,
+    interrupted: conversationInterrupted.value,
+    resumingInterrupted: resumingInterrupted.value,
     cancelling: cancelling.value,
     selectedCwd: selectedCwd.value,
     contextWindowSize: contextWindowSize.value,
     maxContextTokens: maxContextTokens.value,
-    contextPricingThreshold: contextPricingThreshold.value,
     usageEntries: usageEntries.value,
     otherUsageRows: otherUsageRows.value,
     messages: messages.value,
@@ -3506,14 +3851,17 @@ const statusContentProps = computed(() => {
     onUnarchive: handleUnarchive,
     onClearError: () => (error.value = null),
     onCancel: handleCancel,
+    onResumeInterrupted: handleResumeInterrupted,
     onDistillNewGeneration: contextBarDistill.value,
     onStartNewGeneration: handleStartNewGeneration,
     onSelectModel: setSelectedModel,
+    onSelectCombination: setSelectedCombination,
     // The status readout's inline picker only renders for a conversation that
     // already exists, where the model and reasoning level are server state (see
     // sendModelCommand); the composer's picker only renders before the first
     // send, where they are not. Separate handlers, not shared ones.
     onSwitchConversationModel: switchConversationModel,
+    onSwitchConversationCombination: switchConversationCombination,
     onSwitchConversationThinkingLevel: switchConversationThinkingLevel,
     onManageModels: () => props.onOpenModelsModal?.(),
     onRefreshModels: handleRefreshModels,
@@ -3585,7 +3933,8 @@ watch(
   },
 );
 
-// Initialize CWD from the active workspace, then the server default.
+// Initialize a new conversation's CWD from the active workspace, then the server
+// default. Reopened drafts are initialized from their stored cwd above.
 watch(
   [() => props.mostRecentCwd, cwdInitialized],
   () => {
@@ -3781,8 +4130,7 @@ watch(agentWorking, (working, wasWorking) => {
         if (m.type === "tool") n++;
       }
       toolsCompletedThisTurn.value = n;
-      toolStatsThisTurn.value =
-        n > 0 ? { total: n, succeeded: n, failed: 0 } : null;
+      toolStatsThisTurn.value = n > 0 ? { total: n, succeeded: n, failed: 0 } : null;
     } else {
       toolsCompletedThisTurn.value = stats.total;
       toolStatsThisTurn.value = stats;
@@ -3824,8 +4172,10 @@ watch(
 
     currentConversationId = id;
     activeModelHealth = null;
+    resumingInterrupted.value = false;
     followExplicitSelectionToBottom = explicitlySelected;
     suppressExplicitSelectionClamp = explicitlySelected;
+    stopSavedBottomRestoration();
     pendingScroll = id ? (explicitlySelected ? null : loadScroll()) : undefined;
     teardownSubscriptions();
     // An annotation view belongs to the image it was opened from; switching
@@ -3869,6 +4219,7 @@ watch(
       streamingText.value = "";
       streamingThinking.value = "";
       agentWorking.value = false;
+      resumingInterrupted.value = false;
       if (loadingProgressDelay) {
         clearTimeout(loadingProgressDelay);
         loadingProgressDelay = null;
@@ -3954,10 +4305,22 @@ watch(
 
 // draftConvId mirror.
 watch(
-  () => props.conversationId,
-  (id) => {
+  () => [props.conversationId, props.currentConversation?.is_draft] as const,
+  ([id, isDraft]) => {
+    if (id !== draftConvId && (id == null || id !== lazyDraftId.value)) {
+      // Start a trailing save while the mirrors still identify the old
+      // composer; never let its debounce later write into the newly viewed one.
+      draftAutosave.flush();
+      draftSessionVersion++;
+      if (id == null) newDraftSessionVersion++;
+      inflightCreate = null;
+      inflightDraft = null;
+      draftAutosave.cancel();
+    }
     draftConvId = id;
+    draftIsDraft = !!isDraft;
   },
+  { flush: "sync" },
 );
 
 // Genuine navigation ends a lazy-draft session.
@@ -4232,7 +4595,8 @@ function handleScroll() {
         ? inferredScrollUpDelta + upwardDelta
         : upwardDelta;
     inferredScrollUpAt = now;
-    markUserScrolledUp();
+    if (userScrollGestureActive()) markUserScrolledUp();
+    else inferUserScrolledUp();
   }
   // A layout clamp emits its scroll event synchronously right after the resize
   // that caused it, so any unconsumed budget now is stale; drop it so it can't
@@ -4267,6 +4631,8 @@ function setupScrollObservers() {
         // Manual return resumes follow even when touchend was lost or delayed.
         touchScrolling = false;
         userScrolled = false;
+        if (savedBottomRestoration === "seeking") savedBottomRestoration = "following";
+        clearPendingRestorationScroll();
         suppressExplicitSelectionClamp = false;
         stopBottomPin();
         if (!loadingFlag && followExplicitSelectionToBottom) {
@@ -4275,7 +4641,11 @@ function setupScrollObservers() {
       } else if (!bottomPinActive && !touchScrolling) {
         // Growth can move the sentinel while follow is paused. Only handleScroll
         // may disarm an active touch; neither infer scroll-up nor re-pin here.
-        if (!userScrolled && followExplicitSelectionToBottom) {
+        if (savedBottomRestoration !== null && !pendingBareRestorationScroll) {
+          // A saved semantic bottom survives startup/lazy layout that moves the
+          // sentinel without confirmed navigation.
+          scrollToBottom();
+        } else if (!userScrolled && followExplicitSelectionToBottom) {
           // An explicitly selected conversation may grow after its first
           // bottom paint as lazy renderers hydrate. Keep the selection at its
           // promised destination unless the user has tried to scroll away.
@@ -4295,6 +4665,14 @@ function setupScrollObservers() {
           // noticed: its event can race this async observer while
           // sentinelAtBottom is still stale-true.
           userScrolled = true;
+          if (pendingBareRestorationScroll && restorationConfirmationFrame === null) {
+            restorationConfirmationFrame = requestAnimationFrame(() => {
+              restorationConfirmationFrame = null;
+              if (pendingBareRestorationScroll && !sentinelAtBottom) {
+                stopSavedBottomRestoration();
+              }
+            });
+          }
         }
       }
     },
@@ -4353,6 +4731,7 @@ function setupScrollObservers() {
         showScrollToBottom.value = false;
         inferredScrollUpAt = -Infinity;
         inferredScrollUpDelta = 0;
+        clearPendingRestorationScroll();
       } else {
         clampBudget += listShrink;
       }
@@ -4376,6 +4755,7 @@ function setupScrollObservers() {
         showScrollToBottom.value = false;
         inferredScrollUpAt = -Infinity;
         inferredScrollUpDelta = 0;
+        clearPendingRestorationScroll();
       } else {
         clampBudget += containerGrowth;
       }
@@ -4398,14 +4778,13 @@ function setupScrollObservers() {
       lastObservedScrollTop = container.scrollTop;
     }
   });
-  // (Re)attach the element observers whenever the list/sentinel nodes change.
-  // The v-if="loading" spinner tears down and recreates .messages-list on every
-  // conversation load, so observers bound to the old nodes go stale — which is
-  // what silently broke auto-scroll and the scroll-to-bottom button after a
-  // conversation finished loading. A reactive watch re-observes the live nodes.
+  // (Re)attach the element observers whenever the conversation or nodes change.
+  // Loading can recreate the list, but promoting /new to a draft reuses it.
+  // Re-observe even then: the reset bottom-restoration state needs a fresh
+  // intersection report when the sentinel has stayed in view throughout.
   watch(
-    [messagesListRef, bottomSentinelRef],
-    ([list, sentinel]) => {
+    [() => props.conversationId, messagesListRef, bottomSentinelRef],
+    ([, list, sentinel]) => {
       ro?.disconnect();
       bottomObserver?.disconnect();
       // Observe the container alongside the list: container resizes (composer
@@ -4538,9 +4917,7 @@ function handleScrollKeyDown(e: KeyboardEvent) {
   const target = e.target as HTMLElement | null;
   const inField =
     !!target &&
-    (target.tagName === "INPUT" ||
-      target.tagName === "TEXTAREA" ||
-      target.isContentEditable);
+    (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
 
   // "?" help (shift+/). Skip when typing in fields.
   if ((e.key === "?" || (e.key === "/" && e.shiftKey)) && !inField && !e.metaKey && !e.ctrlKey) {
@@ -4733,9 +5110,16 @@ onMounted(() => {
   document.addEventListener("visibilitychange", handleVisibilityChange);
   document.addEventListener("keydown", handleScrollKeyDown);
   document.addEventListener("keydown", handleMenuShortcut);
+  unsubscribeTourRequests = subscribeCommitTourRequests(watchRequestedTour);
+  for (const event of tourActivityEvents)
+    document.addEventListener(event, markTourUserActivity, true);
 });
 
 onUnmounted(() => {
+  unsubscribeTourRequests?.();
+  for (const stop of activeTourRequests.values()) stop();
+  for (const event of tourActivityEvents)
+    document.removeEventListener(event, markTourUserActivity, true);
   teardownSubscriptions();
   stopBottomPin();
   tailSweepToken++; // cancel any in-flight background mount sweep
@@ -4750,6 +5134,7 @@ onUnmounted(() => {
   window.removeEventListener("pointerup", handleScrollPointerUp);
   window.removeEventListener("pointercancel", handleScrollPointerUp);
   if (scrollSaveTimer) clearTimeout(scrollSaveTimer);
+  clearPendingRestorationScroll();
   ro?.disconnect();
   bottomObserver?.disconnect();
   document.removeEventListener("visibilitychange", onVisChangeSave);
