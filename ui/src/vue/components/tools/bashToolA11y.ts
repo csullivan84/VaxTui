@@ -21,10 +21,7 @@ export function terminalToggleLabel(expanded: boolean, command: string): string 
 
 export type BashCompletionKind = "success" | "error" | "cancelled";
 
-export function bashCompletionAnnouncement(
-  command: string,
-  kind: BashCompletionKind,
-): string {
+export function bashCompletionAnnouncement(command: string, kind: BashCompletionKind): string {
   const cmd = shortCommand(command) || "command";
   if (kind === "cancelled") return `Command cancelled: \`${cmd}\``;
   if (kind === "error") return `Command failed: \`${cmd}\``;

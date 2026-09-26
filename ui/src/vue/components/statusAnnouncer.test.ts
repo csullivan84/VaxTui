@@ -49,18 +49,22 @@ check("cancel path is not finished", agentAnnouncement(false, true, 2, "x", true
   text: "Cancelled.",
   politeness: "polite",
 });
-check(
-  "cancel with subagents",
-  agentAnnouncement(false, true, 0, "", true, null, 2),
-  {
-    text: "Cancelled, including 2 subagents.",
-    politeness: "polite",
-  },
-);
+check("cancel with subagents", agentAnnouncement(false, true, 0, "", true, null, 2), {
+  text: "Cancelled, including 2 subagents.",
+  politeness: "polite",
+});
 check("unchanged idle state stays silent", agentAnnouncement(false, false), null);
 
-check("format all succeeded", formatToolTurnSummary({ total: 2, succeeded: 2, failed: 0 }), "2 tools completed.");
-check("format all failed", formatToolTurnSummary({ total: 1, succeeded: 0, failed: 1 }), "1 tool failed.");
+check(
+  "format all succeeded",
+  formatToolTurnSummary({ total: 2, succeeded: 2, failed: 0 }),
+  "2 tools completed.",
+);
+check(
+  "format all failed",
+  formatToolTurnSummary({ total: 1, succeeded: 0, failed: 1 }),
+  "1 tool failed.",
+);
 
 check("cancel no subagents", cancelAnnouncement(0), {
   text: "Cancelled.",

@@ -13,11 +13,14 @@ function check(name: string, cond: boolean) {
   if (!cond) throw new Error(`FAIL: ${name}`);
 }
 
-check("sr-only region when collapsed", src.includes('class="sr-only"') && src.includes("!expanded"));
+check(
+  "sr-only region when collapsed",
+  src.includes('class="sr-only"') && src.includes("!expanded"),
+);
 check("role=region on collapsed body", src.includes('role="region"'));
-check("aria-label bound", src.includes(":aria-label=\"label\""));
+check("aria-label bound", src.includes(':aria-label="label"'));
 check("pre for line-break navigation", src.includes("<pre"));
-check("v-show for expanded (keeps DOM)", src.includes("v-show=\"expanded\""));
+check("v-show for expanded (keeps DOM)", src.includes('v-show="expanded"'));
 check("data-testid tool-output-sr", src.includes('data-testid="tool-output-sr"'));
 check("plainText prop exists", src.includes("plainText"));
 check("no display:none pattern for collapsed", !src.includes("display: none"));

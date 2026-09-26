@@ -52,7 +52,11 @@ check(
       user("u1"),
       agent("a0", "old turn"),
       user("u2"),
-      { type: "agent", message_id: "toolish", llm_data: JSON.stringify({ Content: [{ Type: 3, ToolName: "bash" }] }) },
+      {
+        type: "agent",
+        message_id: "toolish",
+        llm_data: JSON.stringify({ Content: [{ Type: 3, ToolName: "bash" }] }),
+      },
       agent("a2", "Final answer."),
     ],
     strip,

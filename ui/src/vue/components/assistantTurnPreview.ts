@@ -17,7 +17,9 @@ function agentText(message: PreviewMessage): string {
   try {
     const raw = message.llm_data;
     const llm =
-      typeof raw === "string" ? (JSON.parse(raw) as { Content?: ContentPart[] }) : (raw as { Content?: ContentPart[] });
+      typeof raw === "string"
+        ? (JSON.parse(raw) as { Content?: ContentPart[] })
+        : (raw as { Content?: ContentPart[] });
     return (llm?.Content || [])
       .filter((content) => content.Type === TEXT_TYPE && content.Text)
       .map((content) => content.Text!.trim())

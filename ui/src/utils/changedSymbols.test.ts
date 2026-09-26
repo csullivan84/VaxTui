@@ -12,7 +12,14 @@ const diff = `--- a/sample
 +func (s *Server) newRoute() {}`;
 
 const actual = extractChangedSymbols(diff);
-const expected = ["oldRoute", "newRoute", "loadModels", "ModelHealth", "HealthEntry", "STORAGE_KEY"];
+const expected = [
+  "oldRoute",
+  "newRoute",
+  "loadModels",
+  "ModelHealth",
+  "HealthEntry",
+  "STORAGE_KEY",
+];
 if (JSON.stringify(actual) !== JSON.stringify(expected)) {
   throw new Error(`changed-symbol extraction: ${JSON.stringify(actual)}`);
 }
