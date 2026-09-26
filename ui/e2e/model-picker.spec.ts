@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { testWorkingDirectory } from "./helpers";
+import { selectWorkspace, testWorkingDirectory } from "./helpers";
 
 // The unified model + effort picker (ChatStatusContent -> ModelPicker.vue) is
 // built on PrimeVue <Select>. It renders on the new-conversation screen. Here
@@ -55,11 +55,11 @@ test.describe("Model picker (PrimeVue)", () => {
 
   test("keeps model and directory inline when they fit, then wraps when needed", async ({
     page,
+    request,
   }) => {
-    // Pin the directory so layout doesn't depend on the length of the
-    // server's checkout path (which varies across CI agents and wraps the
-    // Dir chip onto its own line when long).
-    await page.addInitScript(() => localStorage.setItem("shelley_selected_cwd", "/tmp/e2e-dir"));
+    // Pin a short workspace directory so layout doesn't depend on the length
+    // of the test's temp path (which wraps the Dir chip onto its own line).
+    await selectWorkspace(page, request, "/tmp");
     await page.setViewportSize({ width: 412, height: 915 });
     await page.goto("/new");
 
