@@ -1,6 +1,6 @@
 {
   "_README": "This file is managed by LazyCue (see shelley/lazycue). Do NOT edit by hand — it is the cached, machine-generated DSL for a self-healing browser test. To change behavior, edit the test description and re-run LazyCue.",
-  "description": "Navigate to /new and confirm selector \"[data-testid='tool-call-completed']\" initially matches exactly 0 elements. Send three consecutive tool turns in this same conversation. For the first turn, type the text bash: echo \"first command\" into the message input (data-testid \"message-input\") and click the send button (data-testid \"send-button\"). Wait for exactly one completed tool call, then wait for the turn-ending agent message by evaluating \"Array.from(document.querySelectorAll('.message-agent')).filter(function(el){return el.textContent.trim()==='Done.';}).length\" and expecting \"1\"; this eval step must set timeout \"30s\". For the second turn, type the text bash: echo \"second command\" into the same message input and click the send button; wait for exactly two completed tool calls, then run the same eval and expect \"2\" with timeout \"30s\". For the third turn, type the text bash: echo \"third command\" into the same message input and click the send button; wait for exactly three completed tool calls, then run the same eval and expect \"3\" with timeout \"30s\". Finally, selector \".bash-tool[data-testid='tool-call-completed']\" should match exactly 3 elements, selector \".bash-tool-command\" should match exactly 3 elements, and selector \".bash-tool-header .bash-tool-success\" should match exactly 3 elements. Evaluate \"Array.from(document.querySelectorAll('.bash-tool-header')).every(function(el){return !el.textContent.includes('✓')\u0026\u0026!el.textContent.includes('✗');})\" expecting \"true\". Evaluate \"Array.from(document.querySelectorAll('.bash-tool-command')).map(function(el){return el.textContent.trim();}).join('|')\" expecting \"echo \\\"first command\\\"|echo \\\"second command\\\"|echo \\\"third command\\\"\". The three sent user messages should all remain visible.",
+  "description": "Navigate to /new and confirm selector \"[data-testid='tool-call-completed']\" initially matches exactly 0 elements. Send three consecutive tool turns in this same conversation. For the first turn, type the text bash: echo \"first command\" into the message input (data-testid \"message-input\") and click the send button (data-testid \"send-button\"). Wait for exactly one completed tool call, then wait for the turn-ending agent message by evaluating \"Array.from(document.querySelectorAll('.message-agent .message-content')).filter(function(el){return el.textContent.trim()==='Done.';}).length\" and expecting \"1\"; this eval step must set timeout \"30s\". For the second turn, type the text bash: echo \"second command\" into the same message input and click the send button; wait for exactly two completed tool calls, then run the same eval and expect \"2\" with timeout \"30s\". For the third turn, type the text bash: echo \"third command\" into the same message input and click the send button; wait for exactly three completed tool calls, then run the same eval and expect \"3\" with timeout \"30s\". Finally, selector \".bash-tool[data-testid='tool-call-completed']\" should match exactly 3 elements, selector \".bash-tool-command\" should match exactly 3 elements, and selector \".bash-tool-header .bash-tool-success\" should match exactly 3 elements. Evaluate \"Array.from(document.querySelectorAll('.bash-tool-header')).every(function(el){return !el.textContent.includes('✓')\u0026\u0026!el.textContent.includes('✗');})\" expecting \"true\". Evaluate \"Array.from(document.querySelectorAll('.bash-tool-command')).map(function(el){return el.textContent.trim();}).join('|')\" expecting \"echo \\\"first command\\\"|echo \\\"second command\\\"|echo \\\"third command\\\"\". The three sent user messages should all remain visible.",
   "version": 1,
   "steps": [
     {
@@ -39,7 +39,7 @@
     {
       "action": "eval",
       "expect": "1",
-      "expression": "Array.from(document.querySelectorAll('.message-agent')).filter(function(el){return el.textContent.trim()==='Done.';}).length",
+      "expression": "Array.from(document.querySelectorAll('.message-agent .message-content')).filter(function(el){return el.textContent.trim()==='Done.';}).length",
       "timeout": "30s"
     },
     {
@@ -65,7 +65,7 @@
     {
       "action": "eval",
       "expect": "2",
-      "expression": "Array.from(document.querySelectorAll('.message-agent')).filter(function(el){return el.textContent.trim()==='Done.';}).length",
+      "expression": "Array.from(document.querySelectorAll('.message-agent .message-content')).filter(function(el){return el.textContent.trim()==='Done.';}).length",
       "timeout": "30s"
     },
     {
@@ -91,7 +91,7 @@
     {
       "action": "eval",
       "expect": "3",
-      "expression": "Array.from(document.querySelectorAll('.message-agent')).filter(function(el){return el.textContent.trim()==='Done.';}).length",
+      "expression": "Array.from(document.querySelectorAll('.message-agent .message-content')).filter(function(el){return el.textContent.trim()==='Done.';}).length",
       "timeout": "30s"
     },
     {
