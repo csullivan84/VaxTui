@@ -174,10 +174,9 @@ watch(
   background-size: auto, auto, 32px 32px, 32px 32px, auto;
 }
 
-.workspace-shell::after {
+.workspace-shell::before {
   content: "";
   position: absolute;
-  z-index: 0;
   top: 9.75rem;
   right: 1.25rem;
   width: 5rem;
@@ -202,10 +201,12 @@ watch(
   min-height: 0;
 }
 
+/* Positioned (to paint over the ::before stripe) but deliberately without a
+   z-index: a stacking context here would trap the chat pane's fixed modals
+   (diff viewer, git graph) beneath the drawer and workspace tabs. */
 .workspace-view {
   flex: 1;
   position: relative;
-  z-index: 1;
 }
 
 .workspace-chat-pane {
@@ -251,7 +252,7 @@ watch(
 }
 
 @media (max-width: 600px) {
-  .workspace-shell::after {
+  .workspace-shell::before {
     right: 0.75rem;
     width: 3rem;
   }
@@ -262,7 +263,7 @@ watch(
     background-image: none;
   }
 
-  .workspace-shell::after {
+  .workspace-shell::before {
     display: none;
   }
 }

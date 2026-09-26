@@ -53,6 +53,9 @@ test.describe("Diff viewer find widget", () => {
       expect(options).toBeGreaterThan(1); // more than just the placeholder
     }).toPass({ timeout: 15000 });
 
+    // Diffs open as linear text (screen-reader friendly); Monaco is opt-in.
+    await overlay.getByRole("button", { name: "Visual diff" }).click();
+
     // Wait for Monaco editor to render inside the diff viewer.
     const editorContainer = overlay.locator(".diff-viewer-editor");
     await expect(async () => {

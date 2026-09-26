@@ -171,6 +171,19 @@
   </div>
 </template>
 
+<script lang="ts">
+import { ref as moduleRef } from "vue";
+
+// One MediaQueryList for every card, read at module load rather than in setup.
+// On a mobile viewport window.innerWidth forces a synchronous layout, and setup
+// runs after the card's mount placeholder has been removed but before the card
+// is inserted: that layout clamps the transcript's scrollTop by the
+// placeholder's height, which autoscroll then reads as a user scroll-up.
+const mobileQuery = window.matchMedia("(max-width: 767px)");
+const isMobile = moduleRef(mobileQuery.matches);
+mobileQuery.addEventListener("change", (event) => (isMobile.value = event.matches));
+</script>
+
 <script setup lang="ts">
 import { computed, ref, watch, onMounted, onUnmounted } from "vue";
 import type { LLMContent } from "../../../types";
@@ -318,7 +331,6 @@ watch(
     }
   },
 );
-const isMobile = ref(window.innerWidth < 768);
 const { sideBySidePreference, setSideBySidePreference } = useSideBySidePreference();
 const sideBySide = computed(() => !isMobile.value && sideBySidePreference.value);
 // Host element for the FileDiff renderer's <diffs-container>.
@@ -344,18 +356,6 @@ onMounted(() => {
 });
 onUnmounted(() => {
   themeObserver?.disconnect();
-});
-
-// Viewport resize handler
-function handleResize() {
-  isMobile.value = window.innerWidth < 768;
-}
-
-onMounted(() => {
-  window.addEventListener("resize", handleResize);
-});
-onUnmounted(() => {
-  window.removeEventListener("resize", handleResize);
 });
 
 function toggleSideBySide() {
