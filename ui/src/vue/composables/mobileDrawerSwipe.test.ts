@@ -90,6 +90,12 @@ run("detects accessible modal dialogs", () => {
   assert(hasOpenModalOverlay(root), "aria-modal dialogs should block drawer swipes");
 });
 
+run("ignores the open drawer's own modal dialog", () => {
+  const root = document.createElement("div");
+  root.innerHTML = '<div class="drawer open" role="dialog" aria-modal="true"></div>';
+  assert(!hasOpenModalOverlay(root), "the drawer must not block its own close swipe");
+});
+
 run("ignores non-modal dialogs", () => {
   const root = document.createElement("div");
   root.innerHTML = '<div role="dialog" aria-modal="false"></div>';

@@ -70,6 +70,8 @@ function selectSavedWorkspace(event: Event) {
   display: flex;
   align-items: center;
   flex: 0 0 auto;
+  /* The same box as .drawer-header, so the two top bars line up. */
+  height: calc(3rem + 1px);
   min-width: 0;
   border-bottom: 1px solid var(--border);
   background: var(--bg-secondary);

@@ -15,8 +15,8 @@
     style="cursor: pointer"
     @click="onRowClick"
     @auxclick="ctx.handleAuxClick($event, conversation)"
-    @keydown.enter.prevent="ctx.selectConversation(conversation)"
-    @keydown.space.prevent="ctx.selectConversation(conversation)"
+    @keydown.enter.self.prevent="ctx.selectConversation(conversation)"
+    @keydown.space.self.prevent="ctx.selectConversation(conversation)"
   >
     <div class="drawer-conversation-item-flex-container">
       <div class="drawer-conversation-header-row">

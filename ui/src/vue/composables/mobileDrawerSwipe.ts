@@ -5,8 +5,10 @@ const OPEN_SWIPE_DISTANCE = 72;
 const CLOSE_SWIPE_DISTANCE = 48;
 const DIRECTION_LOCK_DISTANCE = 10;
 const HORIZONTAL_BIAS = 1.5;
+// The open mobile drawer is itself an aria-modal dialog; it must not block the
+// swipe that closes it.
 const MODAL_OVERLAY_SELECTOR = [
-  '[aria-modal="true"]',
+  '[aria-modal="true"]:not(.drawer)',
   ".diff-viewer-overlay",
   ".image-comment-overlay",
   ".command-palette-overlay",

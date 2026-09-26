@@ -10,7 +10,7 @@ import Paragraph from "@tiptap/extension-paragraph";
 import Text from "@tiptap/extension-text";
 import { UndoRedo } from "@tiptap/extensions";
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
-import { TextSelection } from "@tiptap/pm/state";
+import { Selection, TextSelection } from "@tiptap/pm/state";
 import { Editor, EditorContent } from "@tiptap/vue-3";
 import { nextTick, onBeforeUnmount, watch } from "vue";
 import {
@@ -214,6 +214,24 @@ function updateEditorData() {
   dom.dataset.empty = localRaw.length === 0 ? "true" : "false";
 }
 
+// Tiptap's focus command moves DOM focus on the next animation frame. Keys
+// pressed before then (a quick typist, or a screen reader user right after
+// activating a filter button) land on the button instead of the query, and
+// the late frame can clobber a newer selection. Place the caret and focus now.
+function focusAt(position: number | "end") {
+  const { doc } = editor.state;
+  const end = Selection.atEnd(doc).to;
+  const caret =
+    position === "end" ? end : Math.min(Math.max(position, Selection.atStart(doc).from), end);
+  editor.view.dispatch(
+    editor.state.tr.setSelection(TextSelection.create(doc, caret)).scrollIntoView(),
+  );
+  // A search box opened this tick is still detached: EditorContent moves the
+  // view into the page on its own next tick, which runs before this one.
+  if (editor.view.dom.isConnected) editor.view.focus();
+  else void nextTick(() => editor.view.focus());
+}
+
 function setRaw(raw: string, selection?: ConversationQuerySelection | null) {
   applyingExternalValue = true;
   try {
@@ -257,7 +275,7 @@ const editor = new Editor({
         if (target.closest(".conversation-query-token-delete")) return true;
         const position = view.posAtCoords({ left: event.clientX, top: event.clientY })?.inside;
         if (position !== undefined && view.state.doc.nodeAt(position)?.type.name === "queryToken") {
-          editor.commands.focus(afterTokenSeparator(view.state.doc, position));
+          focusAt(afterTokenSeparator(view.state.doc, position));
         }
         return true;
       },
@@ -271,7 +289,7 @@ const editor = new Editor({
         view.dispatch(
           view.state.tr.delete(position, afterTokenSeparator(view.state.doc, position)),
         );
-        editor.commands.focus(position);
+        focusAt(position);
         return true;
       },
     },
@@ -300,9 +318,7 @@ const editor = new Editor({
           // A trailing partial term shifted left with the removal; re-derive
           // the active edit now so the drawer never parses stale offsets.
           updateActiveEdit();
-          void nextTick(() =>
-            editor.commands.focus(rawPositionToDocument(editor.state.doc, removed.caret)),
-          );
+          void nextTick(() => focusAt(rawPositionToDocument(editor.state.doc, removed.caret)));
           return true;
         }
       }
@@ -343,9 +359,7 @@ function completeStructuredTerm(term: string): boolean {
     focus: completed.caret,
   });
   emit("update:modelValue", completed.query);
-  void nextTick(() =>
-    editor.commands.focus(rawPositionToDocument(editor.state.doc, completed.caret)),
-  );
+  void nextTick(() => focusAt(rawPositionToDocument(editor.state.doc, completed.caret)));
   return true;
 }
 
@@ -354,7 +368,7 @@ function finishStructuredEdit() {
 }
 
 function focusEnd() {
-  editor.commands.focus("end");
+  focusAt("end");
   updateActiveEdit();
 }
 

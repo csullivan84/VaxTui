@@ -569,6 +569,9 @@ function drawerFocusables() {
 function handleDrawerKeydown(event: KeyboardEvent) {
   if (!props.isOpen || !isMobileDrawer()) return;
   if (event.key === "Escape") {
+    // An inner layer (search dropdown, query text, rename) already took this
+    // Escape; the drawer closes only once nothing inside it is left to peel.
+    if (event.defaultPrevented) return;
     event.preventDefault();
     emit("close");
     void nextTick(() => drawerInvoker?.focus());
@@ -1126,6 +1129,7 @@ function handleRenameKeyDown(e: KeyboardEvent, conversationId: string) {
     e.preventDefault();
     void handleRename(conversationId);
   } else if (e.key === "Escape") {
+    e.preventDefault();
     editingId.value = null;
   }
 }
