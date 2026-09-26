@@ -1789,23 +1789,29 @@ test.describe("Cmd/Ctrl+ArrowDown scroll-to-bottom shortcut", () => {
     await expect(page.locator('[data-testid="message-input"]')).toBeVisible({ timeout: 30000 });
     await expect(page.getByTestId("message").first()).toBeVisible({ timeout: 30000 });
 
+    // The fork docks terminals in the Workbench pane, which hides the chat, so
+    // leave the transcript scrolled up before opening one and check it after
+    // returning to Chat.
+    const messagesContainer = page.locator(".messages-container");
+    await messagesContainer.evaluate((el) => {
+      el.scrollTop = 0;
+    });
+    const scrollButton = page.locator(".scroll-to-bottom-button");
+    await expect(scrollButton).toBeVisible({ timeout: 10000 });
+
     await page.locator(".chat-overflow-menu-wrapper .btn-icon").click();
     await page.locator(".overflow-menu-item", { hasText: /terminal/i }).click();
     const xtermInput = page.locator(".terminal-panel .xterm-helper-textarea");
     await expect(xtermInput).toBeVisible({ timeout: 30000 });
     await xtermInput.focus();
 
-    const messagesContainer = page.locator(".messages-container");
-    await messagesContainer.evaluate((el) => {
-      el.scrollTop = 0;
-    });
-    await expect(page.locator(".scroll-to-bottom-button")).toBeVisible({ timeout: 10000 });
-
     // Meta specifically: Ctrl+ArrowDown is consumed by xterm itself, so it
     // would pass here even with the bug present.
     await page.keyboard.press("Meta+ArrowDown");
     await page.waitForTimeout(500);
 
+    await page.getByRole("tab", { name: "Chat", exact: true }).click();
+    await expect(scrollButton).toBeVisible();
     expect(await messagesContainer.evaluate((el) => el.scrollTop)).toBeLessThan(50);
   });
 

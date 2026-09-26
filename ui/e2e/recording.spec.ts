@@ -310,15 +310,28 @@ function recordingPaletteItem(page: Page, title: "Record audio" | "Record audio 
   });
 }
 
-async function recordingShortcut(page: Page, mode: "microphone" | "screen") {
-  const modifier = await page.evaluate(() =>
+// Some specs fake navigator.platform, so follow the page's platform rather
+// than Playwright's host-based ControlOrMeta.
+function platformModifier(page: Page) {
+  return page.evaluate(() =>
     navigator.platform.toUpperCase().includes("MAC") ? "Meta" : "Control",
   );
+}
+
+async function recordingShortcut(page: Page, mode: "microphone" | "screen") {
+  const modifier = await platformModifier(page);
   await page.keyboard.press(`${modifier}+${mode === "screen" ? "Alt+" : ""}Shift+KeyM`);
 }
 
+// The fork opens new conversations at the current workspace's slug URL.
+async function newConversationURL(page: Page) {
+  const slug = await page.evaluate(() => localStorage.getItem("shelley_selected_workspace"));
+  expect(slug).toBeTruthy();
+  return new RegExp(`/${slug}$`);
+}
+
 async function openRecordingPalette(page: Page) {
-  await page.keyboard.press("ControlOrMeta+k");
+  await page.keyboard.press(`${await platformModifier(page)}+k`);
   const search = page.locator(".command-palette-input");
   await expect(search).toBeVisible();
   await search.fill("Record audio");
@@ -1326,7 +1339,7 @@ test.describe("media recording composer", () => {
       await expect(page).toHaveURL(new RegExp(`/c/${viewed.slug}$`));
 
       await page.locator("button.btn-new").click();
-      await expect(page).toHaveURL(/\/new$/);
+      await expect(page).toHaveURL(await newConversationURL(page));
       await expect(page.getByTestId("message-input")).toHaveValue("");
     } finally {
       releaseDraftResponse.resolve();
@@ -1373,14 +1386,15 @@ test.describe("media recording composer", () => {
     try {
       await selectConversationFromDrawer(page, viewed.conversationId);
       await page.locator("button.btn-new").click();
-      await expect(page).toHaveURL(/\/new$/);
+      const newURL = await newConversationURL(page);
+      await expect(page).toHaveURL(newURL);
       const newerInput = page.getByTestId("message-input");
       await newerInput.fill(newerText);
 
       releaseOldDraftResponse.resolve();
       await expect(page.getByTestId("recording-panel")).toBeVisible();
       await expect(floatingAncestor(page)).toHaveCount(1);
-      await expect(page).toHaveURL(/\/new$/);
+      await expect(page).toHaveURL(newURL);
       await expect(newerInput).toHaveValue(newerText);
 
       await page.getByTestId("recording-return-button").click();
@@ -1389,7 +1403,7 @@ test.describe("media recording composer", () => {
       await expect(page.getByTestId("message-input")).toHaveValue(recordedText);
 
       await page.locator("button.btn-new").click();
-      await expect(page).toHaveURL(/\/new$/);
+      await expect(page).toHaveURL(newURL);
       await expect(page.getByTestId("message-input")).toHaveValue(newerText);
     } finally {
       releaseOldDraftResponse.resolve();

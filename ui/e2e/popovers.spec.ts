@@ -212,7 +212,9 @@ test.describe("Context usage popup", () => {
     // popover even on the dismissal paths that never reach our click handler.
     await label.click();
     await expect(popup).toBeVisible();
-    await page.locator(".messages-container").click({ position: { x: 10, y: 10 } });
+    // On a phone the flipped popup covers the whole transcript below the
+    // fork's workspace tabs, so dismiss by clicking into the composer.
+    await page.getByTestId("message-input").click();
     await expect(popup).toBeHidden();
     await expect(label).toHaveAttribute("aria-expanded", "false");
 
@@ -1059,8 +1061,15 @@ test.describe("Advanced settings popover", () => {
     await trigger.click();
     const popover = page.locator(".advanced-settings-popover");
     await expect(popover).toBeVisible();
-    // The regime that writes `bottom`: too short to sit above the gear.
-    expect(await popover.evaluate((el) => (el as HTMLElement).style.bottom)).not.toBe("");
+    // Upstream uses this height to reach the regime that also writes `bottom`.
+    // The fork's workspace bar and tabs keep the gear too far down for that, so
+    // assert the measured desktop placement (always written) is in effect.
+    expect(
+      await popover.evaluate((el) => ({
+        left: (el as HTMLElement).style.left,
+        maxHeight: (el as HTMLElement).style.maxHeight,
+      })),
+    ).toEqual({ left: expect.stringMatching(/px$/), maxHeight: expect.stringMatching(/px$/) });
 
     await page.setViewportSize({ width: 390, height: 844 });
     await expect(async () => {

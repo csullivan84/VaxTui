@@ -41,9 +41,11 @@ test("keeps the terminal inside its padded content area", async ({ page, request
   await page.locator(".chat-overflow-menu-wrapper .btn-icon").click();
   await page.locator(".overflow-menu-item", { hasText: /terminal/i }).click();
 
-  const terminal = page.locator(
-    '.terminal-panel-content [data-terminal-id][style*="display: block"]',
-  );
+  // The fork lays each instance out as a flex column (xterm plus its a11y
+  // mirror), so select the shown instance by visibility, not inline display.
+  const terminal = page.locator(".terminal-panel-content [data-terminal-id]").filter({
+    visible: true,
+  });
   await expect(terminal).toBeVisible({ timeout: 30000 });
 
   const expectTerminalInsideContent = async () => {

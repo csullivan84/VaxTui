@@ -18,7 +18,8 @@ test("groups model and system prompt into one context card", async ({ page, requ
   });
   await expect(promptButton).toBeVisible();
   await expect(modelSummary).toContainText("Model:");
-  await expect(modelSummary).not.toContainText("Reasoning");
+  // The fork labels every field so screen readers never hear a bare value.
+  await expect(modelSummary).toContainText(/Reasoning:.+Health:/);
   await expect(promptButton).toContainText(/System Prompt:\s*\d+ tools?,\s*\d+ skills?/);
   expect(
     await promptButton.evaluate((element) => ({

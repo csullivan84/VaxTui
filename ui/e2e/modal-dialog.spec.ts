@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import path, { dirname } from "node:path";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { createConversationViaAPI } from "./helpers";
+import { createConversationViaAPI, selectWorkspace, touchDefaultWorkspace } from "./helpers";
 
 const e2eDir = dirname(fileURLToPath(import.meta.url));
 
@@ -123,16 +123,16 @@ test.describe("Base modal backdrop click beside the panel (desktop)", () => {
 });
 
 test.describe("Command palette home-directory action", () => {
-  test("starts a new conversation in $HOME", async ({ page }) => {
+  test("starts a new conversation in $HOME", async ({ page, request }) => {
     await page.goto("/new");
     const homeDir = await page.evaluate(() => window.__SHELLEY_INIT__?.home_dir || "");
     expect(homeDir).not.toBe("");
 
-    await page.evaluate(
-      (cwd) => localStorage.setItem("shelley_selected_cwd", cwd),
-      `${homeDir}/not-home`,
-    );
-    await page.reload();
+    const notHome = `${homeDir}/not-home`;
+    mkdirSync(notHome, { recursive: true });
+    await selectWorkspace(page, request, notHome);
+    await page.goto("/new");
+    await expect(page.locator(".status-field-cwd .status-chip")).toHaveText("~/not-home");
 
     await page.keyboard.press("ControlOrMeta+k");
     const search = page.locator(".command-palette-input");
@@ -141,9 +141,18 @@ test.describe("Command palette home-directory action", () => {
     await page.getByText("New Conversation in Home Directory", { exact: true }).click();
 
     await expect(page.locator(".status-field-cwd .status-chip")).toHaveText("~");
+    // The selected workspace (the fork's replacement for the selected cwd) is $HOME.
     await expect
-      .poll(() => page.evaluate(() => localStorage.getItem("shelley_selected_cwd")))
+      .poll(async () => {
+        const slug = await page.evaluate(() => localStorage.getItem("shelley_selected_workspace"));
+        const workspaces = (await (await request.get("/api/workspaces")).json()) as Array<{
+          slug: string;
+          path: string;
+        }>;
+        return workspaces.find((workspace) => workspace.slug === slug)?.path;
+      })
       .toBe(homeDir);
+    await touchDefaultWorkspace(request);
   });
 });
 
@@ -152,14 +161,15 @@ test.describe("Command palette home-directory action", () => {
 // create form whose local Escape must cancel create mode without closing the
 // dialog (it stopPropagation()s before the shared modal Escape stack sees it).
 test.describe("Directory picker modal (shared Modal consumer)", () => {
-  test("uses a home-relative path in the new-conversation cwd chip", async ({ page }) => {
+  test("uses a home-relative path in the new-conversation cwd chip", async ({ page, request }) => {
     await page.goto("/new");
     const homeDir = await page.evaluate(() => window.__SHELLEY_INIT__?.home_dir || "");
     expect(homeDir).not.toBe("");
 
     const absoluteCwd = `${homeDir}/exe`;
-    await page.evaluate((cwd) => localStorage.setItem("shelley_selected_cwd", cwd), absoluteCwd);
-    await page.reload();
+    mkdirSync(absoluteCwd, { recursive: true });
+    await selectWorkspace(page, request, absoluteCwd);
+    await page.goto("/new");
 
     const chip = page.locator(".status-field-cwd .status-chip");
     await expect(chip).toHaveText("~/exe");
@@ -168,10 +178,12 @@ test.describe("Directory picker modal (shared Modal consumer)", () => {
     const panel = page.locator(".modal.directory-picker-modal");
     await expect(panel.locator(".directory-picker-input")).toHaveValue(`${absoluteCwd}/`);
 
+    // The fork renders the current path as a breadcrumb; its last crumb names the full path.
+    const currentCrumb = panel.locator('.directory-picker-breadcrumb [aria-current="location"]');
     const homeButton = panel.getByRole("button", { name: "Go to home directory" });
     await homeButton.click();
     await expect(panel.locator(".directory-picker-input")).toHaveValue(`${homeDir}/`);
-    await expect(panel.locator(".directory-picker-current-path")).toHaveText(homeDir);
+    await expect(currentCrumb).toHaveAccessibleName(`Go to ${homeDir}`);
 
     const delayedPath = "/definitely-missing-shelley-directory";
     let releaseInvalid!: () => void;
@@ -195,7 +207,7 @@ test.describe("Directory picker modal (shared Modal consumer)", () => {
     await invalidRequested;
     await homeButton.click();
     await expect(panel.locator(".directory-picker-input")).toHaveValue(`${homeDir}/`);
-    await expect(panel.locator(".directory-picker-current-path")).toHaveText(homeDir);
+    await expect(currentCrumb).toHaveAccessibleName(`Go to ${homeDir}`);
 
     releaseInvalid();
     await invalidFulfilled;
