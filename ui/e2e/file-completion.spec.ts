@@ -2,7 +2,12 @@ import { expect, test, type APIRequestContext, type Locator, type Page } from "@
 import { execSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
-import { createConversationViaAPI, withTempDir } from "./helpers";
+import {
+  createConversationViaAPI,
+  selectWorkspace,
+  touchDefaultWorkspace,
+  withTempDir,
+} from "./helpers";
 
 const menuFor = (page: Page) => page.getByTestId("file-completion-menu");
 
@@ -13,8 +18,13 @@ async function openConversation(
 ): Promise<Locator> {
   const slug = await createConversationViaAPI(request, "Hello", { cwd });
   await page.goto(`/c/${slug}`);
+  // The composer is disabled while the transcript loads, and focusing a
+  // disabled textarea is a no-op, so wait for the loaded conversation.
+  await expect(page.locator(".messages-container").getByText("Hello", { exact: true })).toBeVisible(
+    { timeout: 30000 },
+  );
   const input = page.getByTestId("message-input");
-  await expect(input).toBeVisible({ timeout: 30000 });
+  await expect(input).toBeEnabled();
   return input;
 }
 
@@ -97,17 +107,15 @@ test.describe("@ filename completion", () => {
 
   test("uses the selected cwd on /new and supports quoted queries with spaces", async ({
     page,
+    request,
   }) => {
     await withTempDir("shelley completion spaced-", async (cwd) => {
       writeFileSync(join(cwd, "My Document.md"), "notes\n");
-      await page.addInitScript(
-        (selectedCwd) => localStorage.setItem("shelley_selected_cwd", selectedCwd),
-        cwd,
-      );
+      await selectWorkspace(page, request, cwd);
       await page.goto("/new");
 
       const input = page.getByTestId("message-input");
-      await expect(input).toBeVisible({ timeout: 30000 });
+      await expect(input).toBeEnabled({ timeout: 30000 });
       await setComposer(input, 'Read @"My Doc');
 
       const option = menuFor(page).getByRole("option", {
@@ -309,7 +317,8 @@ test.describe("@ filename completion", () => {
         { timeout: 10000 },
       );
       await expect(menu.getByRole("option")).toHaveCount(0);
-      await input.press("Control+Enter");
+      // This fork's default send keystroke is plain Enter, touch devices included.
+      await input.press("Enter");
 
       await expect(input).toHaveValue("");
       await expect(page.getByText("echo: sent @broken", { exact: true })).toBeVisible({
@@ -351,10 +360,7 @@ test.describe("@ filename completion", () => {
       });
       expect(response.status()).toBe(201);
       const draft = (await response.json()) as { conversation_id: string };
-      await page.addInitScript(
-        (cwd) => localStorage.setItem("shelley_selected_cwd", cwd),
-        otherCwd,
-      );
+      await selectWorkspace(page, request, otherCwd);
       await page.goto(`/c/${draft.conversation_id}`);
       const input = page.getByTestId("message-input");
       await expect(input).toHaveValue("unfinished draft", { timeout: 30000 });
@@ -376,7 +382,7 @@ test.describe("@ filename completion", () => {
           candidate.method() === "POST" &&
           new URL(candidate.url()).pathname === `/api/conversation/${draft.conversation_id}/chat`,
       );
-      await input.press("Control+Enter");
+      await input.press("Enter");
       expect((await sent).postDataJSON().cwd).toBe(draftCwd);
       await expect(input).toHaveValue("");
     });
@@ -399,10 +405,7 @@ test.describe("@ filename completion", () => {
       expect(draftResponse.status()).toBe(201);
       const draft = (await draftResponse.json()) as { conversation_id: string };
 
-      await page.addInitScript(
-        (selectedCwd) => localStorage.setItem("shelley_selected_cwd", selectedCwd),
-        oldCwd,
-      );
+      await selectWorkspace(page, request, oldCwd);
 
       let releaseUpdate!: () => void;
       let markUpdateRequested!: () => void;
@@ -435,10 +438,22 @@ test.describe("@ filename completion", () => {
       const picker = page.locator(".modal.directory-picker-modal");
       await expect(picker).toBeVisible();
       await picker.locator(".directory-picker-input").fill(`${newCwd}/`);
-      await expect(picker.locator(".directory-picker-current-path")).toHaveText(newCwd);
+      await expect(
+        picker.getByRole("button", { name: `Go to ${newCwd}`, exact: true }),
+      ).toHaveAttribute("aria-current", "location");
 
+      // A draft's cwd pick also opens that directory as the workspace.
+      const workspaceOpened = page.waitForResponse(
+        (response) =>
+          response.request().method() === "POST" &&
+          new URL(response.url()).pathname === "/api/workspaces",
+      );
       await picker.getByRole("button", { name: "Select" }).click();
       await updateRequested;
+      // Closing a modal returns focus to its opener on the next frame; let that
+      // land before focusing the composer so it cannot steal focus back.
+      await expect(picker).toHaveCount(0);
+      await expect(page.locator(".status-field-cwd .status-chip:visible")).toBeFocused();
 
       try {
         const completionRequest = page.waitForRequest((candidate) => {
@@ -454,6 +469,8 @@ test.describe("@ filename completion", () => {
       } finally {
         releaseUpdate();
         await updateSettled;
+        expect((await workspaceOpened).ok()).toBeTruthy();
+        await touchDefaultWorkspace(request);
       }
     });
   });

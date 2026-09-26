@@ -172,6 +172,32 @@ export async function disableScreenReaderMode(page: Page): Promise<void> {
   await page.addInitScript(() => window.localStorage.setItem("shelley-screen-reader-mode", "0"));
 }
 
+/** Re-touch the suite's default workspace. Workspaces are shared server state
+ *  and a browser without a saved workspace opens the most recently touched
+ *  one, so a spec that opens a temp-dir workspace hands the default back. */
+export async function touchDefaultWorkspace(request: APIRequestContext): Promise<void> {
+  const resp = await request.post("/api/workspaces", { data: { path: testWorkingDirectory() } });
+  expect(resp.ok()).toBeTruthy();
+}
+
+/** Make `path` THIS page's workspace. This fork scopes the new-conversation
+ *  cwd, file finder and Files tab to a server-side workspace, which replaced
+ *  upstream's localStorage "shelley_selected_cwd". Call before `page.goto`. */
+export async function selectWorkspace(
+  page: Page,
+  request: APIRequestContext,
+  path: string,
+): Promise<void> {
+  const resp = await request.post("/api/workspaces", { data: { path } });
+  expect(resp.ok()).toBeTruthy();
+  const { slug } = (await resp.json()) as { slug: string };
+  await touchDefaultWorkspace(request);
+  await page.addInitScript(
+    (workspace) => localStorage.setItem("shelley_selected_workspace", workspace),
+    slug,
+  );
+}
+
 /** Run `fn` with a fresh temp directory, removing it afterwards. Specs that
  *  need a real cwd with real files on disk (file finder, patch cards) use this
  *  so a full suite run doesn't litter /tmp. */

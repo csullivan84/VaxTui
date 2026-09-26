@@ -2,7 +2,7 @@ import { test, expect } from "@playwright/test";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { join } from "node:path";
-import { createConversationViaAPI, withTempDir } from "./helpers";
+import { createConversationViaAPI, selectWorkspace, withTempDir } from "./helpers";
 
 // The fuzzy file finder (Cmd/Ctrl+P) ANDs whitespace-separated terms, so
 // a half-remembered filename typed as words finds the file: "vm storage s3"
@@ -20,6 +20,8 @@ test.describe("File finder multi-term search", () => {
       ]) {
         writeFileSync(join(dir, "docs", name), "x\n");
       }
+
+      await selectWorkspace(page, request, dir);
 
       const slug = await createConversationViaAPI(request, "Hello", { cwd: dir });
       await page.goto(`/c/${slug}`);
@@ -55,6 +57,8 @@ test.describe("File finder path queries", () => {
       await withTempDir("shelley-finder-else-", async (elsewhere) => {
         writeFileSync(join(elsewhere, "handoff-notes.md"), "far away content\n");
 
+        await selectWorkspace(page, request, cwd);
+
         const slug = await createConversationViaAPI(request, "Hello", { cwd });
         await page.goto(`/c/${slug}`);
         await page.waitForLoadState("domcontentloaded");
@@ -73,14 +77,17 @@ test.describe("File finder path queries", () => {
         await expect(page.locator(".ff-scope")).toContainText(elsewhere);
 
         // Enter opens the file from the re-rooted directory, not a path
-        // joined against the conversation's cwd.
+        // joined against the conversation's cwd. This fork opens finder picks
+        // as Workbench editor tabs rather than an "Edit file" modal.
         await finderInput.press("Enter");
-        const modal = page.getByRole("dialog", {
-          name: `Edit ${join(elsewhere, "handoff-notes.md")}`,
-        });
-        await expect(modal).toBeVisible({ timeout: 15000 });
+        const editor = page.getByRole("region", { name: "File editor" });
+        await expect(editor.getByRole("tab", { name: "handoff-notes.md" })).toHaveAttribute(
+          "title",
+          join(elsewhere, "handoff-notes.md"),
+          { timeout: 15000 },
+        );
         await expect(
-          modal.locator(".view-line", { hasText: "far away content" }).first(),
+          editor.locator(".view-line", { hasText: "far away content" }).first(),
         ).toBeVisible({ timeout: 15000 });
       });
     });
@@ -96,6 +103,8 @@ test.describe("File finder path queries", () => {
       const away = join(cwd, "away");
       mkdirSync(away, { recursive: true });
       writeFileSync(join(away, "remote.md"), "remote\n");
+
+      await selectWorkspace(page, request, cwd);
 
       const slug = await createConversationViaAPI(request, "Hello", { cwd });
       await page.goto(`/c/${slug}`);
@@ -123,6 +132,8 @@ test.describe("File finder path queries", () => {
       writeFileSync(join(cwd, "local.md"), "local\n");
       const empty = join(cwd, "empty-dir");
       mkdirSync(empty, { recursive: true });
+
+      await selectWorkspace(page, request, cwd);
 
       const slug = await createConversationViaAPI(request, "Hello", { cwd });
       await page.goto(`/c/${slug}`);
@@ -162,6 +173,8 @@ test.describe("File finder content search", () => {
       writeFileSync(join(dir, "recipes.txt"), "secret ingredient: cardamom\n");
       writeFileSync(join(dir, "shopping-list.txt"), "eggs and flour\n");
 
+      await selectWorkspace(page, request, dir);
+
       const slug = await createConversationViaAPI(request, "Hello", { cwd: dir });
       await page.goto(`/c/${slug}`);
       await page.waitForLoadState("domcontentloaded");
@@ -194,6 +207,8 @@ test.describe("File finder content search", () => {
       // show both, with the (fast, first-phase) name match on top.
       writeFileSync(join(dir, "cardamom-notes.md"), "about the spice\n");
       writeFileSync(join(dir, "recipes.txt"), "secret ingredient: cardamom\n");
+
+      await selectWorkspace(page, request, dir);
 
       const slug = await createConversationViaAPI(request, "Hello", { cwd: dir });
       await page.goto(`/c/${slug}`);
@@ -243,6 +258,8 @@ test.describe("File finder content search", () => {
           await route.continue().catch(() => {});
         },
       );
+
+      await selectWorkspace(page, request, dir);
 
       const slug = await createConversationViaAPI(request, "Hello", { cwd: dir });
       await page.goto(`/c/${slug}`);
