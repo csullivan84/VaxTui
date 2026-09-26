@@ -18,3 +18,13 @@ export function focusMessageInputIfUnfocused(): void {
     input?.focus();
   }, 0);
 }
+
+// An explicit conversation pick hands keyboard focus to that conversation's
+// composer. Drawer rows are focusable links, so the click or Enter that picked
+// one also claimed focus; release it so the rule above can take over, and so
+// the composer's autoFocus retry still works if it is disabled while loading.
+export function focusMessageInputAfterSelection(): void {
+  if ("ontouchstart" in window) return;
+  if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+  focusMessageInputIfUnfocused();
+}

@@ -3291,7 +3291,6 @@ async function sendMessage(message: string) {
       props.setEphemeralTerminals((prev) => [...prev, terminal]);
       terminalAutoFocusId.value = terminal.id;
       props.onTerminalAutoFocus?.(terminal.id);
-      setTimeout(() => scrollToBottom(), 100);
     }
     return;
   }
@@ -3497,10 +3496,11 @@ function openInAppTerminal() {
     model: selectedModel.value,
     conversationId: props.conversationId ?? null,
   };
+  // Terminals open in the Workbench, not under the transcript, so the hidden
+  // transcript keeps the reader's place.
   props.setEphemeralTerminals((prev) => [...prev, terminal]);
   terminalAutoFocusId.value = terminal.id;
   props.onTerminalAutoFocus?.(terminal.id);
-  setTimeout(() => scrollToBottom(), 100);
 }
 // Focus an already-open terminal if there is one, otherwise open a new one.
 // Used by the Ctrl+` shortcut: a repeat press should bring you back to the

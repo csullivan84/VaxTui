@@ -528,6 +528,7 @@ import {
 } from "../../utils/tagFilter";
 import type { OfferedTag } from "../../utils/tagFilter";
 import { perfCount } from "../../utils/perf";
+import { focusMessageInputAfterSelection } from "../../utils/focusMessageInput";
 
 const props = defineProps<{
   isOpen: boolean;
@@ -1758,7 +1759,10 @@ provide(DrawerCtxKey, {
   formatCwdForDisplay,
   handleModifiedClick,
   handleAuxClick,
-  selectConversation: (c: Conversation) => emit("select-conversation", c),
+  selectConversation: (c: Conversation) => {
+    emit("select-conversation", c);
+    focusMessageInputAfterSelection();
+  },
   toggleSubagents,
   handleStartRename,
   handleRename,
