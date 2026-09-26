@@ -113,7 +113,7 @@ test.describe("conversation drawer startup and app bar", () => {
 
     await editor.fill("project");
     await expect(title.locator("mark")).toHaveText(["project"]);
-    await editor.fill("");
+    await clearConversationQuery(editor);
     await expect(title.locator("mark")).toHaveCount(0);
 
     await page.keyboard.press("ControlOrMeta+k");
@@ -342,6 +342,8 @@ test.describe("conversation drawer startup and app bar", () => {
     const userPanel = page.getByTestId("user-filter-panel");
     await addUserFilter.click();
     await expectQuery(editor, "user:me@example.com user:");
+    // The filter button hands focus straight back to the query.
+    await expect(editor).toBeFocused();
     await editor.pressSequentially("missing");
     await expectQuery(editor, "user:me@example.com user:missing");
     await expect(userPanel.getByText("No matching users")).toBeVisible();
@@ -408,8 +410,8 @@ test.describe("conversation drawer startup and app bar", () => {
 
     // Copy addresses the serialized query rather than delete-button chrome.
     await editor.focus();
-    await page.keyboard.press("Control+A");
-    await page.keyboard.press("Control+C");
+    await page.keyboard.press("ControlOrMeta+A");
+    await page.keyboard.press("ControlOrMeta+C");
     await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(committed);
     await page.keyboard.press("ArrowRight");
 
@@ -449,7 +451,7 @@ test.describe("conversation drawer startup and app bar", () => {
     await page.locator(".drawer-search-clear").click();
     await editor.click();
     await page.evaluate(() => navigator.clipboard.writeText("alpha\nbeta"));
-    await page.keyboard.press("Control+V");
+    await page.keyboard.press("ControlOrMeta+V");
     await expectQuery(editor, "alpha beta");
     await expect(editor.locator("p")).toHaveCount(1);
 
@@ -653,6 +655,7 @@ test.describe("conversation drawer startup and app bar", () => {
     await editor.fill("user:me@example.com ");
     await page.getByRole("button", { name: "Add user filter" }).click();
     await expectQuery(editor, "user:me@example.com user:");
+    await expect(editor).toBeFocused();
     const userPanel = page.getByTestId("user-filter-panel");
     await expect(userPanel.getByRole("option").first()).toHaveText(/^other@example\.com\.au\s*3$/);
     await page.keyboard.type("other@example.com");
@@ -683,7 +686,7 @@ test.describe("conversation drawer startup and app bar", () => {
     await expect(page.locator('[data-conversation-id="foreign"]')).toBeVisible();
     await expect(page.getByRole("button", { name: "Add user filter" })).toHaveCount(0);
     await expect(page.locator(".conversation-participant-badge")).toHaveCount(0);
-    await editor.fill("");
+    await clearConversationQuery(editor);
     await expectQuery(editor, "");
   });
 
@@ -704,7 +707,9 @@ test.describe("conversation drawer startup and app bar", () => {
     await expectQuery(queryEditor(page), "");
     await expect(page.getByRole("button", { name: "Add user filter" })).toBeEnabled();
     await page.getByRole("button", { name: "Group conversations" }).click();
-    await expect(page.getByRole("button", { name: "Participants", exact: true })).toBeVisible();
+    await expect(
+      page.getByRole("menuitemradio", { name: "Participants", exact: true }),
+    ).toBeVisible();
   });
 
   test("group by participants is offered only for multi-participant lists", async ({ page }) => {
@@ -719,8 +724,10 @@ test.describe("conversation drawer startup and app bar", () => {
     await page.goto("/new");
     await expect(page.locator('[data-conversation-id="mine"]')).toBeVisible();
     await page.getByRole("button", { name: "Group conversations" }).click();
-    await expect(page.getByRole("button", { name: "Tags", exact: true })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Participants", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("menuitemradio", { name: "Tags", exact: true })).toBeVisible();
+    await expect(
+      page.getByRole("menuitemradio", { name: "Participants", exact: true }),
+    ).toHaveCount(0);
   });
 
   test("group by participants buckets whole participant sets, current user first", async ({
@@ -741,11 +748,13 @@ test.describe("conversation drawer startup and app bar", () => {
     await expect(page.locator('[data-conversation-id="mine"]')).toBeVisible();
     // Drop the seeded current-user filter so every group is on screen.
     await page.getByRole("button", { name: "Search conversations..." }).click();
-    await queryEditor(page).fill("");
+    // Opening search moves focus straight into the query.
+    await expect(queryEditor(page)).toBeFocused();
+    await clearConversationQuery(queryEditor(page));
     await expect(page.locator('[data-conversation-id="none"]')).toBeVisible();
 
     await page.getByRole("button", { name: "Group conversations" }).click();
-    await page.getByRole("button", { name: "Participants", exact: true }).click();
+    await page.getByRole("menuitemradio", { name: "Participants", exact: true }).click();
 
     await expect(page.locator(".conversation-group-label")).toHaveText([
       "adam@poyo.co",
@@ -805,16 +814,24 @@ test.describe("conversation drawer startup and app bar", () => {
       }
       return {
         drawerHeader: inspect(".drawer-header"),
+        workspaceBar: inspect(".workspace-controls"),
         chatHeader: inspect(".header"),
         drawerTitle: inspect(".drawer-title"),
         chatTitle: inspect(".header-title"),
       };
     });
 
-    expect(metrics.drawerHeader.top).toBe(metrics.chatHeader.top);
-    expect(metrics.drawerHeader.bottom).toBe(metrics.chatHeader.bottom);
-    expect(metrics.drawerTitle.top).toBe(metrics.chatTitle.top);
-    expect(metrics.drawerTitle.bottom).toBe(metrics.chatTitle.bottom);
+    // The fork's workspace bar is the top bar beside the drawer; the chat
+    // header sits below the workspace tabs, so its title matches the drawer
+    // title's placement within its own bar rather than its page offset.
+    expect(metrics.drawerHeader.top).toBe(metrics.workspaceBar.top);
+    expect(metrics.drawerHeader.bottom).toBe(metrics.workspaceBar.bottom);
+    expect(metrics.drawerTitle.top - metrics.drawerHeader.top).toBe(
+      metrics.chatTitle.top - metrics.chatHeader.top,
+    );
+    expect(metrics.drawerHeader.bottom - metrics.drawerTitle.bottom).toBe(
+      metrics.chatHeader.bottom - metrics.chatTitle.bottom,
+    );
     expect(metrics.drawerTitle.fontFamily).toBe(metrics.chatTitle.fontFamily);
     expect(metrics.drawerTitle.fontSize).toBe(metrics.chatTitle.fontSize);
     expect(metrics.drawerTitle.fontWeight).toBe(metrics.chatTitle.fontWeight);
@@ -1061,7 +1078,7 @@ test.describe("mobile drawer swipe", () => {
     await stubConversationList(page, [first]);
     await page.goto("/new");
 
-    await page.keyboard.press("Control+Shift+D");
+    await page.keyboard.press("ControlOrMeta+Shift+D");
     await expect(page.locator(".diff-viewer-overlay")).toBeVisible();
 
     await swipe(page, ".diff-viewer-header", { x: 180, y: 100 }, { x: 256, y: 104 });

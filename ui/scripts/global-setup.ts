@@ -3,7 +3,7 @@
 // PLAYWRIGHT_TEST_BASE_URL so every worker's baseURL fixture picks it up.
 
 import { execFileSync, execSync, spawn, type ChildProcess } from 'child_process';
-import { mkdirSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -20,7 +20,9 @@ export default async function globalSetup() {
   // Give every shard its own home and cwd. The tests edit user AGENTS.md,
   // and prompt hydration scans cwd for guidance/skills: sharing the runner's
   // HOME or walking all of /tmp makes unrelated builds interfere.
-  tempDir = mkdtempSync(path.join(tmpdir(), 'shelley-e2e-'));
+  // macOS tmpdir() is a symlink (/var -> /private/var) and git reports the
+  // resolved path, so resolve it up front or cwd never equals the repo root.
+  tempDir = realpathSync(mkdtempSync(path.join(tmpdir(), 'shelley-e2e-')));
   const cwd = path.join(tempDir, 'cwd');
   const home = path.join(tempDir, 'home');
   mkdirSync(cwd);

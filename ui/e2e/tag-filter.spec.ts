@@ -182,6 +182,7 @@ test.describe("Tag filter", () => {
     await page.getByRole("button", { name: "Add tag filter" }).click();
     await expectQuery(search, "tag:kb-only tag:");
     await expect(panel(page)).toBeVisible();
+    await expect(search).toBeFocused();
     await page.keyboard.press("Escape");
     await expect(panel(page)).toHaveCount(0);
     await expectQuery(search, "tag:kb-only tag:");
@@ -394,7 +395,7 @@ test.describe("Tag filter", () => {
 
     // A tag-only query is a filter, not a search: the list keeps its grouping.
     await page.locator('button[aria-label="Group conversations"]').click();
-    await page.getByRole("button", { name: "Git Repo" }).click();
+    await page.getByRole("menuitemradio", { name: "Git Repo" }).click();
     const group = page.locator(".conversation-group").filter({
       has: row(page, inRepo.conversationId),
     });
@@ -517,7 +518,7 @@ test.describe("Tag filter", () => {
     await expect(page.getByTestId("message-input")).toBeVisible({ timeout: 30000 });
     await openDrawer(page);
     await page.locator('button[aria-label="Group conversations"]').click();
-    await page.getByRole("button", { name: "Tags", exact: true }).click();
+    await page.getByRole("menuitemradio", { name: "Tags", exact: true }).click();
 
     // Scope to our own groups: the shared server has other tagged rows.
     const ours = page.locator(".conversation-group").filter({ hasText: /#ord-/ });
@@ -545,7 +546,7 @@ test.describe("Tag filter", () => {
     await openDrawer(page);
 
     await page.locator('button[aria-label="Group conversations"]').click();
-    await page.getByRole("button", { name: "Tags", exact: true }).click();
+    await page.getByRole("menuitemradio", { name: "Tags", exact: true }).click();
 
     // Order-insensitive: one group holds both conversations, labelled with the
     // sorted set.
@@ -629,7 +630,7 @@ test.describe("Tag filter", () => {
     await expect(page.getByTestId("message-input")).toBeVisible({ timeout: 30000 });
     await openDrawer(page);
     await page.locator('button[aria-label="Group conversations"]').click();
-    await page.getByRole("button", { name: "Tags", exact: true }).click();
+    await page.getByRole("menuitemradio", { name: "Tags", exact: true }).click();
 
     const home = page.locator(".conversation-group").filter({
       has: row(page, stayers[0].conversationId),
@@ -649,7 +650,7 @@ test.describe("Tag filter", () => {
     await expect.poll(homeIds).toEqual([mover.conversationId, ...initial]);
 
     await page.locator('button[aria-label="Group conversations"]').click();
-    await page.getByRole("button", { name: "Re-sort now" }).click();
+    await page.getByRole("menuitem", { name: "Re-sort now" }).click();
     await expect.poll(homeIds).toEqual(plainOrder);
   });
 

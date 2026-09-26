@@ -150,8 +150,13 @@ test.describe("Performance HUD", () => {
       ).__shelleyLoadingStatuses;
       if (statuses) statuses.length = 0;
     });
+    // A new conversation lands on the current workspace's slug URL.
+    const workspaceSlug = await page.evaluate(() =>
+      localStorage.getItem("shelley_selected_workspace"),
+    );
+    expect(workspaceSlug).toBeTruthy();
     await page.locator(".btn-new").click();
-    await expect(page).toHaveURL(/\/new$/);
+    await expect.poll(() => new URL(page.url()).pathname).toBe(`/${workspaceSlug}`);
     const conversationTitle = page
       .locator(".conversation-title")
       .getByText(conversationSlug, { exact: true });

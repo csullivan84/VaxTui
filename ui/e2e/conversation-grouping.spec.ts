@@ -29,7 +29,7 @@ test.describe("Conversation grouping", () => {
     await page.locator('button[aria-label="Open conversations"]').click();
     await expect(page.locator(".drawer.open")).toBeVisible();
     await page.locator('button[aria-label="Group conversations"]').click();
-    await page.getByRole("button", { name: "Git Repo" }).click();
+    await page.getByRole("menuitemradio", { name: "Git Repo" }).click();
 
     // The group containing the active conversation should not be "Other".
     const activeGroup = page.locator(".conversation-group").filter({
