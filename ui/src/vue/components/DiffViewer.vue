@@ -1,7 +1,6 @@
 <!-- Vue port of components/DiffViewer.tsx. Monaco diff modal with a file tree
      (DiffFileTree.vue), commit/range selection (CommitPicker.vue +
-     RangeToggle.vue), comments, edit/auto-save, and vim (useMonacoVim +
-     VimToggle.vue). PRESERVES EXACTLY the selectors the
+     RangeToggle.vue), comments, and edit/auto-save. PRESERVES EXACTLY the selectors the
      diff-viewer-find.spec.ts e2e depends on: .diff-viewer-overlay,
      .diff-viewer-editor, select.diff-viewer-select, .monaco-editor,
      .find-widget.visible, the "Find" textbox, and the Ctrl+F-opens-find /
@@ -248,7 +247,6 @@
               >
                 Open file
               </button>
-              <VimToggle :enabled="vimEnabled" @change="setVimEnabled" />
             </template>
             <button
               v-tooltip.top="`Git directory: ${cwd}\nClick to change`"
@@ -470,11 +468,6 @@
               class="diff-viewer-editor"
               :aria-hidden="!fileDiff ? 'true' : undefined"
             />
-            <div
-              v-if="!isMobile && vimEnabled && fileDiff && monacoLoaded && readingMode === 'visual'"
-              ref="vimStatusRef"
-              class="monaco-vim-status"
-            />
             <!-- Floating "add comment" prompt shown next to a selection in comment mode -->
             <button
               v-if="commentPrompt"
@@ -582,14 +575,12 @@ import { announceA11y } from "../../services/a11yAnnouncer";
 import { loadMonaco } from "../../services/monaco";
 import { isDarkModeActive } from "../../services/theme";
 import { buildTourCommentBlock, type TourCommentTarget } from "../composables/tourComments";
-import { useVimEnabled, useMonacoVim } from "../composables/monacoVim";
 import {
   lineCommentLabel,
   truncateWithEllipsis,
   useMonacoComments,
 } from "../composables/monacoComments";
 import { WorkspaceContextKey } from "../composables/workspaceContext";
-import VimToggle from "./VimToggle.vue";
 import CommentDialog from "./CommentDialog.vue";
 import CommitTourView from "./CommitTourView.vue";
 import CommitTourContents from "./CommitTourContents.vue";
@@ -729,11 +720,6 @@ watch(diffView, (view) => {
   tourCommentText.value = "";
   if (view === "tour") showKeyboardHint.value = false;
 });
-const [vimEnabledRef, setVimEnabledFn] = useVimEnabled();
-const vimEnabled = vimEnabledRef;
-function setVimEnabled(v: boolean) {
-  setVimEnabledFn(v);
-}
 
 const layout = ref<"header" | "sidebar">(
   (() => {
@@ -840,13 +826,10 @@ watch(
   { immediate: true },
 );
 
-// The vim adapter attaches to the modified (right-hand) code editor.
 // Must be shallowRef, not ref: a deep reactive proxy over Monaco's internal
-// object graph makes vim mode peg the main thread and hang the page (vim
-// drives the editor on every keystroke). shallowRef tracks the create/dispose
+// object graph pegs the main thread. shallowRef tracks the create/dispose
 // swap without proxying internals.
 const modifiedEditor = shallowRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
-const vimStatusRef = ref<HTMLDivElement | null>(null);
 
 // --- Non-reactive refs (mirror React useRef) ---
 let monacoMod: typeof Monaco | null = null;
@@ -909,14 +892,6 @@ watch(
   () => props.cwd,
   (v) => (cwdVal = v),
   { immediate: true },
-);
-
-// vim adapter — only in edit mode (read-only comment mode would double-handle).
-useMonacoVim(
-  () => modifiedEditor.value,
-  () => vimStatusRef.value,
-  () => !isMobile.value && vimEnabled.value && mode.value === "edit",
-  () => emit("close"),
 );
 
 // Keep modeRef in sync + update editor readOnly when mode changes.
@@ -1545,18 +1520,6 @@ function handleKeyDown(e: KeyboardEvent) {
     if (
       document.querySelector(".commit-picker-popover") ||
       document.querySelector(".commit-picker-modal")
-    ) {
-      return;
-    }
-    // If vim mode is in a non-normal mode, let monaco-vim handle Escape.
-    const vimFocused =
-      editorContainerRef.value?.contains(document.activeElement) ||
-      vimStatusRef.value?.contains(document.activeElement);
-    if (
-      !isMobile.value &&
-      vimEnabled.value &&
-      vimFocused &&
-      (vimStatusRef.value?.textContent ?? "").trim() !== ""
     ) {
       return;
     }

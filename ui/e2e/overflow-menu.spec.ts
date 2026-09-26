@@ -4,7 +4,7 @@ import { createConversationViaAPI, testWorkingDirectory } from "./helpers";
 // The top-right overflow ("kebab") menu uses a PrimeVue Popover, compact
 // native icon buttons, and the shared Modal for language selection. The
 // DOM contract (.chat-overflow-menu-wrapper / .btn-icon / .overflow-menu-item)
-// is covered by other specs (agents-md-vim, diff-viewer-find).
+// is covered by other specs (diff-viewer-find).
 test.describe("Overflow menu (PrimeVue)", () => {
   test("directory item opens the picker and closes the popover on mobile", async ({
     page,

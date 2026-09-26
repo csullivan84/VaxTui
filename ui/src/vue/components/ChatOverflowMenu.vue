@@ -18,7 +18,7 @@
     - root wrapper:  .chat-overflow-menu-wrapper
     - trigger:       button.btn-icon  (aria-label = t('moreOptions'))
     - action items:  button.overflow-menu-item  (matched by visible text)
-  See e2e/agents-md-vim.spec.ts and e2e/diff-viewer-find.spec.ts.
+  See e2e/diff-viewer-find.spec.ts.
 
   State the menu reads/writes lives in shared composables/services
   (theme, notifications, screenReaderMode), so this component owns it directly

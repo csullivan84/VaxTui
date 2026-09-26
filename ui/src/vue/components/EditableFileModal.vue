@@ -3,8 +3,7 @@
      header/content/editor/close class contract, role="presentation"/"dialog",
      aria-modal, the aria-label "Edit file" (or the given title), and the
      agents-md-* header/save-status classes. Loads Monaco via services/monaco,
-     auto-saves (debounced) to /api/write-file, and wires vim via
-     useMonacoVim + <VimToggle>. When `commentable`, offers the same
+     auto-saves (debounced) to /api/write-file. When `commentable`, offers the same
      edit/comment mode toggle as DiffViewer: comment mode makes the editor
      read-only and click-to-comment, emitting "comment" with the quoted
      comment block. Emits "close" (React onClose) and
@@ -48,7 +47,6 @@
                 ✏️
               </button>
             </div>
-            <VimToggle v-if="isDesktop" :enabled="vimEnabled" @change="setVimEnabled" />
             <button
               v-tooltip.top="'Close (Esc)'"
               class="diff-viewer-close"
@@ -76,7 +74,6 @@
                   monacoLoaded && content !== null && loadStatus === 'loaded' ? 'block' : 'none',
               }"
             />
-            <div v-if="isDesktop && vimActive" ref="vimStatusRef" class="monaco-vim-status" />
           </template>
           <!-- Floating "add comment" prompt shown next to a selection in comment mode -->
           <button
@@ -112,9 +109,7 @@ import type * as Monaco from "monaco-editor";
 import { loadMonaco } from "../../services/monaco";
 import { isDarkModeActive } from "../../services/theme";
 import { tildifyPath } from "../../utils/tildify";
-import { useVimEnabled, useMonacoVim } from "../composables/monacoVim";
 import { lineCommentLabel, useMonacoComments } from "../composables/monacoComments";
-import VimToggle from "./VimToggle.vue";
 import CommentDialog from "./CommentDialog.vue";
 
 type SaveStatus = "idle" | "saving" | "saved" | "error";
@@ -156,24 +151,15 @@ const mode = ref<"comment" | "edit">("edit");
 const resolvedPath = ref(props.path);
 
 // Monaco editor instances must NOT be deeply reactive: a plain ref() proxies
-// the editor's huge internal object graph, so vim mode (which drives the editor
-// hard on every keystroke) pegs the main thread and hangs the page. shallowRef
+// the editor's huge internal object graph and pegs the main thread. shallowRef
 // tracks the reference swap (create/dispose) without proxying internals.
 const editor = shallowRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
 let monacoMod: typeof Monaco | null = null;
 const containerRef = ref<HTMLDivElement | null>(null);
 const contentRef = ref<HTMLDivElement | null>(null);
-const vimStatusRef = ref<HTMLDivElement | null>(null);
 let saveTimeout: number | null = null;
 let statusTimeout: number | null = null;
-const [vimEnabledRef, setVimEnabledFn] = useVimEnabled();
-const vimEnabled = vimEnabledRef;
-function setVimEnabled(v: boolean) {
-  setVimEnabledFn(v);
-}
 const isDesktop = ref(window.innerWidth >= 768);
-// vim status bar only makes sense while the editor is writable.
-const vimActive = computed(() => vimEnabled.value && mode.value === "edit");
 
 // Shared comment-mode UX (click-to-comment, selection prompt, dialog state).
 const {
@@ -302,27 +288,6 @@ function scheduleSave(text: string) {
   }, 1000);
 }
 
-// Quit handler for vim's :q / :wq / :x and ZZ / ZQ. Flush any pending
-// debounced save synchronously when the user asks to save+quit so the modal
-// closes only after the latest content has been persisted.
-function handleVimQuit({ save }: { save: boolean }) {
-  if (save && editor.value) {
-    if (saveTimeout) {
-      clearTimeout(saveTimeout);
-      saveTimeout = null;
-    }
-    saveContent(editor.value.getValue());
-  }
-  emit("close");
-}
-
-useMonacoVim(
-  () => editor.value,
-  () => vimStatusRef.value,
-  () => isDesktop.value && vimEnabled.value && mode.value === "edit",
-  handleVimQuit,
-);
-
 // Resolve the Monaco language id: an explicit prop wins; otherwise detect
 // from the file extension via Monaco's registered languages (matching
 // DiffViewer), defaulting to markdown when unknown.
@@ -426,22 +391,9 @@ watch(
   { immediate: true },
 );
 
-// --- Escape handling (capture phase; vim-aware guard) ---
+// --- Escape handling (capture phase) ---
 function handleKeyDown(e: KeyboardEvent) {
   if (e.key !== "Escape") return;
-  // If vim mode is in a non-normal mode (insert/visual/...), let monaco-vim
-  // handle Escape (to drop back to normal) instead of closing the modal.
-  const vimFocused =
-    containerRef.value?.contains(document.activeElement) ||
-    vimStatusRef.value?.contains(document.activeElement);
-  if (
-    isDesktop.value &&
-    vimActive.value &&
-    vimFocused &&
-    (vimStatusRef.value?.textContent ?? "").trim() !== ""
-  ) {
-    return;
-  }
   // A first Escape dismisses an open comment dialog rather than the modal.
   if (showCommentDialog.value) {
     showCommentDialog.value = null;
