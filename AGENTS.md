@@ -50,3 +50,6 @@ and indiscriminately running pkill -f shelley may break things.
     entry that duplicates one of the real choices. Only keep a `default` sentinel when the
     concrete value is genuinely unknowable; even then, spell it out if you can (e.g. `Default
     (on)` for a boolean toggle).
+17. No Vim. Do not add Vim modes, Vim keybindings, `monaco-vim`, Vim toggles, or
+    Vim-specific tests to any editor or input. When merging upstream, drop upstream's
+    Vim code and specs instead of carrying them.
