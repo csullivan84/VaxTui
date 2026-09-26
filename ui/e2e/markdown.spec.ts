@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { createConversationViaAPI } from "./helpers";
+import { createConversationViaAPI, disableScreenReaderMode } from "./helpers";
 
 // All tests create the conversation via the API and then navigate directly to
 // it. This avoids the SSE subscribe-vs-publish race that occurs when the
@@ -238,6 +238,8 @@ test.describe("Markdown rendering", () => {
 
   test("expands web search queries without structured results", async ({ page, request }) => {
     const slug = await createConversationViaAPI(request, "web search without results");
+    // Asserts the sighted collapsed default; screen-reader mode keeps it expanded.
+    await disableScreenReaderMode(page);
     await page.goto(`/c/${slug}`);
     await page.waitForLoadState("domcontentloaded");
 

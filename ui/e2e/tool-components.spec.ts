@@ -455,26 +455,25 @@ test.describe('Tool Component Verification', () => {
     const errors: string[] = [];
     page.on('pageerror', (error) => errors.push(error.message));
 
-    const header = patchTool.locator('.patch-tool-header');
-
-    // The toggle button should exist and respond to clicks
+    // The toggle button should exist and respond to clicks. (Not the header's
+    // center: that is the filename, which opens the file in the workspace.)
     const toggle = patchTool.locator('.patch-tool-toggle');
     await expect(toggle).toBeVisible();
 
     // Click to collapse
-    await header.click();
+    await toggle.click();
     await expect(patchTool.locator('.patch-tool-details')).toBeHidden();
 
     // Expand
-    await header.click();
+    await toggle.click();
     await expect(patchTool.locator('.patch-tool-details')).toBeVisible({ timeout: 10000 });
 
     // Collapse again
-    await header.click();
+    await toggle.click();
     await expect(patchTool.locator('.patch-tool-details')).toBeHidden();
 
     // Expand again
-    await header.click();
+    await toggle.click();
     await expect(patchTool.locator('.patch-tool-details')).toBeVisible({ timeout: 10000 });
 
     // Check no Monaco model errors occurred

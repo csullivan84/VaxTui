@@ -1,11 +1,15 @@
 import { test, expect } from '@playwright/test';
-import { createConversationViaAPI } from './helpers';
+import { createConversationViaAPI, disableScreenReaderMode } from './helpers';
+
+// These tests expand a collapsed bash card, so they run with screen-reader
+// mode off (it keeps tool cards expanded).
 
 test.describe('ANSI escape sequence rendering', () => {
   test('bash output with ANSI colors renders styled text, not raw escapes', async ({ page, request }) => {
     // Run a command that produces ANSI-colored output
     const slug = await createConversationViaAPI(request, `bash: printf '\\033[32mGreen\\033[0m \\033[31mRed\\033[0m \\033[1mBold\\033[0m \\033[33mYellow\\033[0m plain'`);
 
+    await disableScreenReaderMode(page);
     await page.goto(`/c/${slug}`);
     await page.waitForLoadState('domcontentloaded');
 
@@ -69,6 +73,7 @@ test.describe('ANSI escape sequence rendering', () => {
   test('bash output without ANSI codes renders as plain text', async ({ page, request }) => {
     const slug = await createConversationViaAPI(request, 'bash: echo "just plain text with no escapes"');
 
+    await disableScreenReaderMode(page);
     await page.goto(`/c/${slug}`);
     await page.waitForLoadState('domcontentloaded');
 
@@ -106,6 +111,7 @@ test.describe('ANSI escape sequence rendering', () => {
       `bash: printf '\\033[1G\\033[1G\\033[1GDev code has changes not yet deployed'`,
     );
 
+    await disableScreenReaderMode(page);
     await page.goto(`/c/${slug}`);
     await page.waitForLoadState('domcontentloaded');
 

@@ -1,12 +1,14 @@
 import { test, expect, type Locator } from "@playwright/test";
-import { createConversationViaAPI } from "./helpers";
+import { createConversationViaAPI, disableScreenReaderMode } from "./helpers";
 
 // While a bash tool runs, its card shows a compact preview of the streamed
 // output below the header, so a long-running command is legible without
 // expanding anything. The preview is transient: it disappears when the tool
-// finishes and the card's own output section takes over.
+// finishes and the card's own output section takes over. Screen-reader mode
+// keeps the card expanded (streaming into its details instead), so it is off.
 test("a running bash card previews the tail of its streamed output", async ({ page, request }) => {
   const slug = await createConversationViaAPI(request, "hello");
+  await disableScreenReaderMode(page);
   await page.goto(`/c/${slug}`);
   const input = page.getByTestId("message-input");
   await expect(input).toBeVisible({ timeout: 30000 });

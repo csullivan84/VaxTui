@@ -910,7 +910,7 @@ function openFileFinder() {
   fileFinderOpen.value = true;
 }
 
-// Finder selected a file: close it and open the generic editor on that path.
+// Finder selected a file: close it and open that path in the Workbench editor.
 function openFileInEditor(absPath: string) {
   fileFinderOpen.value = false;
   workspaceOpenRequest.value = { path: absPath, nonce: Date.now() };
@@ -956,13 +956,13 @@ function selectWorkspaceById(id: string) {
   startNewConversation();
 }
 
-// Open any file in the editor modal, from anywhere in the tree (patch tool
+// Open any file in the Workbench editor, from anywhere in the tree (patch tool
 // cards, etc.). A successful patch records an absolute path, but a failed one
 // carries only the path the agent passed, which may be relative; resolve those
-// against the same directory the file finder searches (the conversation's cwd,
-// else the last-used one). /api/read-file requires a clean absolute path.
+// against the directory the agent ran in (the conversation's cwd, else the
+// workspace's). /api/read-file requires a clean absolute path.
 provideOpenFileEditor((path: string) => {
-  const abs = resolveAbsPath(path, finderDir.value);
+  const abs = resolveAbsPath(path, currentConversation.value?.cwd || workspaceCwd.value);
   if (abs) openFileInEditor(abs);
 });
 

@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { createConversationViaAPI } from "./helpers";
+import { createConversationViaAPI, disableScreenReaderMode } from "./helpers";
 
 test("Bash commands are Shiki-tokenized without changing output rendering", async ({
   page,
@@ -7,6 +7,8 @@ test("Bash commands are Shiki-tokenized without changing output rendering", asyn
 }) => {
   const command = "if true; then echo bash-output-plain; fi";
   const slug = await createConversationViaAPI(request, `bash: ${command}`);
+  // The test expands a collapsed card; screen-reader mode keeps cards expanded.
+  await disableScreenReaderMode(page);
   await page.goto(`/c/${slug}`);
   await page.waitForLoadState("domcontentloaded");
 

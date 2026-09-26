@@ -736,6 +736,27 @@ func TestGitDiffRejectsFlagID(t *testing.T) {
 	}
 }
 
+// A clean working tree lists no files as an empty JSON array, not null: the UI
+// maps over the response.
+func TestHandleGitDiffFilesCleanTreeIsEmptyArray(t *testing.T) {
+	t.Parallel()
+	h := NewTestHarness(t)
+	gitDir := setupTestGitRepo(t)
+	runGit(t, gitDir, "add", "-A")
+	runGit(t, gitDir, "commit", "-m", "clean")
+
+	req := httptest.NewRequest("GET", fmt.Sprintf("/api/git/diffs/working/files?cwd=%s", gitDir), nil)
+	w := httptest.NewRecorder()
+	h.server.handleGitDiffFiles(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if got := strings.TrimSpace(w.Body.String()); got != "[]" {
+		t.Fatalf("expected [], got %s", got)
+	}
+}
+
 // TestHandleGitDiffFiles tests the handleGitDiffFiles function
 func TestHandleGitDiffFiles(t *testing.T) {
 	t.Parallel()

@@ -553,7 +553,7 @@ func (s *Server) handleGitDiffFiles(w http.ResponseWriter, r *http.Request) {
 	// -z (rather than splitting on whitespace) is what makes filenames with
 	// spaces or tabs come through intact.
 	statusEntries := parseNameStatusZ(string(output))
-	var files []GitFileInfo
+	files := []GitFileInfo{}
 
 	for _, e := range statusEntries {
 		status := "modified"

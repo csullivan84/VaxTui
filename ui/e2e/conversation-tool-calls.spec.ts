@@ -124,6 +124,11 @@ test("displays LLM error message in UI", async ({ page }) => {
     page.locator("text=LLM request failed: predictable error: test error message"),
   ).toBeVisible();
 
-  // Verify error label is shown in the message header
-  await expect(page.locator('[role="alert"]').locator("text=Error")).toBeVisible();
+  // The error is labelled for screen readers: an "Error message" heading (for
+  // heading navigation) inside the alert, which carries the same name.
+  await expect(errorMessage).toHaveAccessibleName("Error message");
+  await expect(errorMessage.getByRole("heading", { name: "Error message" })).toBeAttached();
+  await expect(errorMessage).toContainText(
+    "LLM request failed: predictable error: test error message",
+  );
 });

@@ -1,11 +1,26 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 import { writeFileSync, readFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { createConversationViaAPI, disableScreenReaderMode, withTempDir } from "./helpers";
 
 // A patch tool card's header offers "open in editor": it opens the patched
-// file in the same standalone Monaco editor the fuzzy finder uses, so a patch
-// can be inspected/fixed in place without hunting for the path.
+// file in the workspace's Workbench editor (where the fuzzy finder opens files
+// too), so a patch can be inspected/fixed in place without hunting for the path.
+
+/** The Workbench file editor, asserted to have `path` open in its active tab. */
+async function expectFileInEditor(page: Page, path: string) {
+  await expect(page.getByRole("tab", { name: "Workbench", exact: true })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  const editor = page.getByRole("region", { name: "File editor" });
+  await expect(editor).toBeVisible({ timeout: 15000 });
+  await expect(editor.locator(`[role="tab"][title="${path}"]`)).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  return editor;
+}
 
 test.describe("Patch tool open-in-editor", () => {
   test("header button opens the patched file in the editor", async ({ page, request }) => {
@@ -27,17 +42,14 @@ test.describe("Patch tool open-in-editor", () => {
 
       await patchTool.getByRole("button", { name: "Open in editor" }).click();
 
-      const modal = page.getByRole("dialog", { name: `Edit ${filePath}` });
-      await expect(modal).toBeVisible({ timeout: 15000 });
-      await expect(modal.locator(".view-line", { hasText: "updated example" }).first()).toBeVisible(
-        {
-          timeout: 15000,
-        },
+      const editor = await expectFileInEditor(page, filePath);
+      await expect(editor.locator(".view-line", { hasText: "updated example" }).first()).toBeVisible(
+        { timeout: 15000 },
       );
 
-      // Closing the editor leaves the patch card intact (it is not nested in it).
-      await page.keyboard.press("Escape");
-      await expect(modal).not.toBeVisible();
+      // Returning to the chat leaves the patch card intact (it is not nested in it).
+      await page.getByRole("tab", { name: "Chat", exact: true }).click();
+      await expect(editor).not.toBeVisible();
       await expect(patchTool).toBeVisible();
     });
   });
@@ -63,16 +75,17 @@ test.describe("Patch tool open-in-editor", () => {
       await expect(patchTool.locator(".patch-tool-filename")).toHaveText("./sub/notes.txt");
       await expect(patchTool.locator(".patch-tool-error")).toBeVisible();
       await expect(patchTool.locator(".patch-tool-details")).toBeHidden();
-      await patchTool.locator(".patch-tool-header").click();
+      // The toggle, not the header's center: that is the filename, which opens
+      // the file in the workspace instead of expanding the card.
+      await patchTool.locator(".patch-tool-toggle").click();
       await expect(patchTool.locator(".patch-tool-error-message")).toBeVisible();
 
       await patchTool.getByRole("button", { name: "Open in editor" }).click();
 
       // Resolved against the conversation cwd into an absolute path.
-      const modal = page.getByRole("dialog", { name: `Edit ${join(dir, "sub", "notes.txt")}` });
-      await expect(modal).toBeVisible({ timeout: 15000 });
+      const editor = await expectFileInEditor(page, join(dir, "sub", "notes.txt"));
       await expect(
-        modal.locator(".view-line", { hasText: "nothing to replace here" }).first(),
+        editor.locator(".view-line", { hasText: "nothing to replace here" }).first(),
       ).toBeVisible({ timeout: 15000 });
     });
   });

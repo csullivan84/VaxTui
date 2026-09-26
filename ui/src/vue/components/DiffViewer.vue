@@ -1333,7 +1333,7 @@ async function loadFiles(diffId: string) {
       isGenerated: false,
     }));
 
-    const allFiles = [...commitFileEntries, ...(filesData || [])];
+    const allFiles = [...commitFileEntries, ...filesData];
     files.value = allFiles;
     const initial = pendingInitialFile;
     pendingInitialFile = undefined;

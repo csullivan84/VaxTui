@@ -34,11 +34,11 @@
       <div class="patch-tool-summary">
         <span class="patch-tool-emoji" :class="{ running: isRunning }" aria-hidden="true">🖋️</span>
         <button
-          v-if="workspace"
+          v-if="showOpenInEditor"
           type="button"
           class="patch-tool-filename patch-tool-open-file"
           :title="`Open ${filename} in workspace`"
-          @click.stop="openPatchedFile"
+          @click.stop="openInEditor"
         >
           {{ filename }}
         </button>
@@ -172,7 +172,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, inject, ref, watch, onMounted, onUnmounted } from "vue";
+import { computed, ref, watch, onMounted, onUnmounted } from "vue";
 import type { LLMContent } from "../../../types";
 import { announceToolA11y } from "../../../services/a11yAnnouncer";
 import { useToolExpanded } from "../../composables/toolDetail";
@@ -191,7 +191,6 @@ import { useSideBySidePreference } from "../../composables/diffViewPreference";
 import { useFileDiffInstance } from "../../composables/fileDiffInstance";
 import { extractChangedSymbols } from "../../../utils/changedSymbols";
 import { useNearViewport } from "../../composables/nearViewport";
-import { WorkspaceContextKey } from "../../composables/workspaceContext";
 import { useOpenFileEditor } from "../../composables/fileEditor";
 import ToolChevron from "./ToolChevron.vue";
 import RunningToolTime from "./RunningToolTime.vue";
@@ -376,15 +375,6 @@ const path = computed(() => {
   }
   return typeof ti === "string" ? ti : "";
 });
-const workspace = inject(WorkspaceContextKey, null);
-
-function openPatchedFile() {
-  if (!workspace || !path.value) return;
-  const fullPath = path.value.startsWith("/")
-    ? path.value
-    : `${workspace.cwd.value.replace(/\/+$/, "")}/${path.value}`;
-  workspace.openFile(fullPath);
-}
 
 const displayData = computed<PatchDisplayData | null>(() => {
   const d = props.display;
@@ -449,8 +439,8 @@ const editorPath = computed(() =>
   patchFiles.value.length > 1 ? "" : displayData.value?.path || path.value,
 );
 
-// "Open in editor" opens that file in the standalone Monaco editor modal (the
-// same one the fuzzy finder opens). Hidden when we don't know the path, or
+// "Open in editor" opens that file in the Workbench editor (where the fuzzy
+// finder opens files too). Hidden when we don't know the path, or
 // while the patch is still being applied — the file is mid-write then. Still
 // offered for a failed patch: seeing the file as it stands is what you want.
 const openEditor = useOpenFileEditor();

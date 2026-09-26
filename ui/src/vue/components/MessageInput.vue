@@ -1529,9 +1529,10 @@ function handleKeyDown(e: KeyboardEvent) {
     return;
   }
   if (e.key === "Enter" && !e.shiftKey) {
+    // Control/Command+Enter always sends; the preference only decides whether
+    // a bare Enter sends or inserts a newline.
     const hasModifier = e.ctrlKey || e.metaKey;
-    const shouldSend = sendKeystroke.value === "modifier-enter" ? hasModifier : !hasModifier;
-    if (!shouldSend) return;
+    if (!hasModifier && sendKeystroke.value === "modifier-enter") return;
     e.preventDefault();
     void handleSubmit(e);
   }
