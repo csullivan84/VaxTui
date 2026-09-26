@@ -290,13 +290,19 @@ test.describe("Tag filter", () => {
       expect(styles.borderRadius).toBe(0);
     }
     await inactiveTrigger.scrollIntoViewIfNeeded();
-    const inactiveBox = await inactiveTrigger.boundingBox();
-    expect(inactiveBox).not.toBeNull();
-    await inactiveTrigger.hover({ position: { x: 2, y: 2 } });
-    await expect(page.locator(".p-tooltip-text")).toHaveText("Actions");
-    expect(await inactiveTrigger.boundingBox()).toEqual(inactiveBox);
-    await inactiveTrigger.hover({ position: { x: 26, y: 26 } });
-    expect(await inactiveTrigger.boundingBox()).toEqual(inactiveBox);
+    // Hovering must not move the button. The drawer re-renders live (rows
+    // above can shift it between steps), so compare each hover against a box
+    // taken right before it, and re-hover until the tooltip's show delay wins.
+    await expect(async () => {
+      await page.mouse.move(0, 0);
+      const box = await inactiveTrigger.boundingBox();
+      expect(box).not.toBeNull();
+      await inactiveTrigger.hover({ position: { x: 2, y: 2 } });
+      await expect(page.locator(".p-tooltip-text")).toHaveText("Actions", { timeout: 1000 });
+      expect(await inactiveTrigger.boundingBox()).toEqual(box);
+      await inactiveTrigger.hover({ position: { x: 26, y: 26 } });
+      expect(await inactiveTrigger.boundingBox()).toEqual(box);
+    }).toPass();
     await trigger.focus();
     await page.keyboard.press("Tab");
     await page.keyboard.press("Shift+Tab");
