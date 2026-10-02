@@ -108,12 +108,12 @@ async function fixture(page: Page, entries = [gh, llm, notify, reflection]) {
 }
 
 async function openPanel(page: Page) {
-  await page.keyboard.press("Control+k");
-  const search = page.locator(".command-palette-input");
+  await page.keyboard.press("ControlOrMeta+k");
+  const search = page.getByRole("combobox", { name: "Search commands and conversations" });
   await expect(search).toBeVisible();
   await search.fill("integration");
-  await page.locator(".command-palette-item").first().click();
-  await expect(page.locator(".integrations-modal")).toBeVisible();
+  await page.getByRole("option", { name: /VM Integrations/i }).click();
+  await expect(page.getByRole("dialog", { name: "VM Integrations" })).toBeVisible();
 }
 
 async function select(page: Page, name: string) {
@@ -312,11 +312,9 @@ for (const team of [false, true]) {
     const command = await page.evaluate(
       () => (window as unknown as { copiedIntegrationText: string }).copiedIntegrationText,
     );
-    const sshArgs = execFileSync(
-      "sh",
-      ["-c", `ssh() { printf '%s\\0' "$@"; }\n${command}`],
-      { encoding: "utf8" },
-    ).split("\0");
+    const sshArgs = execFileSync("sh", ["-c", `ssh() { printf '%s\\0' "$@"; }\n${command}`], {
+      encoding: "utf8",
+    }).split("\0");
     expect(sshArgs).toEqual([
       "exe.dev",
       `integrations edit 'gh'${team ? " --team" : ""} --comment='<new comment>'`,
@@ -327,7 +325,13 @@ for (const team of [false, true]) {
       ["-c", `integrations() { printf '%s\\0' "$@"; }\n${sshArgs[1]}`],
       { encoding: "utf8" },
     ).split("\0");
-    expect(editArgs).toEqual(["edit", "gh", ...(team ? ["--team"] : []), "--comment=<new comment>", ""]);
+    expect(editArgs).toEqual([
+      "edit",
+      "gh",
+      ...(team ? ["--team"] : []),
+      "--comment=<new comment>",
+      "",
+    ]);
   });
 }
 

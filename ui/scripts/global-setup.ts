@@ -1,18 +1,28 @@
-// Playwright global setup: starts a shelley test server on a random port.
-// The actual port is communicated via --port-file, then exported as
+// Playwright global setup: starts Shelley on an isolated test port. It uses an
+// ephemeral port by default, but SHELLEY_TEST_PORT can enforce a caller-owned
+// port (for example 9000 with a separate test database). The actual port is
+// communicated via --port-file, then exported as
 // PLAYWRIGHT_TEST_BASE_URL so every worker's baseURL fixture picks it up.
 
-import { execFileSync, execSync, spawn, type ChildProcess } from 'child_process';
-import { mkdirSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
-import { tmpdir } from 'os';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import { hermeticGitEnvironment, installHermeticGitEnvironment } from './git-test-env';
+import { execFileSync, execSync, spawn, type ChildProcess } from "child_process";
+import {
+  mkdirSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "fs";
+import { tmpdir } from "os";
+import path from "path";
+import { fileURLToPath } from "url";
+import { hermeticGitEnvironment, installHermeticGitEnvironment } from "./git-test-env";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const shelleyDir = path.resolve(__dirname, '../..');
-const binPath = path.join(shelleyDir, 'bin', 'shelley');
+const shelleyDir = path.resolve(__dirname, "../..");
+const binPath = path.join(shelleyDir, "bin", "shelley");
 
 let serverProcess: ChildProcess | null = null;
 let tempDir: string | null = null;
@@ -23,25 +33,42 @@ let tempDir: string | null = null;
 // killing only the forkpty child's group leaves those jobs running forever.
 function killTerminalSessions(dir: string) {
   const prefix = `exe-scroll: session ${dir}/`;
-  const procs = execFileSync('ps', ['-axo', 'pid=,ppid=,pgid=,sess=,command='], { encoding: 'utf8' })
-    .split('\n')
+  const procs = execFileSync("ps", ["-axo", "pid=,ppid=,pgid=,sess=,command="], {
+    encoding: "utf8",
+  })
+    .split("\n")
     .flatMap((line) => {
       const m = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/.exec(line);
-      return m ? [{
-        pid: Number(m[1]), ppid: Number(m[2]), pgid: Number(m[3]),
-        session: m[4], command: m[5],
-      }] : [];
+      return m
+        ? [
+            {
+              pid: Number(m[1]),
+              ppid: Number(m[2]),
+              pgid: Number(m[3]),
+              session: m[4],
+              command: m[5],
+            },
+          ]
+        : [];
     });
   const servers = procs.filter((p) => p.command.startsWith(prefix));
   const serverSessions = new Map(servers.map((p) => [p.pid, p.session]));
   // Linux ps prints the numeric SID; macOS ps prints a hex session pointer.
   // forkpty's direct child leads its own group in a *different* session
   // from the server. Match that session token exactly for every group.
-  const sessions = new Set(procs.filter((p) => p.pid === p.pgid && serverSessions.has(p.ppid)
-    && p.session !== serverSessions.get(p.ppid)).map((p) => p.session));
+  const sessions = new Set(
+    procs
+      .filter(
+        (p) =>
+          p.pid === p.pgid &&
+          serverSessions.has(p.ppid) &&
+          p.session !== serverSessions.get(p.ppid),
+      )
+      .map((p) => p.session),
+  );
   const kill = (pid: number) => {
     try {
-      process.kill(pid, 'SIGKILL');
+      process.kill(pid, "SIGKILL");
     } catch {
       // already gone
     }
@@ -75,7 +102,7 @@ export default async function globalSetup() {
     return await startTestEnvironment(cleanup, originalEnvironment);
   } catch (error) {
     if (serverProcess) {
-      serverProcess.kill('SIGKILL');
+      serverProcess.kill("SIGKILL");
       serverProcess = null;
     }
     cleanup();
@@ -89,9 +116,9 @@ async function startTestEnvironment(cleanup: () => void, originalEnvironment: No
   // HOME or walking all of /tmp makes unrelated builds interfere.
   // macOS tmpdir() is a symlink (/var -> /private/var) and git reports the
   // resolved path, so resolve it up front or cwd never equals the repo root.
-  tempDir = realpathSync(mkdtempSync(path.join(tmpdir(), 'shelley-e2e-')));
-  const cwd = path.join(tempDir, 'cwd');
-  const home = path.join(tempDir, 'home');
+  tempDir = realpathSync(mkdtempSync(path.join(tmpdir(), "shelley-e2e-")));
+  const cwd = path.join(tempDir, "cwd");
+  const home = path.join(tempDir, "home");
   mkdirSync(cwd);
   mkdirSync(home);
   process.env.SHELLEY_TEST_CWD = cwd;
@@ -104,58 +131,81 @@ async function startTestEnvironment(cleanup: () => void, originalEnvironment: No
   }
 
   // Git-viewer specs need real history, not the runner's giant checkout.
-  const git = (...args: string[]) => execFileSync('git', [
-    '-C', cwd, '-c', 'user.name=Shelley Test', '-c', 'user.email=test@example.com',
-    '-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=/dev/null', ...args,
-  ], { env: hermeticGitEnvironment({ ...process.env, HOME: home }) });
-  git('init', '--quiet', '--initial-branch=main');
-  writeFileSync(path.join(cwd, 'example.txt'), 'before\n');
-  git('add', 'example.txt');
-  git('commit', '--quiet', '-m', 'Initial test fixture');
-  writeFileSync(path.join(cwd, 'example.txt'), 'after\n');
-  git('commit', '--quiet', '-am', 'Update test fixture');
+  const git = (...args: string[]) =>
+    execFileSync(
+      "git",
+      [
+        "-C",
+        cwd,
+        "-c",
+        "user.name=Shelley Test",
+        "-c",
+        "user.email=test@example.com",
+        "-c",
+        "commit.gpgsign=false",
+        "-c",
+        "core.hooksPath=/dev/null",
+        ...args,
+      ],
+      { env: hermeticGitEnvironment({ ...process.env, HOME: home }) },
+    );
+  git("init", "--quiet", "--initial-branch=main");
+  writeFileSync(path.join(cwd, "example.txt"), "before\n");
+  git("add", "example.txt");
+  git("commit", "--quiet", "-m", "Initial test fixture");
+  writeFileSync(path.join(cwd, "example.txt"), "after\n");
+  git("commit", "--quiet", "-am", "Update test fixture");
 
   // Building is not part of Git fixture isolation and may need the developer's
   // Git config for module fetching or version stamping.
   if (!existsSync(binPath)) {
-    console.log('Building shelley binary…');
-    execSync('go build -o bin/shelley ./cmd/shelley', {
+    console.log("Building shelley binary…");
+    execSync("go build -o bin/shelley ./cmd/shelley", {
       cwd: shelleyDir,
-      stdio: 'inherit',
+      stdio: "inherit",
       env: originalEnvironment,
     });
   }
 
   // Database and port file stay outside the conversation working directory.
-  const testDb = path.join(tempDir, 'test.db');
-  const portFile = path.join(tempDir, 'port');
-  const socketPath = path.join(tempDir, 'client.sock');
+  const testDb = path.join(tempDir, "test.db");
+  const testPort = process.env.SHELLEY_TEST_PORT || "0";
+  const portFile = path.join(tempDir, "port");
+  const socketPath = path.join(tempDir, "client.sock");
   process.env.TEST_SERVER_SOCKET = socketPath;
 
-  console.log(`Starting shelley (db=${testDb}, port-file=${portFile})`);
+  console.log(`Starting shelley (db=${testDb}, port=${testPort}, port-file=${portFile})`);
 
   let earlyExit = false;
   let exitCode: number | null = null;
 
-  serverProcess = spawn(binPath, [
-    '--predictable-only',
-    '--db', testDb,
-    'serve',
-    '--port', '0',
-    '--port-file', portFile,
-    '--socket', socketPath,
-  ], {
-    cwd,
-    stdio: 'inherit',
-    env: hermeticGitEnvironment({
-      ...process.env,
-      HOME: home,
-      PWD: cwd,
-      PREDICTABLE_DELAY_MS: process.env.PREDICTABLE_DELAY_MS || '20',
-    }),
-  });
+  serverProcess = spawn(
+    binPath,
+    [
+      "--predictable-only",
+      "--db",
+      testDb,
+      "serve",
+      "--port",
+      testPort,
+      "--port-file",
+      portFile,
+      "--socket",
+      socketPath,
+    ],
+    {
+      cwd,
+      stdio: "inherit",
+      env: hermeticGitEnvironment({
+        ...process.env,
+        HOME: home,
+        PWD: cwd,
+        PREDICTABLE_DELAY_MS: process.env.PREDICTABLE_DELAY_MS || "20",
+      }),
+    },
+  );
 
-  serverProcess.on('exit', (code) => {
+  serverProcess.on("exit", (code) => {
     earlyExit = true;
     exitCode = code;
   });
@@ -167,12 +217,12 @@ async function startTestEnvironment(cleanup: () => void, originalEnvironment: No
       throw new Error(`Shelley server exited (code ${exitCode}) before writing port file`);
     }
     if (Date.now() > deadline) {
-      throw new Error('Shelley server did not write port file within 30s');
+      throw new Error("Shelley server did not write port file within 30s");
     }
-    await new Promise(r => setTimeout(r, 50));
+    await new Promise((r) => setTimeout(r, 50));
   }
 
-  const port = readFileSync(portFile, 'utf8').trim();
+  const port = readFileSync(portFile, "utf8").trim();
   const baseURL = `http://localhost:${port}`;
   console.log(`Shelley test server listening at ${baseURL}`);
 
@@ -185,11 +235,14 @@ async function startTestEnvironment(cleanup: () => void, originalEnvironment: No
     }
     try {
       const res = await fetch(baseURL);
-      if (res.ok) { httpReady = true; break; }
+      if (res.ok) {
+        httpReady = true;
+        break;
+      }
     } catch {
       // not ready yet
     }
-    await new Promise(r => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 100));
   }
   if (!httpReady) {
     throw new Error(`Shelley server at ${baseURL} never responded OK within 30s`);
@@ -203,18 +256,20 @@ async function startTestEnvironment(cleanup: () => void, originalEnvironment: No
     const server = serverProcess!;
     try {
       if (server.exitCode !== null || server.signalCode !== null) {
-        throw new Error(`Shelley exited before teardown (code ${server.exitCode}, signal ${server.signalCode})`);
+        throw new Error(
+          `Shelley exited before teardown (code ${server.exitCode}, signal ${server.signalCode})`,
+        );
       }
-      const exited = new Promise<void>((resolve) => server.once('exit', () => resolve()));
+      const exited = new Promise<void>((resolve) => server.once("exit", () => resolve()));
       let timedOut = false;
       const deadline = setTimeout(() => {
         timedOut = true;
-        server.kill('SIGKILL');
+        server.kill("SIGKILL");
       }, 10_000);
       try {
-        server.kill('SIGTERM');
+        server.kill("SIGTERM");
         await exited;
-        if (timedOut) throw new Error('Shelley did not exit within 10s of SIGTERM');
+        if (timedOut) throw new Error("Shelley did not exit within 10s of SIGTERM");
       } finally {
         clearTimeout(deadline);
       }
