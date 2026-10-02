@@ -58,7 +58,7 @@ function testEnvironment() {
   return sharedDOM;
 }
 
-/** Compile and mount the real SFC; stub only its child-component boundaries. */
+/** Compile and mount the real SFC with explicit child/service test adapters. */
 export async function mountVueComponent(
   relativePath: string,
   initialProps: Record<string, unknown>,
@@ -87,7 +87,7 @@ export async function mountVueComponent(
       {
         name: "unit-child-boundaries",
         setup(builder) {
-          builder.onResolve({ filter: /^\/monaco-editor\.js$/ }, (args) =>
+          builder.onResolve({ filter: /.*/ }, (args) =>
             options.moduleStubs?.[args.path]
               ? { path: args.path, namespace: "component-module-stub" }
               : undefined,
@@ -96,11 +96,6 @@ export async function mountVueComponent(
             contents: options.moduleStubs?.[args.path] ?? "",
             loader: "js",
           }));
-          builder.onResolve({ filter: /^(\.\.\/)+services\/monaco$/ }, (args) =>
-            options.moduleStubs?.[args.path]
-              ? { path: args.path, namespace: "component-module-stub" }
-              : undefined,
-          );
           builder.onResolve({ filter: /\.vue$/ }, (args) =>
             args.path === filename ? undefined : { path: args.path, namespace: "child-stub" },
           );

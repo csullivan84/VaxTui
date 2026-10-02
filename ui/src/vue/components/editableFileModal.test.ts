@@ -16,7 +16,7 @@ async function run(name: string, test: () => Promise<void>) {
 
 type MonacoControl = { change: (value: string) => void; save: () => void; value: () => string; focused: () => boolean };
 
-async function mountEditor(path: string, writes: Response[] = []) {
+async function mountEditor(path: string, writes: Response[] = [], commentable = false) {
   let writeCount = 0;
   let editorCreates = 0;
   const writeBodies: string[] = [];
@@ -31,12 +31,22 @@ async function mountEditor(path: string, writes: Response[] = []) {
   };
   const view = await mountVueComponent(
     "src/vue/components/EditableFileModal.vue",
-    { isOpen: true, path },
+    { isOpen: true, path, commentable },
     {
       childStubs: {
         "MarkdownContent.vue": "export default { props: ['text'], template: '<p>{{ text }}</p>' };",
+        "CommentDialog.vue": "import { h } from 'vue'; export default { props: ['text'], emits: ['update:text'], render() { return h('input', { 'data-testid': 'comment-text', value: this.text, onInput: (e) => this.$emit('update:text', e.target.value) }); } };",
       },
       moduleStubs: {
+        "../composables/monacoComments": `
+          import { ref } from "vue";
+          const showCommentDialog = ref(null); const commentText = ref("");
+          export const lineCommentLabel = () => "Line 1";
+          export function useMonacoComments() {
+            globalThis.__openEditableComment = () => { showCommentDialog.value = { line: 1, side: "right", selectedText: "line", startLine: 1, endLine: 1 }; };
+            return { showCommentDialog, commentDialogOpens: ref(0), commentPrompt: ref(null), commentText, attach: () => () => {}, handleAddComment: () => {}, openCommentFromPrompt: () => {}, clearPrompt: () => {}, reset: () => {} };
+          }
+        `,
         "../../services/monaco": `
           export const KeyMod = { CtrlCmd: 1 };
           export const KeyCode = { KeyS: 1 };
@@ -172,5 +182,29 @@ await run("EditableFileModal restores a failed first-file buffer after crossing 
     for (let index = 0; index < 8; index++) await view.flush();
     check("reopened first path announces retained failed state", view.document.body.textContent?.includes("Error saving") === true);
     check("reopened Monaco retains the failed first buffer", currentControl().value() === "recover first buffer");
+  } finally { view.close(); }
+});
+
+
+await run("EditableFileModal preserves an unfinished comment when Preview is requested", async () => {
+  const { view } = await mountEditor("/private/comment.md", [], true);
+  try {
+    const comment = view.document.querySelector<HTMLButtonElement>('[aria-label="Comment mode"]');
+    comment?.click();
+    await view.flush();
+    const comments = globalThis as typeof globalThis & { __openEditableComment?: () => void };
+    comments.__openEditableComment?.();
+    await view.flush();
+    const input = view.document.querySelector<HTMLInputElement>('[data-testid="comment-text"]');
+    check("pending comment dialog opens", input instanceof view.window.HTMLInputElement);
+    input!.value = "unfinished note";
+    input!.dispatchEvent(new view.window.Event("input", { bubbles: true }));
+    await view.flush();
+    const preview = view.document.querySelector<HTMLButtonElement>('[aria-label="Preview mode"]');
+    check("preview is disabled while comment is unfinished", preview?.disabled === true);
+    preview?.click();
+    await view.flush();
+    check("unfinished comment text remains", input?.value === "unfinished note");
+    check("preview does not replace comment dialog", view.document.querySelector('[role="region"][aria-label="Markdown preview"]') === null);
   } finally { view.close(); }
 });
