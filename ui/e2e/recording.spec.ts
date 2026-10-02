@@ -2676,6 +2676,9 @@ test("an unaccepted recording re-enables draft autosave after release", async ({
     if (route.request().method() === "PUT") updates++;
     await route.continue();
   });
+  await page.route("**/api/conversation/*/chat", (route) =>
+    route.fulfill({ contentType: "application/json", body: "{}" }),
+  );
   await page.goto("/new");
   const input = page.getByTestId("message-input");
   await input.fill("Keep this unaccepted recording draft.");
@@ -2696,6 +2699,9 @@ test("an accepted recording does not restart draft autosave on release", async (
     if (route.request().method() === "PUT") updates++;
     await route.continue();
   });
+  await page.route("**/api/conversation/*/chat", (route) =>
+    route.fulfill({ contentType: "application/json", body: "{}" }),
+  );
   await page.goto("/new");
   await page.getByTestId("message-input").fill("Accepted recording must not resave this draft.");
   await page.getByTestId("voice-button").click();
