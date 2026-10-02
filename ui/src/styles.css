@@ -4062,7 +4062,8 @@ diffs-container {
 
 @media (max-width: 640px) {
   .recording-floating {
-    top: calc(5.5rem + env(safe-area-inset-top, 0px));
+    /* Clear the fork workspace toolbar, view tabs, and conversation header. */
+    top: calc(9rem + env(safe-area-inset-top, 0px));
     bottom: auto;
   }
 
@@ -8047,7 +8048,6 @@ button.tour-visibility-control:focus-visible,
 }
 
 .tour-change-row .tour-change-range {
-  flex: 1 1 auto;
   min-width: 0;
   padding: 0;
   overflow: hidden;
@@ -8074,7 +8074,6 @@ button.tour-visibility-control:focus-visible,
 }
 
 .tour-file-name {
-  flex: 1 1 auto;
   min-width: 0;
   display: flex;
   white-space: nowrap;
@@ -8201,7 +8200,6 @@ button.tour-visibility-control:focus-visible,
 }
 
 .diff-tree-label {
-  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -10443,6 +10441,7 @@ kbd {
 
 .generation-context-copy {
   display: flex;
+  flex: 1 1 0;
   align-items: baseline;
   gap: 0.4rem;
   min-width: 0;
@@ -10473,18 +10472,32 @@ kbd {
 }
 
 /* The model name ellipsizes; ", <reasoning>" after it always stays visible. */
+.model-bar-copy {
+  align-items: flex-start;
+}
+
 .model-bar-value {
   display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
 }
 
 .model-bar-name {
-  min-width: 0;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.model-bar-reasoning {
-  flex-shrink: 0;
+.model-bar-metadata {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 0.5rem;
+}
+
+.model-bar-reasoning,
+.model-bar-health {
+  white-space: nowrap;
 }
 
 @media (max-width: 700px) {
@@ -13360,7 +13373,6 @@ kbd {
 }
 
 .git-graph-main {
-  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -15011,7 +15023,6 @@ kbd {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  flex: 1 1 auto;
   min-width: 0;
 }
 .export-opt {

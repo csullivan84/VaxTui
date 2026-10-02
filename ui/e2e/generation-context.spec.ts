@@ -18,7 +18,10 @@ test("groups model and system prompt into one context card", async ({ page, requ
   });
   await expect(promptButton).toBeVisible();
   await expect(modelSummary).toContainText("Model:");
-  // The fork labels every field so screen readers never hear a bare value.
+  // Model metadata must use the same mounted generation-context row as the
+  // system prompt, without losing the fork's explicit values for assistive tech.
+  await expect(modelSummary.locator(":scope > .generation-context-copy")).toBeVisible();
+  await expect(modelSummary.locator(":scope > .generation-context-icon")).toBeVisible();
   await expect(modelSummary).toContainText(/Reasoning:.+Health:/);
   await expect(promptButton).toContainText(/System Prompt:\s*\d+ tools?,\s*\d+ skills?/);
   expect(
@@ -28,7 +31,7 @@ test("groups model and system prompt into one context card", async ({ page, requ
     })),
   ).toEqual({ boxShadow: "none", borderLeftWidth: "0px" });
 
-  const modelName = modelSummary.locator(".model-bar-name");
+  const modelName = modelSummary.locator(".model-bar-name[title]");
   await modelName.evaluate((element) => {
     element.textContent = "a-very-long-custom-model-name-".repeat(12);
   });
@@ -38,20 +41,21 @@ test("groups model and system prompt into one context card", async ({ page, requ
   ]);
   expect(promptRect.width).toBeGreaterThan(200);
   expect(promptRect.right).toBeLessThanOrEqual(cardRect.right + 1);
-  // The long name ellipsizes; ", <reasoning>" stays fully visible (not
-  // clipped by any overflow ancestor) after it.
+  // The long name stays visible as an ellipsized first row; the explicit
+  // reasoning and health values remain readable below it instead of taking its width.
   expect(await modelName.evaluate((e) => e.scrollWidth > e.clientWidth)).toBe(true);
-  expect(
-    await modelSummary.locator(".model-bar-reasoning").evaluate((element) => {
-      const range = document.createRange();
-      range.selectNodeContents(element);
-      const text = range.getBoundingClientRect();
-      const y = text.top + text.height / 2;
-      return [text.left + 1, text.right - 1].map(
-        (x) => document.elementFromPoint(x, y) === element,
-      );
-    }),
-  ).toEqual([true, true]);
+  await expect(modelSummary.locator(".model-bar-reasoning")).toContainText("Reasoning:");
+  await expect(modelSummary.locator(".model-bar-health")).toContainText("Health:");
+  const metadataInsideCard = await card.evaluate((element) => {
+    const root = element.getBoundingClientRect();
+    return Array.from(
+      element.querySelectorAll(".model-bar-name, .model-bar-reasoning, .model-bar-health"),
+    ).every((child) => {
+      const rect = child.getBoundingClientRect();
+      return rect.left >= root.left && rect.right <= root.right && rect.width > 0;
+    });
+  });
+  expect(metadataInsideCard).toBe(true);
 
   const lineRects = await Promise.all([
     modelSummary.evaluate((element) => {
@@ -177,30 +181,10 @@ test("model and system prompt items share one look", async ({ page, request }) =
   expect(await look(model.icon, tile)).toEqual(await look(prompt.icon, tile));
   expect(await spacing(rows[0])).toEqual(await spacing(rows[1]));
 
-  // "Claude Opus 5.5, xhigh" and "9 tools, 11 skills": every comma sits right
-  // against the glyph before it, with no space or flex gap in between.
-  for (const row of rows) {
-    const gaps = await row.evaluate((root) => {
-      const glyphs: { ch: string; rect: DOMRect }[] = [];
-      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-        const s = node.textContent ?? "";
-        for (let i = 0; i < s.length; i++) {
-          const range = document.createRange();
-          range.setStart(node, i);
-          range.setEnd(node, i + 1);
-          const rect = range.getBoundingClientRect();
-          if (rect.width > 0 && s[i].trim()) glyphs.push({ ch: s[i], rect });
-        }
-      }
-      return glyphs.flatMap((g, i) =>
-        g.ch === "," && i > 0 ? [g.rect.left - glyphs[i - 1].rect.right] : [],
-      );
-    });
-    expect(gaps).toHaveLength(1);
-    expect(Math.abs(gaps[0])).toBeLessThan(1);
-  }
-  await expect(rows[0]).toContainText(/Model:\s*\S.*\S, \S+$/);
+  // Model values use labelled, wrapping metadata rather than clipped bare values.
+  await expect(rows[0]).toContainText(/Model:\s*\S/);
+  await expect(rows[0]).toContainText(/Reasoning:\s*\S/);
+  await expect(rows[0]).toContainText(/Health:\s*\S/);
 
   // Phones hide the labels but keep the icon tiles and values identical.
   await page.setViewportSize({ width: 390, height: 800 });
