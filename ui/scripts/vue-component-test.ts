@@ -120,13 +120,18 @@ export async function mountVueComponent(
   );
   const vue = require("vue") as typeof import("vue");
   const props = vue.reactive({ ...initialProps });
-  const app: App = vue.createApp({ render: () => vue.h(compiled.exports.default, props) });
-  app.use(compiled.exports.i18nPlugin);
-  options.configure?.(app, compiled.exports, vue);
-  app.directive("tooltip", {});
-  const container = dom.window.document.createElement("main");
-  dom.window.document.body.append(container);
-  app.mount(container);
+  let app: App;
+  let container: HTMLElement;
+  const mount = () => {
+    container = dom.window.document.createElement("main");
+    dom.window.document.body.append(container);
+    app = vue.createApp({ render: () => vue.h(compiled.exports.default, props) });
+    app.use(compiled.exports.i18nPlugin);
+    options.configure?.(app, compiled.exports, vue);
+    app.directive("tooltip", {});
+    app.mount(container);
+  };
+  mount();
   const flush = async () => {
     await vue.nextTick();
     await Promise.resolve();
@@ -139,6 +144,13 @@ export async function mountVueComponent(
     document: dom.window.document,
     window: dom.window,
     flush,
+    async remount() {
+      app.unmount();
+      container.remove();
+      mount();
+      await flush();
+      return container;
+    },
     close() {
       app.unmount();
       container.remove();

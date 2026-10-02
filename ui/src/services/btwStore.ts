@@ -3,6 +3,7 @@ import { ApiError, api } from "./api";
 import { messageStore } from "./messageStore";
 import { projectBtwReader } from "./btwProjector";
 import * as summaryIntent from "./btwSummaryIntent";
+import { reactive } from "vue";
 
 type API = Pick<
   typeof api,
@@ -25,10 +26,19 @@ interface ChildSubscription {
   unsubscribe: () => void;
 }
 
+export interface BtwViewState {
+  collapsed: boolean;
+  followUpQuestion: string;
+}
+
 export class BtwStore {
   private parents = new Map<string, ParentState>();
   private childSubscriptions = new Map<string, ChildSubscription>();
   private pendingSummaryResponses = new Set<string>();
+  // Transcript chunks may temporarily unmount while their parent stream
+  // reconciles. Keep only the local, exchange-scoped reader state here so that
+  // remount does not discard a user's collapsed thread or drafted follow-up.
+  private viewStates = new Map<string, BtwViewState>();
 
   constructor(
     private readonly btwAPI: API = api,
@@ -55,6 +65,15 @@ export class BtwStore {
           Date.parse(b.created_at) - Date.parse(a.created_at) ||
           b.exchange_id.localeCompare(a.exchange_id),
       );
+  }
+
+  viewState(exchangeID: string): BtwViewState {
+    let state = this.viewStates.get(exchangeID);
+    if (!state) {
+      state = reactive({ collapsed: false, followUpQuestion: "" });
+      this.viewStates.set(exchangeID, state);
+    }
+    return state;
   }
 
   subscribe(parentID: string, listener: () => void): () => void {
@@ -110,6 +129,7 @@ export class BtwStore {
 
   removeReader(childID: string, parentHint?: string): void {
     this.pendingSummaryResponses.delete(childID);
+    this.viewStates.delete(childID);
     const parentID = this.childSubscriptions.get(childID)?.parentID ?? parentHint;
     if (!parentID) return;
     const parent = this.parents.get(parentID);
@@ -134,6 +154,7 @@ export class BtwStore {
     if (parent) parent.disposed = true;
     for (const childID of parent?.descriptors.keys() ?? []) {
       this.pendingSummaryResponses.delete(childID);
+      this.viewStates.delete(childID);
       this.detach(childID);
     }
     this.parents.delete(conversationID);
