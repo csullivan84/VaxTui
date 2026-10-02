@@ -14,7 +14,7 @@ async function run(name: string, test: () => Promise<void>) {
   }
 }
 
-type MonacoControl = { change: (value: string) => void; save: () => void; focused: () => boolean };
+type MonacoControl = { change: (value: string) => void; save: () => void; value: () => string; focused: () => boolean };
 
 async function mountEditor(path: string, writes: Response[] = []) {
   let writeCount = 0;
@@ -46,7 +46,7 @@ async function mountEditor(path: string, writes: Response[] = []) {
               globalThis.__editableCreates = (globalThis.__editableCreates || 0) + 1;
               let value = options.value; let onChange = () => {}; let onSave = () => {}; let focused = false;
               globalThis.__editableMonaco = {
-                change(next) { value = next; onChange(); }, save() { onSave(); }, focused: () => focused,
+                change(next) { value = next; onChange(); }, save() { onSave(); }, value: () => value, focused: () => focused,
               };
               return {
                 getValue: () => value, updateOptions: () => {}, layout: () => {}, focus: () => { focused = true; }, dispose: () => {},
@@ -63,7 +63,7 @@ async function mountEditor(path: string, writes: Response[] = []) {
   const control = (globalThis as typeof globalThis & { __editableMonaco?: MonacoControl }).__editableMonaco;
   if (!control) throw new Error("Monaco adapter was not initialized by the compiled modal");
   editorCreates = (globalThis as typeof globalThis & { __editableCreates?: number }).__editableCreates ?? 0;
-  return { view, control, writeCount: () => writeCount, writeBodies: () => writeBodies, editorCreates: () => (globalThis as typeof globalThis & { __editableCreates?: number }).__editableCreates ?? editorCreates };
+  return { view, control, currentControl: () => (globalThis as typeof globalThis & { __editableMonaco?: MonacoControl }).__editableMonaco!, writeCount: () => writeCount, writeBodies: () => writeBodies, editorCreates: () => (globalThis as typeof globalThis & { __editableCreates?: number }).__editableCreates ?? editorCreates };
 }
 
 await run("EditableFileModal previews markdown through its real compiled SFC", async () => {
@@ -160,7 +160,7 @@ await run("EditableFileModal flushes the old path before switching editors", asy
 });
 
 await run("EditableFileModal restores a failed first-file buffer after crossing files", async () => {
-  const { view, control, writeBodies } = await mountEditor("/private/first.md", [
+  const { view, control, currentControl, writeBodies } = await mountEditor("/private/first.md", [
     new Response("failed", { status: 500 }),
   ]);
   try {
@@ -171,5 +171,6 @@ await run("EditableFileModal restores a failed first-file buffer after crossing 
     view.props.path = "/private/first.md";
     for (let index = 0; index < 8; index++) await view.flush();
     check("reopened first path announces retained failed state", view.document.body.textContent?.includes("Error saving") === true);
+    check("reopened Monaco retains the failed first buffer", currentControl().value() === "recover first buffer");
   } finally { view.close(); }
 });
