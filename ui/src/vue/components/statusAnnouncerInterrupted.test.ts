@@ -39,6 +39,7 @@ console.log("StatusAnnouncer rendered interrupted-turn contract passed");
 const componentsDir = fileURLToPath(new URL(".", import.meta.url));
 const statusAnnouncerPath = fileURLToPath(new URL("./StatusAnnouncer.vue", import.meta.url));
 const chatStatusPath = fileURLToPath(new URL("./ChatStatusContent.vue", import.meta.url));
+const animatedWorkingPath = fileURLToPath(new URL("./AnimatedWorkingStatus.vue", import.meta.url));
 const i18nPath = fileURLToPath(new URL("../composables/i18n.ts", import.meta.url));
 const pairBuild = await build({
   stdin: {
@@ -97,7 +98,12 @@ const pairBuild = await build({
       setup(builder) {
         builder.onResolve({ filter: /\.vue$/ }, (args) => {
           const resolved = fileURLToPath(new URL(args.path, `file://${args.resolveDir}/`));
-          if (resolved === statusAnnouncerPath || resolved === chatStatusPath) return undefined;
+          if (
+            resolved === statusAnnouncerPath ||
+            resolved === chatStatusPath ||
+            resolved === animatedWorkingPath
+          )
+            return undefined;
           return { path: args.path, namespace: "status-child-stub" };
         });
         builder.onLoad({ filter: /.*/, namespace: "status-child-stub" }, () => ({
@@ -202,6 +208,16 @@ try {
   pairProps.agentWorking = true;
   await flushPair();
   assert.equal(pairContainer.querySelector('[data-testid="status-announcer"]')?.textContent?.trim(), "Agent working");
+  const visibleWorking = pairContainer.querySelector('[data-testid="agent-thinking"]');
+  assert.match(visibleWorking?.textContent ?? "", /Agent working/);
+  assert.equal(visibleWorking?.querySelector("button")?.getAttribute("aria-label"), "Stop");
+  assert.equal(
+    [...pairContainer.querySelectorAll<HTMLElement>('[role="status"], [aria-live]')].filter(
+      (element) => element.closest("[aria-live]")?.getAttribute("aria-live") !== "off",
+    ).length,
+    1,
+    "the canonical announcer is the only non-off live working owner",
+  );
   pairProps.agentWorking = false;
   await flushPair();
   assert.equal(pairContainer.querySelector('[data-testid="status-announcer"]')?.textContent?.trim(), "Agent finished");

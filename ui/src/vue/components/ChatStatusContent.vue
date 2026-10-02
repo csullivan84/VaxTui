@@ -62,6 +62,7 @@
     class="status-bar-active"
     data-testid="agent-thinking"
     role="status"
+    aria-live="off"
     aria-label="Agent status"
   >
     <AnimatedWorkingStatus />
