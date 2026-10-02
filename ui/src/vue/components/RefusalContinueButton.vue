@@ -18,7 +18,7 @@
       data-testid="refusal-continue-button"
       @select-model="continueWithModel"
     />
-    <span v-if="error" class="error-retry-error">{{ error }}</span>
+    <span v-if="error" class="error-retry-error" role="alert">{{ error }}</span>
   </div>
 </template>
 

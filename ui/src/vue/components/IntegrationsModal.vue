@@ -15,7 +15,7 @@
       />
     </template>
 
-    <div class="integrations-tabs" role="tablist" :aria-label="t('vmIntegrations')">
+    <div class="integrations-tabs" role="tablist" :aria-label="t('vmIntegrations')" @keydown="onTabKeydown">
       <button
         id="integrations-list-tab"
         role="tab"
@@ -416,6 +416,24 @@ async function showDetails(integration: AttachedIntegration) {
   } finally {
     if (request === detailRequest && props.isOpen) loadingDetail.value = false;
   }
+}
+
+function onTabKeydown(event: KeyboardEvent) {
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+  const tabs = Array.from(
+    (event.currentTarget as HTMLElement).querySelectorAll<HTMLButtonElement>('[role="tab"]:not(:disabled)'),
+  );
+  const current = tabs.indexOf(document.activeElement as HTMLButtonElement);
+  if (current < 0 || tabs.length === 0) return;
+  event.preventDefault();
+  const next =
+    event.key === 'Home'
+      ? 0
+      : event.key === 'End'
+        ? tabs.length - 1
+        : (current + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+  tabs[next]?.click();
+  tabs[next]?.focus();
 }
 
 async function refresh() {

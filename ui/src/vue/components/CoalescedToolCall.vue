@@ -81,8 +81,8 @@
                   <GenericToolWarning :tool-name="toolName" />
                 </div>
                 <span :class="`tool-result-status text-xs ${toolError ? 'error' : 'success'}`">
-                  <span aria-hidden="true">{{ toolError ? "\u2717" : "\u2713" }}</span>
-                  <span class="sr-only">{{ toolError ? "failed" : "succeeded" }}.</span>
+                  <span aria-hidden="true">{{ toolError ? "\u2717" : toolInterrupted ? "\u2014" : "\u2713" }}</span>
+                  <span class="sr-only">{{ toolError ? "failed" : toolInterrupted ? "interrupted" : "succeeded" }}.</span>
                   {{ summary }}
                 </span>
               </div>
@@ -233,6 +233,7 @@ const toolComponentProps = computed<Record<string, unknown>>(() => {
     isRunning: !props.hasResult && !props.toolInterrupted,
     toolResult: props.toolResult,
     hasError: props.toolError,
+    toolInterrupted: props.toolInterrupted,
     executionTime: executionTime.value,
     toolInvokedAt: props.toolInvokedAt,
     display: props.display,

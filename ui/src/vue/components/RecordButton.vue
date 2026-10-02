@@ -17,6 +17,8 @@
       :disabled="!canRecordAudio"
       class="message-voice-btn"
       :aria-label="t('recordingTitle')"
+      :aria-haspopup="screenAvailable ? 'menu' : undefined"
+      :aria-expanded="screenAvailable ? open : undefined"
       :title="screenAvailable ? undefined : `${t('recordingTitle')} (${menuShortcutLabel('recordAudio')})`"
       data-testid="voice-button"
       @pointerdown="onPointerDown"

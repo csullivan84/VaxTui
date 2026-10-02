@@ -29,6 +29,7 @@
         ref="videoRef"
         class="commit-tour-media-video"
         :src="src"
+        :aria-label="`Video: ${entry.name}`"
         controls
         preload="metadata"
         playsinline

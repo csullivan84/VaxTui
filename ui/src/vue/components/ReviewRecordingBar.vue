@@ -6,14 +6,13 @@
   <div
     v-if="error || pending.length"
     class="review-recording-bar"
-    role="status"
+    :role="error ? 'alert' : 'status'"
     data-testid="review-recording-bar"
     data-review-ignore
   >
     <span
       v-if="error"
       class="review-recording-error"
-      role="alert"
       data-testid="review-recording-error"
       >{{ error }}</span
     >
