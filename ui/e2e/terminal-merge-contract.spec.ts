@@ -119,29 +119,43 @@ test("keeps terminal control-I completion on the shell input", async ({ page, re
     .toBeTruthy();
 });
 
-function receivedOutputContains(frames: string[], marker: string) {
-  return frames.some((frame) => {
-    try {
-      const message = JSON.parse(frame) as { type?: string; data?: string };
-      return (
-        message.type === "output" &&
-        typeof message.data === "string" &&
-        Buffer.from(message.data, "base64").toString().includes(marker)
-      );
-    } catch {
-      return false;
-    }
-  });
-}
-
 test("pauses capped terminal live output and resumes it with Escape", async ({ page, request }) => {
   // Fake browser time keeps this behavioral cap regression quick without a sleep;
   // output still comes from an actual private terminal PTY over its websocket.
-  const receivedFrames: string[] = [];
-  page.on("websocket", (socket) => {
-    if (!socket.url().includes("/api/exec-ws")) return;
-    socket.on("framereceived", (event) => {
-      if (typeof event.payload === "string") receivedFrames.push(event.payload);
+  // Install before navigation so the probe wraps TerminalInstance's real
+  // WebSocket onmessage callback rather than observing CDP before that callback
+  // has run. Normal/null event handlers retain the native descriptor behavior.
+  await page.addInitScript(() => {
+    const state = window as Window & { terminalDeliveredOutput?: string[] };
+    state.terminalDeliveredOutput = [];
+    const descriptor = Object.getOwnPropertyDescriptor(WebSocket.prototype, "onmessage");
+    if (!descriptor?.get || !descriptor.set) {
+      throw new Error("WebSocket onmessage descriptor unavailable");
+    }
+    Object.defineProperty(WebSocket.prototype, "onmessage", {
+      configurable: true,
+      enumerable: descriptor.enumerable,
+      get() {
+        return descriptor.get!.call(this);
+      },
+      set(listener) {
+        if (listener === null || typeof listener !== "function") {
+          descriptor.set!.call(this, listener);
+          return;
+        }
+        descriptor.set!.call(this, function (this: WebSocket, event: Event) {
+          listener.call(this, event);
+          if (!(event instanceof MessageEvent) || typeof event.data !== "string") return;
+          try {
+            const message = JSON.parse(event.data) as { type?: string; data?: string };
+            if (message.type === "output" && typeof message.data === "string") {
+              state.terminalDeliveredOutput!.push(atob(message.data));
+            }
+          } catch {
+            // Non-terminal websocket payloads retain their normal handler behavior.
+          }
+        });
+      },
     });
   });
   const terminal = await openTerminal(page, request);
@@ -152,26 +166,11 @@ test("pauses capped terminal live output and resumes it with Escape", async ({ p
   // between protocol calls before it is frozen.
   await page.clock.pauseAt(new Date(Date.now() + 60_000));
   await page.evaluate(() => {
-    const state = window as Window & {
-      terminalAnnouncements?: string[];
-      terminalMirrorRefreshes?: number;
-      terminalOriginalSetTimeout?: typeof window.setTimeout;
-    };
     const announcements: string[] = [];
     window.addEventListener("shelley:a11y-announce", (event) => {
       announcements.push((event as CustomEvent<{ text: string }>).detail.text);
     });
-    state.terminalAnnouncements = announcements;
-    // A CDP websocket observer can see a frame before Chromium dispatches the
-    // page's WebSocket onmessage task. Observe the real mirror debounce being
-    // scheduled before advancing fake time through it; this does not mock the
-    // terminal or its output log.
-    state.terminalMirrorRefreshes = 0;
-    state.terminalOriginalSetTimeout = window.setTimeout;
-    window.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
-      if (timeout === 80) state.terminalMirrorRefreshes!++;
-      return state.terminalOriginalSetTimeout!.call(window, handler, timeout, ...args);
-    }) as typeof window.setTimeout;
+    (window as Window & { terminalAnnouncements?: string[] }).terminalAnnouncements = announcements;
   });
   // Reset any native-time output window created while the terminal mounted:
   // log focus blurs xterm (clearing it), then shell focus starts a fake-time one.
@@ -184,25 +183,24 @@ test("pauses capped terminal live output and resumes it with Escape", async ({ p
   // the PTY or outlive this private test terminal.
   await page.keyboard.type("while IFS= read -r line; do printf '%s\n' \"$line\"; done");
   await page.keyboard.press("Enter");
+  const markerPrefix = `TERMINAL_A11Y_LIVE_${crypto.randomUUID()}`;
   for (let elapsed = 0; elapsed < 20_000; elapsed += 900) {
-    const marker = `TERMINAL_A11Y_LIVE_${elapsed}`;
-    const mirrorRefreshesBefore = await page.evaluate(
-      () => (window as Window & { terminalMirrorRefreshes?: number }).terminalMirrorRefreshes ?? 0,
-    );
+    const marker = `${markerPrefix}_${elapsed}`;
     await page.keyboard.type(marker);
     await page.keyboard.press("Enter");
-    await expect.poll(() => receivedOutputContains(receivedFrames, marker)).toBeTruthy();
-    // A CDP websocket observer can precede the page's onmessage callback. Wait
-    // for TerminalInstance's actual debounced output-mirror update to be
-    // scheduled, then advance exactly that bounded debounce interval.
+    // This only becomes true after TerminalInstance's real WebSocket handler
+    // receives this exact private-PTY output and has scheduled its mirror.
     await expect
       .poll(() =>
         page.evaluate(
-          () =>
-            (window as Window & { terminalMirrorRefreshes?: number }).terminalMirrorRefreshes ?? 0,
+          (expected) =>
+            (
+              window as Window & { terminalDeliveredOutput?: string[] }
+            ).terminalDeliveredOutput?.some((output) => output.includes(expected)) ?? false,
+          marker,
         ),
       )
-      .toBeGreaterThan(mirrorRefreshesBefore);
+      .toBeTruthy();
     await page.clock.fastForward(80);
     await expect(log).toContainText(marker);
     await page.clock.fastForward(820);
