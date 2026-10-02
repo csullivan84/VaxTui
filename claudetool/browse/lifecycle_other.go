@@ -4,6 +4,8 @@ package browse
 
 import "os/exec"
 
-func configureBrowserCmd(cmd *exec.Cmd) {}
+type browserProcessGroup struct{}
 
-func killBrowserProcessGroup(int) {}
+func startBrowserProcessGroup() (*browserProcessGroup, error) { return nil, nil }
+func configureBrowserCmd(*exec.Cmd, *browserProcessGroup)     {}
+func (*browserProcessGroup) kill() error                      { return nil }

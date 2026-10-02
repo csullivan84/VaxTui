@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/url"
@@ -94,9 +95,10 @@ type BrowseTools struct {
 	traceMutex      sync.Mutex
 	// Screencast state
 	screencast screencastState
-	// browserCmd is the headless-shell *exec.Cmd, captured via
-	// chromedp.ModifyCmdFunc so we can kill its process group on shutdown.
-	browserCmd *exec.Cmd
+	// browserCmd identifies the launched Chrome command; browserGroup owns the
+	// private unreaped guardian and all group cleanup, including Cmd.Cancel.
+	browserCmd   *exec.Cmd
+	browserGroup *browserProcessGroup
 }
 
 // NewBrowseTools creates a new set of browser automation tools.
@@ -152,29 +154,17 @@ func (b *BrowseTools) GetBrowserContext() (context.Context, error) {
 	opts = append(opts, chromedp.Flag("disable-features",
 		"site-per-process,Translate,BlinkGenPropertyTrees,WebAuthentication"))
 
-	// Capture the *exec.Cmd headless-shell is launched with so closeBrowserLocked
-	// can kill the whole process group. headless-shell forks zygote, renderers,
-	// GPU and utility processes; chromedp's default cancel only SIGKILLs the
-	// direct child, leaving descendants orphaned to PID 1. ModifyCmdFunc also
-	// replaces chromedp's default cmd setup, so configureBrowserCmd re-applies
-	// Pdeathsig and adds Setpgid for clean group kill.
-	// ModifyCmdFunc runs synchronously on the chromedp.Run goroutine before
-	// cmd.Start, so a plain pointer assignment is enough — Run returns after
-	// the browser is up, so by the time we read capturedCmd below the function
-	// has already finished.
+	// Pin the group number before launching Chrome. The private guardian is
+	// retained unreaped until the shared cleanup owner has signalled the group.
+	capturedGroup, err := startBrowserProcessGroup()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create browser process group: %w", err)
+	}
 	var capturedCmd *exec.Cmd
 	opts = append(opts, chromedp.ModifyCmdFunc(func(cmd *exec.Cmd) {
-		configureBrowserCmd(cmd)
+		configureBrowserCmd(cmd, capturedGroup)
 		capturedCmd = cmd
 	}))
-
-	// killCapturedGroup is shared between error paths and the success path so
-	// every exit from this function reaps the headless-shell process group.
-	killCapturedGroup := func() {
-		if capturedCmd != nil && capturedCmd.Process != nil {
-			killBrowserProcessGroup(capturedCmd.Process.Pid)
-		}
-	}
 
 	allocCtx, allocCancel := chromedp.NewExecAllocator(b.ctx, opts...)
 	browserCtx, browserCancel := chromedp.NewContext(
@@ -190,17 +180,17 @@ func (b *BrowseTools) GetBrowserContext() (context.Context, error) {
 
 	// Start the browser
 	if err := chromedp.Run(browserCtx); err != nil {
+		cleanupErr := capturedGroup.kill()
 		allocCancel()
-		killCapturedGroup()
-		return nil, fmt.Errorf("failed to start browser (please apt install chromium or equivalent): %w", err)
+		return nil, fmt.Errorf("failed to start browser (please apt install chromium or equivalent): %w", errors.Join(err, cleanupErr))
 	}
 
 	// Set default viewport size to 1280x720 (16:9 widescreen)
 	if err := chromedp.Run(browserCtx, chromedp.EmulateViewport(1280, 720)); err != nil {
+		cleanupErr := capturedGroup.kill()
 		browserCancel()
 		allocCancel()
-		killCapturedGroup()
-		return nil, fmt.Errorf("failed to set default viewport: %w", err)
+		return nil, fmt.Errorf("failed to set default viewport: %w", errors.Join(err, cleanupErr))
 	}
 
 	// Configure download behavior to allow downloads and emit events
@@ -210,10 +200,10 @@ func (b *BrowseTools) GetBrowserContext() (context.Context, error) {
 			WithDownloadPath(DownloadDir).
 			WithEventsEnabled(true),
 	); err != nil {
+		cleanupErr := capturedGroup.kill()
 		browserCancel()
 		allocCancel()
-		killCapturedGroup()
-		return nil, fmt.Errorf("failed to configure download behavior: %w", err)
+		return nil, fmt.Errorf("failed to configure download behavior: %w", errors.Join(err, cleanupErr))
 	}
 
 	b.allocCtx = allocCtx
@@ -221,6 +211,7 @@ func (b *BrowseTools) GetBrowserContext() (context.Context, error) {
 	b.browserCtx = browserCtx
 	b.browserCtxCancel = browserCancel
 	b.browserCmd = capturedCmd
+	b.browserGroup = capturedGroup
 
 	b.resetIdleTimerLocked()
 
@@ -256,6 +247,7 @@ func (b *BrowseTools) closeBrowserLocked() {
 	// Stop any active screencast before tearing down the browser.
 	// If another caller already claimed the stop, wait for it instead of
 	// replaying a completed recording error as a new shutdown failure.
+	b.waitForScreencastStart()
 	sc := &b.screencast
 	sc.mu.Lock()
 	var resources *screencastStopResources
@@ -279,12 +271,13 @@ func (b *BrowseTools) closeBrowserLocked() {
 
 	browserCancel := b.browserCtxCancel
 	allocCancel := b.allocCancel
-	browserCmd := b.browserCmd
+	browserGroup := b.browserGroup
 	b.browserCtxCancel = nil
 	b.allocCancel = nil
 	b.browserCtx = nil
 	b.allocCtx = nil
 	b.browserCmd = nil
+	b.browserGroup = nil
 
 	// Release the lock before calling cancel functions. allocCancel in
 	// particular can block waiting for the chrome process to exit, and
@@ -293,19 +286,18 @@ func (b *BrowseTools) closeBrowserLocked() {
 	b.mux.Unlock()
 	defer b.mux.Lock()
 
+	// Signal while our private guardian still pins the group number, then reap
+	// it. Cleanup covers members still in this group, not descendants which
+	// deliberately establish another session/group. Cancel callbacks share the
+	// same idempotent owner and cannot signal a reused group after reaping.
+	if err := browserGroup.kill(); err != nil {
+		log.Printf("browse: owned group cleanup failed: %v", err)
+	}
 	if browserCancel != nil {
 		browserCancel()
 	}
 	if allocCancel != nil {
 		allocCancel()
-	}
-	// chromedp's allocCancel relies on context cancellation propagating SIGKILL
-	// only to headless-shell's direct process. Renderers, GPU, utility, and
-	// zygote children get reparented to PID 1 and continue running. Since we
-	// launched headless-shell in its own process group (Setpgid), we can
-	// SIGKILL the entire group to guarantee no leaks.
-	if browserCmd != nil && browserCmd.Process != nil {
-		killBrowserProcessGroup(browserCmd.Process.Pid)
 	}
 }
 

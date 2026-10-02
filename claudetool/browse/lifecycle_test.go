@@ -36,31 +36,45 @@ func TestBrowserProcessGroupCleanup(t *testing.T) {
 
 	tools.mux.Lock()
 	cmd := tools.browserCmd
+	group := tools.browserGroup
 	tools.mux.Unlock()
-	if cmd == nil || cmd.Process == nil {
+	if cmd == nil || cmd.Process == nil || group == nil {
 		t.Fatal("browserCmd not captured; ModifyCmdFunc wiring is broken")
 	}
 	pid := cmd.Process.Pid
 
-	// Sanity-check Setpgid: pgid should equal pid.
+	// Chrome joins our private guardian's group. Its leader is not reaped
+	// before the group signal, even if the Chrome command exits first.
 	pgid, err := syscall.Getpgid(pid)
 	if err != nil {
 		t.Fatalf("Getpgid(%d): %v", pid, err)
 	}
-	if pgid != pid {
-		t.Fatalf("expected pgid==pid==%d, got pgid=%d (Setpgid not applied)", pid, pgid)
+	if pgid != group.pid {
+		t.Fatalf("expected retained guardian pgid=%d, got pgid=%d", group.pid, pgid)
 	}
+	unrelated, err := startBrowserProcessGroup()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := unrelated.kill(); err != nil {
+			t.Error(err)
+		}
+	})
 
 	// Find at least one descendant beyond the direct child to make this test
 	// meaningful: chromedp's default behavior would still kill the direct
 	// child, and we want to prove we're cleaning up the whole tree.
-	descendants := findDescendantsByPgid(t, pid)
+	descendants := findDescendantsByPgid(t, group.pid)
 	t.Logf("headless-shell pid=%d, %d processes in process group", pid, len(descendants))
 	if len(descendants) < 2 {
 		t.Logf("warning: only %d processes in headless-shell process group; test is weaker than expected", len(descendants))
 	}
 
 	tools.Close()
+	if err := unrelated.cmd.Process.Signal(syscall.Signal(0)); err != nil {
+		t.Fatalf("unrelated owned fixture was stopped: %v", err)
+	}
 
 	// Give the kernel a moment to reap.
 	deadline := time.Now().Add(5 * time.Second)
