@@ -125,7 +125,10 @@ test("tour decisions, questions, and media are shown and commentable", async ({
     const image = overlay.locator(".commit-tour-media img");
     await expect.poll(() => image.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBe(200);
     await contents.getByRole("button", { name: "Image: shot.png" }).click();
-    await image.click();
+    const imageOpener = overlay.locator(".commentable-image-link");
+    await imageOpener.focus();
+    await expect(imageOpener).toBeFocused();
+    await page.keyboard.press("Enter");
     const annotate = page.locator(".image-comment-overlay");
     await expect(annotate).toBeVisible();
     await expect(annotate.locator(".image-comment-title")).toHaveText(
@@ -148,10 +151,11 @@ test("tour decisions, questions, and media are shown and commentable", async ({
         `> image shot\\.png \\(git blob ${shotBlob}\\) \\[region \\d+x\\d+\\+\\d+\\+\\d+ of 200x100\\]\\nMake the button bigger\\.\\n\\n$`,
       ),
     );
-    // Escape closes the annotation view, not the diff viewer beneath it.
+    // Escape closes the annotation view, restores its real image opener, and leaves the diff viewer.
     await page.keyboard.press("Escape");
     await expect(annotate).toHaveCount(0);
     await expect(overlay).toBeVisible();
+    await expect(imageOpener).toBeFocused();
 
     // Recordings are commented on at the current playback time.
     const video = overlay.locator(".commit-tour-media video");

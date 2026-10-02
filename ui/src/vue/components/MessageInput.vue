@@ -1061,7 +1061,14 @@ watch(
       // yanking focus out of a modal that is still open: the image comment view
       // stays up across submissions so several regions can be commented on.
       setTimeout(() => {
-        if (document.activeElement?.closest('[aria-modal="true"]')) return;
+        // Diff/tour reading dialogs also own focus even without aria-modal.
+        // A delayed comment injection must not pull it behind a still-open view.
+        if (
+          document.activeElement?.closest(
+            '[role="dialog"], [aria-modal="true"], .diff-viewer-overlay',
+          )
+        )
+          return;
         textareaRef.value?.focus();
       }, 0);
     }

@@ -7,10 +7,12 @@
 // between; this module holds the one open target.
 //
 // Modifier-clicks keep their native meaning (open the image in a new tab).
-import { readonly, ref, type Ref } from "vue";
+import { shallowReadonly, shallowRef, type Ref } from "vue";
 import { handleModifiedNavClick } from "../utils/openInNewTab";
 
 export interface ImageCommentTarget {
+  /** Synchronous opener captured before a reactive render can move focus. */
+  returnFocusTo?: HTMLElement | null;
   /** URL the browser can load (what the <img> src is). */
   src: string;
   /** Filesystem path, when the UI knows one. Preferred in comment headers. */
@@ -30,15 +32,20 @@ export interface ImageCommentTarget {
   needsAutoOrient?: boolean;
 }
 
-const target = ref<ImageCommentTarget | null>(null);
+// DOM opener metadata must stay raw; only target replacement is reactive.
+const target = shallowRef<ImageCommentTarget | null>(null);
 
 /** The image currently being annotated, if any. */
 export function useImageCommentTarget(): Readonly<Ref<ImageCommentTarget | null>> {
-  return readonly(target);
+  return shallowReadonly(target);
 }
 
 export function openImageComment(t: ImageCommentTarget): void {
-  target.value = t;
+  const active = document.activeElement;
+  target.value = {
+    ...t,
+    returnFocusTo: active instanceof HTMLElement ? active : null,
+  };
 }
 
 export function closeImageComment(): void {

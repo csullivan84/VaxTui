@@ -89,7 +89,11 @@
             >
               <span class="image-comment-region-badge">{{ i + 1 }}</span>
             </div>
-            <div v-if="pendingBox" class="image-comment-region active" :style="boxStyle(pendingBox)" />
+            <div
+              v-if="pendingBox"
+              class="image-comment-region active"
+              :style="boxStyle(pendingBox)"
+            />
             <div v-if="dragBox" class="image-comment-draft" :style="boxStyle(dragBox)" />
           </div>
         </div>
@@ -123,7 +127,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, onUnmounted, ref } from "vue";
 import {
   buildImageCommentBlocks,
   imageRefFromSrc,
@@ -186,8 +190,8 @@ const drag = ref<{
 let nextId = 1;
 // Pointer that started the current drag; a second touch must not hijack it.
 let dragPointerId: number | null = null;
-// Element focused before the view opened, so closing puts focus back.
-let returnFocusTo: HTMLElement | null = null;
+// The composable captures this before rendering or focus-trap hooks can move it.
+const returnFocusTo = props.target.returnFocusTo ?? null;
 
 const ref_ = computed(() => imageRefFromSrc(props.target.src, props.target.path));
 const fullLabel = computed(() => tildifyPath(ref_.value) || ref_.value);
@@ -330,7 +334,12 @@ function addComment() {
   if (!size) throw new Error("image comment added before the image loaded");
   emit(
     "submit",
-    buildImageCommentBlocks(ref_.value, size, [{ box: d.box, text }], !!props.target.needsAutoOrient),
+    buildImageCommentBlocks(
+      ref_.value,
+      size,
+      [{ box: d.box, text }],
+      !!props.target.needsAutoOrient,
+    ),
   );
   sentCount.value += 1;
   if (d.box) commented.value.push({ id: nextId++, box: d.box });
@@ -368,7 +377,6 @@ onMounted(() => {
   pushModalEscape(requestClose);
   // Move focus into the view so keyboard users are not left typing into the
   // conversation behind it; restored on close. v-focustrap keeps it here.
-  returnFocusTo = document.activeElement as HTMLElement | null;
   overlayRef.value?.focus();
   // A cached (or already-failed) image settles before the listeners attach.
   const img = imgRef.value;
@@ -381,9 +389,12 @@ onMounted(() => {
 onBeforeUnmount(() => {
   popModalEscape(requestClose);
   endDrag();
-  // Put focus back where it came from, unless that element is gone (a markdown
-  // re-render or conversation switch), in which case fall back to the composer
-  // rather than dumping focus on <body>.
+  // Focus restoration runs after the directive has removed its trap listener.
+});
+
+onUnmounted(() => {
+  // A removed opener (conversation switch/re-render) returns to the composer;
+  // otherwise restore the actual image rather than a disappearing modal child.
   if (returnFocusTo?.isConnected) returnFocusTo.focus();
   else focusMessageInputIfUnfocused();
 });
