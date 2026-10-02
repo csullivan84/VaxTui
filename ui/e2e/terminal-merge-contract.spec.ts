@@ -25,10 +25,15 @@ test("spawns a workspace-scoped terminal and exposes its output as a keyboard-re
 
   const log = terminal.getByRole("log", { name: /terminal output/i });
   await log.focus();
+  await expect(log).toBeFocused();
+  // Escape from the output log must leave the terminal for the intended composer,
+  // rather than merely proving that Tab already moved focus away from the log.
+  await log.press("Escape");
+  await expect(page.getByTestId("message-input")).toBeFocused();
+
+  await log.focus();
   await log.press("Tab");
   await expect.poll(() => page.evaluate(() => document.activeElement?.className ?? "")).toContain("xterm-helper-textarea");
-  await page.keyboard.press("Escape");
-  await expect(log).not.toBeFocused();
 });
 
 test("keeps terminal control-I completion on the shell input", async ({ page, request }) => {

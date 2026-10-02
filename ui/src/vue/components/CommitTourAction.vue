@@ -6,14 +6,13 @@
   <a
     v-if="status?.status === 'building' && status.worker_slug"
     class="commit-tour-action"
-    tabindex="-1"
     :href="`/c/${status.worker_slug}`"
     @click="openWorker($event, status.worker_slug)"
   >
     <span class="spinner spinner-small" aria-hidden="true" />
     Building tour <span aria-hidden="true">↗</span>
   </a>
-  <span v-else-if="status?.status === 'building'" class="commit-tour-action">
+  <span v-else-if="status?.status === 'building'" class="commit-tour-action" tabindex="-1">
     <span class="spinner spinner-small" aria-hidden="true" />
     Building tour
   </span>

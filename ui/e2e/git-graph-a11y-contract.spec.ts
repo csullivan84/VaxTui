@@ -72,5 +72,11 @@ test("git graph announces the selected commit and keeps focus on the build-tour 
     const building = actions.getByRole("link", { name: "Building tour" });
     await expect(building).toBeFocused();
     await expect(building).toHaveAttribute("href", `/c/${builderSlug}`);
+    // The worker destination remains reachable by ordinary keyboard navigation,
+    // not only by programmatic focus after its replacement.
+    const openDiff = actions.getByRole("link", { name: "Open diff" });
+    await openDiff.focus();
+    await page.keyboard.press("Tab");
+    await expect(building).toBeFocused();
   });
 });
