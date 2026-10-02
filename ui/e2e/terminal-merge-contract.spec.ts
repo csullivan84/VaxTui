@@ -51,4 +51,37 @@ test("keeps terminal control-I completion on the shell input", async ({ page, re
   await shellInput.focus();
   await page.keyboard.press("Control+i");
   await expect.poll(() => sentFrames.some((frame) => frame.includes('"data":"\\t"'))).toBeTruthy();
+
+  // Cmd+A stays inside xterm: it clears an existing document selection instead
+  // of selecting the entire Shelley page.
+  await page.evaluate(() => {
+    const range = document.createRange();
+    range.selectNodeContents(document.querySelector(".chat-interface") ?? document.body);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  });
+  await shellInput.focus();
+  await page.keyboard.press("Meta+a");
+  await expect(shellInput).toBeFocused();
+  await expect.poll(() => page.evaluate(() => window.getSelection()?.rangeCount ?? 0)).toBe(0);
+});
+
+test("pauses capped terminal live output and resumes it with Escape", async ({ page, request }) => {
+  // Fake browser time keeps this behavioral cap regression quick without a sleep;
+  // output still comes from an actual private terminal PTY over its websocket.
+  await page.clock.install({ time: new Date("2026-10-02T12:00:00Z") });
+  const terminal = await openTerminal(page, request);
+  const shellInput = terminal.locator(".xterm-helper-textarea");
+  const log = terminal.getByRole("log", { name: /terminal output/i });
+  await shellInput.focus();
+  await page.keyboard.type("yes TERMINAL_A11Y_LIVE");
+  await page.keyboard.press("Enter");
+  await expect(log).toContainText("TERMINAL_A11Y_LIVE", { timeout: 10_000 });
+
+  await page.clock.fastForward(20_000);
+  const announcer = page.getByTestId("status-announcer");
+  await expect(announcer).toHaveText(/Terminal live output paused after 20 seconds/);
+  await page.keyboard.press("Escape");
+  await expect(announcer).toHaveText("Terminal live output resumed.");
 });
