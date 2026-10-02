@@ -81,7 +81,7 @@
     </div>
 
     <div v-if="error" class="herds-error" role="alert">{{ error }}</div>
-    <div v-if="bulkResultText" class="herds-bulk-result" role="status">{{ bulkResultText }}</div>
+    <div v-if="bulkResultText" class="herds-bulk-result">{{ bulkResultText }}</div>
 
     <!-- List -->
     <div v-if="!detail" class="herds-list">

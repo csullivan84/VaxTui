@@ -116,6 +116,7 @@
         v-if="tier2Models.length > 0 && !filterValue"
         class="model-picker-more"
         type="button"
+        :aria-expanded="showMore"
         @click="toggleMore"
       >
         <svg
@@ -126,6 +127,7 @@
           fill="none"
           stroke="currentColor"
           stroke-width="2"
+          aria-hidden="true"
         >
           <path d="M6 9l6 6 6-6" />
         </svg>
@@ -144,8 +146,10 @@
               type="button"
               role="radio"
               :aria-checked="level.value === effectiveEffort"
+              :tabindex="level.value === tabbableEffort ? 0 : -1"
               :class="`model-picker-effort-pill${level.value === effectiveEffort ? ' active' : ''}`"
               @click="selectEffort(level.value)"
+              @keydown="onEffortKeydown($event, level.value)"
             >
               {{ level.label }}
             </button>
@@ -441,6 +445,11 @@ const effortLevels = computed(() => {
     : list;
 });
 
+const tabbableEffort = computed(
+  () => effortLevels.value.find((level) => level.value === effectiveEffort.value)?.value
+    ?? effortLevels.value[0]?.value,
+);
+
 // Trigger suffix: the concrete effort in play. Blank when the model doesn't
 // reason or when the effective level is an unknowable provider default —
 // showing nothing beats showing the word "default".
@@ -484,6 +493,35 @@ function handleSelect(pickerValue: string) {
 
 function selectEffort(level: ThinkingLevel) {
   emit("thinkingChange", level);
+}
+
+function onEffortKeydown(event: KeyboardEvent, current: ThinkingLevel) {
+  const levels = effortLevels.value;
+  const index = levels.findIndex((level) => level.value === current);
+  let next: number;
+  switch (event.key) {
+    case "ArrowRight":
+    case "ArrowDown":
+      next = (index + 1) % levels.length;
+      break;
+    case "ArrowLeft":
+    case "ArrowUp":
+      next = (index - 1 + levels.length) % levels.length;
+      break;
+    case "Home":
+      next = 0;
+      break;
+    case "End":
+      next = levels.length - 1;
+      break;
+    default:
+      return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  const button = event.currentTarget as HTMLButtonElement;
+  button.parentElement?.querySelectorAll<HTMLButtonElement>('[role="radio"]')[next]?.focus();
+  selectEffort(levels[next].value);
 }
 
 function toggleMore() {
