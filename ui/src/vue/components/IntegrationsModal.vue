@@ -15,9 +15,13 @@
       />
     </template>
 
-    <div class="integrations-tabs" :aria-label="t('vmIntegrations')">
+    <div class="integrations-tabs" role="tablist" :aria-label="t('vmIntegrations')">
       <button
-        :aria-pressed="tab === 'list'"
+        id="integrations-list-tab"
+        role="tab"
+        :aria-selected="tab === 'list'"
+        aria-controls="integrations-list-panel"
+        :tabindex="tab === 'list' ? 0 : -1"
         :class="{ active: tab === 'list' }"
         :disabled="busy"
         @click="tab = 'list'"
@@ -26,7 +30,11 @@
       </button>
       <button
         v-if="selected"
-        :aria-pressed="tab === 'detail'"
+        id="integrations-detail-tab"
+        role="tab"
+        :aria-selected="tab === 'detail'"
+        aria-controls="integrations-detail-panel"
+        :tabindex="tab === 'detail' ? 0 : -1"
         :class="{ active: tab === 'detail' }"
         :disabled="busy"
         @click="showDetails(selected)"
@@ -35,10 +43,15 @@
       </button>
     </div>
 
-    <div v-if="tab === 'list'">
-      <div v-if="loadingList" class="integrations-status">{{ t("loadingIntegrations") }}</div>
+    <div
+      v-if="tab === 'list'"
+      id="integrations-list-panel"
+      role="tabpanel"
+      aria-labelledby="integrations-list-tab"
+    >
+      <div v-if="loadingList" class="integrations-status" role="status">{{ t("loadingIntegrations") }}</div>
       <div v-else-if="error" class="integrations-status" role="alert">{{ error }}</div>
-      <div v-else-if="integrations.length === 0" class="integrations-status">
+      <div v-else-if="integrations.length === 0" class="integrations-status" role="status">
         {{ t("noIntegrationsAttached") }}
       </div>
       <div v-else class="integrations-table-scroll">
@@ -68,7 +81,13 @@
       </div>
     </div>
 
-    <div v-else-if="selected" class="integrations-detail">
+    <div
+      v-else-if="selected"
+      id="integrations-detail-panel"
+      class="integrations-detail"
+      role="tabpanel"
+      aria-labelledby="integrations-detail-tab"
+    >
       <div class="integrations-detail-head">
         <strong>{{ selected.name }}</strong>
         <span>{{ selected.type }} · {{ selected.team ? t("team") : t("personal") }}</span>
@@ -76,7 +95,7 @@
           >{{ t("manageOnExeDev") }} ↗</a
         >
       </div>
-      <div v-if="loadingDetail" class="integrations-status">
+      <div v-if="loadingDetail" class="integrations-status" role="status">
         {{ t("loadingIntegrationDetails") }}
       </div>
       <div v-else-if="detailError" class="integrations-status" role="alert">{{ detailError }}</div>
