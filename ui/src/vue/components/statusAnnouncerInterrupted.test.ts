@@ -130,6 +130,7 @@ const flushPair = async () => {
 try {
   for (const streamStatus of ["connected", "disconnected", "reconnecting"]) {
     const message = `Fixture error while ${streamStatus}`;
+    pairProps.streamStatus = streamStatus;
     pairProps.error = message;
     await flushPair();
     const announcer = pairContainer.querySelector<HTMLElement>('[data-testid="status-announcer"]');
@@ -141,6 +142,10 @@ try {
     await flushPair();
   }
 
+  // The error matrix ends on reconnecting; return to connected first so this
+  // checks a real stream transition rather than reusing the final matrix value.
+  pairProps.streamStatus = "connected";
+  await flushPair();
   pairProps.streamStatus = "reconnecting";
   await flushPair();
   assert.equal(pairContainer.querySelector('[data-testid="status-announcer"]')?.textContent?.trim(), "Reconnecting");
