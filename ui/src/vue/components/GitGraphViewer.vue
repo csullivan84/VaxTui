@@ -591,6 +591,7 @@ function selectCommit(hash: string) {
 }
 
 function onCommitRowKeydown(event: KeyboardEvent, hash: string) {
+  if (event.target instanceof Element && event.target.closest("a, button, input, textarea, select")) return;
   if (event.key !== "Enter" && event.key !== " ") return;
   event.preventDefault();
   selectCommit(hash);

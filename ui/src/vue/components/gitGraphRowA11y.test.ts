@@ -23,6 +23,7 @@ globalThis.fetch = async () =>
           timestamp: 0,
           refs: [],
           isHead: true,
+          hasTour: true,
         },
         {
           hash: "fedcba9876543210",
@@ -60,6 +61,15 @@ try {
     "Commit 0123456: Make graph rows reachable",
     "each commit has a spoken label",
   );
+  const tour = row?.querySelector<HTMLAnchorElement>('[data-testid="git-graph-tour-link"]');
+  assert.ok(tour, "the real row tour link renders");
+  tour.focus();
+  const enter = new view.window.KeyboardEvent("keydown", {
+    key: "Enter", bubbles: true, cancelable: true,
+  });
+  tour.dispatchEvent(enter);
+  assert.equal(enter.defaultPrevented, false, "row keyboard handling must preserve native tour link activation");
+  assert.equal(view.window.document.activeElement, tour, "row handler leaves link focus alone");
   const second = rows[1];
   assert.ok(second, "the second commit renders");
   second.dispatchEvent(new view.window.KeyboardEvent("keydown", { key: " ", bubbles: true }));
