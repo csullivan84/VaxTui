@@ -532,14 +532,16 @@ func (b *BrowseTools) waitForScreencastInitialStart() {
 	}
 }
 
-func (b *BrowseTools) waitForScreencastStart() {
+// claimScreencastStop waits for any start or re-arm and then claims the
+// recording under the same lock used to publish those transitions.
+func (b *BrowseTools) claimScreencastStop() (*screencastStopResources, *screencastStopResult, string, string, int, time.Time) {
+	sc := &b.screencast
 	for {
-		sc := &b.screencast
 		sc.mu.Lock()
 		startDone, rearmDone := sc.startDone, sc.rearmDone
 		starting, rearming := sc.starting, sc.rearming
-		sc.mu.Unlock()
 		if starting && startDone != nil {
+			sc.mu.Unlock()
 			if wait := sc.startWait; wait != nil {
 				wait()
 			}
@@ -547,28 +549,29 @@ func (b *BrowseTools) waitForScreencastStart() {
 			continue
 		}
 		if rearming && rearmDone != nil {
+			sc.mu.Unlock()
 			if wait := sc.startWait; wait != nil {
 				wait()
 			}
 			<-rearmDone
 			continue
 		}
-		return
+		if !sc.active {
+			result := sc.stop
+			sc.mu.Unlock()
+			return nil, result, "", "", 0, time.Time{}
+		}
+		sessionID, outputPath, frameCount, startTime := sc.sessionID, sc.outputPath, sc.frameCount, sc.startTime
+		resources := sc.claimStopLocked()
+		sc.mu.Unlock()
+		return resources, resources.result, sessionID, outputPath, frameCount, startTime
 	}
 }
 
 // screencastStopInternal stops the screencast, or waits for an in-progress
 // stop to finish. Safe to call from any goroutine.
 func (b *BrowseTools) screencastStopInternal() error {
-	b.waitForScreencastStart()
-	sc := &b.screencast
-	sc.mu.Lock()
-	var resources *screencastStopResources
-	if sc.active {
-		resources = sc.claimStopLocked()
-	}
-	result := sc.stop
-	sc.mu.Unlock()
+	resources, result, _, _, _, _ := b.claimScreencastStop()
 	if resources != nil {
 		return b.finishScreencastStop(resources)
 	}
@@ -630,20 +633,11 @@ func (b *BrowseTools) finishScreencastStop(resources *screencastStopResources) (
 
 // screencastStop stops the screencast and returns summary info.
 func (b *BrowseTools) screencastStop() (sessionID, outputPath string, frameCount int, duration time.Duration, err error) {
-	b.waitForScreencastStart()
-	sc := &b.screencast
-	sc.mu.Lock()
-	if !sc.active {
-		sc.mu.Unlock()
+	resources, _, sessionID, outputPath, frameCount, startTime := b.claimScreencastStop()
+	if resources == nil {
 		return "", "", 0, 0, fmt.Errorf("no active screencast — call screencast_start first")
 	}
-	sessionID = sc.sessionID
-	outputPath = sc.outputPath
-	frameCount = sc.frameCount
-	duration = time.Since(sc.startTime)
-	resources := sc.claimStopLocked()
-	sc.mu.Unlock()
-
+	duration = time.Since(startTime)
 	if err := b.finishScreencastStop(resources); err != nil {
 		return sessionID, outputPath, frameCount, duration, fmt.Errorf("screencast %s failed after %d frames (MP4 at %s): %w", sessionID, frameCount, outputPath, err)
 	}

@@ -707,6 +707,8 @@ func TestScreencastStopWaitsForNavigationRearm(t *testing.T) {
 
 func TestScreencastNavigationFailureIsReportedByStop(t *testing.T) {
 	encoder := &fakeScreencastEncoder{writer: &fakeScreencastWriter{}}
+	rearmEntered := make(chan struct{})
+	releaseRearm := make(chan struct{})
 	waited := make(chan struct{})
 	stopResult := make(chan error, 1)
 	starts := 0
@@ -720,6 +722,8 @@ func TestScreencastNavigationFailureIsReportedByStop(t *testing.T) {
 		startCDP: func(context.Context, page.ScreencastFormat, int64, int64, int64, int64) error {
 			starts++
 			if starts == 2 {
+				close(rearmEntered)
+				<-releaseRearm
 				return fmt.Errorf("renderer gone")
 			}
 			return nil
@@ -734,13 +738,71 @@ func TestScreencastNavigationFailureIsReportedByStop(t *testing.T) {
 		t.Fatal(err)
 	}
 	b.handleScreencastNavigation(&page.EventFrameNavigated{Frame: &cdp.Frame{}})
+	<-rearmEntered
 	go func() { stopResult <- b.screencastStopInternal() }()
 	select {
 	case <-waited:
 	case <-t.Context().Done():
 		t.Fatal("stop did not wait for failed re-arm")
 	}
+	close(releaseRearm)
 	if err := <-stopResult; err == nil || !strings.Contains(err.Error(), "re-arm screencast") || !strings.Contains(err.Error(), "renderer gone") {
 		t.Fatalf("stop error = %v", err)
+	}
+}
+
+func TestScreencastCloseWaitsForNavigationRearm(t *testing.T) {
+	encoder := &fakeScreencastEncoder{writer: &fakeScreencastWriter{}}
+	rearmEntered := make(chan struct{})
+	releaseRearm := make(chan struct{})
+	closeWaited := make(chan struct{})
+	starts := 0
+	b := &BrowseTools{screencast: screencastState{
+		newEncoder: func(_, path string) (screencastEncoder, error) {
+			if err := os.WriteFile(path, []byte("recording"), 0o644); err != nil {
+				return nil, err
+			}
+			return encoder, nil
+		},
+		startCDP: func(context.Context, page.ScreencastFormat, int64, int64, int64, int64) error {
+			starts++
+			if starts == 2 {
+				close(rearmEntered)
+				<-releaseRearm
+			}
+			return nil
+		},
+		stopCDP:   func(context.Context) error { return nil },
+		startWait: func() { close(closeWaited) },
+	}}
+	if err := b.beginScreencastStart(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.screencastStartWithContext(t.Context(), "jpeg", 60, 1280, 720, 1); err != nil {
+		t.Fatal(err)
+	}
+	b.handleScreencastNavigation(&page.EventFrameNavigated{Frame: &cdp.Frame{}})
+	<-rearmEntered
+	closed := make(chan struct{})
+	go func() { b.Close(); close(closed) }()
+	select {
+	case <-closeWaited:
+	case <-closed:
+		close(releaseRearm)
+		t.Fatal("Close completed before the navigation re-arm")
+	case <-t.Context().Done():
+		t.Fatal("Close did not wait for navigation re-arm")
+	}
+	b.screencast.mu.Lock()
+	claimed := b.screencast.stop != nil || !b.screencast.active
+	b.screencast.mu.Unlock()
+	if claimed {
+		t.Fatal("Close claimed a recording while re-arm was in progress")
+	}
+	close(releaseRearm)
+	select {
+	case <-closed:
+	case <-t.Context().Done():
+		t.Fatal("Close did not finish after re-arm")
 	}
 }

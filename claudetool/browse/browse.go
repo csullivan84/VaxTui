@@ -247,15 +247,7 @@ func (b *BrowseTools) closeBrowserLocked() {
 	// Stop any active screencast before tearing down the browser.
 	// If another caller already claimed the stop, wait for it instead of
 	// replaying a completed recording error as a new shutdown failure.
-	b.waitForScreencastStart()
-	sc := &b.screencast
-	sc.mu.Lock()
-	var resources *screencastStopResources
-	if sc.active {
-		resources = sc.claimStopLocked()
-	}
-	result := sc.stop
-	sc.mu.Unlock()
+	resources, result, _, _, _, _ := b.claimScreencastStop()
 	if resources != nil {
 		if err := b.finishScreencastStop(resources); err != nil {
 			log.Printf("screencast: browser shutdown failed to finalize recording: %v", err)
