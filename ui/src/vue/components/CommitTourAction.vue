@@ -6,11 +6,12 @@
   <a
     v-if="status?.status === 'building' && status.worker_slug"
     class="commit-tour-action"
+    tabindex="-1"
     :href="`/c/${status.worker_slug}`"
     @click="openWorker($event, status.worker_slug)"
   >
     <span class="spinner spinner-small" aria-hidden="true" />
-    Building tour ↗
+    Building tour <span aria-hidden="true">↗</span>
   </a>
   <span v-else-if="status?.status === 'building'" class="commit-tour-action">
     <span class="spinner spinner-small" aria-hidden="true" />
@@ -30,7 +31,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from "vue";
+import { nextTick, ref, watch } from "vue";
 import type { GitTourBuildStatus } from "../../services/api";
 import {
   loadCommitTourStatus,
@@ -96,6 +97,8 @@ watch(
 async function request(conversationId: string) {
   const { cwd, hash } = props;
   if (requesting.value) return;
+  const replacementOwner =
+    document.activeElement instanceof HTMLElement ? document.activeElement.parentElement : null;
   requesting.value = true;
   const seq = ++requestSeq;
   try {
@@ -109,7 +112,13 @@ async function request(conversationId: string) {
       };
     }
   } finally {
-    if (seq === requestSeq) requesting.value = false;
+    if (seq === requestSeq) {
+      requesting.value = false;
+      await nextTick();
+      const replacement = replacementOwner?.querySelector<HTMLElement>(".commit-tour-action");
+      if (replacement?.matches("a, button, [tabindex]")) replacement.focus();
+      else replacementOwner?.querySelector<HTMLElement>(".git-graph-open-diff")?.focus();
+    }
   }
 }
 
