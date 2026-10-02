@@ -351,6 +351,9 @@ test.describe("Context usage popup", () => {
 
     const tokens = page.locator(".context-usage-label-tokens:visible").first();
     await expect(tokens).toBeVisible({ timeout: 30000 });
+    // Wait for history usage to replace the initial zero before measuring or
+    // hovering: its arrival moves this compact control underneath the pointer.
+    await expect(tokens).not.toHaveText("0", { timeout: 30000 });
     // No icon, no badge: the segment's whole rendered text is the count. This
     // is what the triangle used to violate, and it catches any successor to it
     // — not just the one class that has been deleted.
