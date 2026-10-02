@@ -75,11 +75,19 @@ test("pauses capped terminal live output and resumes it with Escape", async ({ p
   const shellInput = terminal.locator(".xterm-helper-textarea");
   const log = terminal.getByRole("log", { name: /terminal output/i });
   await shellInput.focus();
-  await page.keyboard.type("yes TERMINAL_A11Y_LIVE");
+  // A bounded shell loop gives each fake-time step a real websocket output
+  // within the helper's one-second idle window. Unlike `yes`, it cannot flood
+  // the PTY or outlive this private test terminal.
+  await page.keyboard.type("while IFS= read -r line; do printf '%s\n' \"$line\"; done");
   await page.keyboard.press("Enter");
-  await expect(log).toContainText("TERMINAL_A11Y_LIVE", { timeout: 10_000 });
+  for (let elapsed = 0; elapsed < 20_000; elapsed += 900) {
+    const marker = `TERMINAL_A11Y_LIVE_${elapsed}`;
+    await page.keyboard.type(marker);
+    await page.keyboard.press("Enter");
+    await expect(log).toContainText(marker, { timeout: 10_000 });
+    await page.clock.fastForward(900);
+  }
 
-  await page.clock.fastForward(20_000);
   const announcer = page.getByTestId("status-announcer");
   await expect(announcer).toHaveText(/Terminal live output paused after 20 seconds/);
   await page.keyboard.press("Escape");
