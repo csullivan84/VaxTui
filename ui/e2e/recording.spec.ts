@@ -2687,3 +2687,22 @@ test("an unaccepted recording re-enables draft autosave after release", async ({
   await expect.poll(() => updates).toBeGreaterThan(updatesBeforeRelease);
   await expect(input).toHaveValue("Keep this unaccepted recording draft.");
 });
+
+test("an accepted recording does not restart draft autosave on release", async ({ page }) => {
+  await installMediaMocks(page);
+  await page.clock.install();
+  let updates = 0;
+  await page.route("**/api/conversation/*/draft", async (route) => {
+    if (route.request().method() === "PUT") updates++;
+    await route.continue();
+  });
+  await page.goto("/new");
+  await page.getByTestId("message-input").fill("Accepted recording must not resave this draft.");
+  await page.getByTestId("voice-button").click();
+  await expect(page.getByTestId("recording-panel")).toBeVisible();
+  await page.getByTestId("recording-stop-button").click();
+  await expect(page.getByTestId("recording-panel")).toHaveCount(0);
+  const updatesAfterAcceptance = updates;
+  await page.clock.runFor(1000);
+  expect(updates).toBe(updatesAfterAcceptance);
+});
