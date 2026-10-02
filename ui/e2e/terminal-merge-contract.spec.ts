@@ -47,32 +47,21 @@ test("spawns a workspace-scoped terminal and exposes its output as a keyboard-re
   const log = terminal.getByRole("log", { name: /terminal output/i });
   await log.focus();
   await expect(log).toBeFocused();
-  // Escape from the output log follows the actual forward focus destination
-  // outside the panel; do not assume that it is always the composer.
+  // Supply a real focusable after the panel. Escape must take the output log
+  // forward to it, which exercises the production focus walk without assuming
+  // that the hidden Chat composer follows the Workbench panel in document order.
   const escapeTarget = `terminal-escape-target-${Date.now()}`;
-  const hasForwardTarget = await page.evaluate((target) => {
-    const panel = document.querySelector(".terminal-panel");
-    if (!panel) return false;
-    const candidates = Array.from(
-      document.querySelectorAll<HTMLElement>(
-        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex="0"]',
-      ),
-    ).filter((element) => element.offsetParent !== null || element === document.activeElement);
-    const next = candidates.find(
-      (element) =>
-        !panel.contains(element) &&
-        !!(panel.compareDocumentPosition(element) & Node.DOCUMENT_POSITION_FOLLOWING),
-    );
-    if (!next) return false;
-    next.setAttribute("data-terminal-escape-target", target);
-    return true;
+  await page.evaluate((target) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = "Terminal escape target";
+    button.setAttribute("data-terminal-escape-target", target);
+    document.body.append(button);
   }, escapeTarget);
   await log.press("Escape");
-  if (hasForwardTarget) {
-    await expect(page.locator(`[data-terminal-escape-target="${escapeTarget}"]`)).toBeFocused();
-  } else {
-    await expect(page.getByTestId("message-input")).toBeFocused();
-  }
+  const target = page.locator(`[data-terminal-escape-target="${escapeTarget}"]`);
+  await expect(target).toBeFocused();
+  await target.evaluate((element) => element.remove());
 
   await log.focus();
   await log.press("Tab");
@@ -97,11 +86,15 @@ test("keeps terminal control-I completion on the shell input", async ({ page, re
   await page.keyboard.press("Control+i");
   await expect.poll(() => sentFrames.some((frame) => frame.includes('"data":"\\t"'))).toBeTruthy();
 
-  // Cmd+A stays inside xterm: it clears an existing document selection instead
-  // of selecting the entire Shelley page.
+  // Cmd+A replaces a selected external node with xterm's own selection. Its
+  // range must stay in this terminal rather than leaking to Chat/sidebar text.
   await page.evaluate(() => {
+    const sentinel = document.createElement("span");
+    sentinel.textContent = "EXTERNAL_CMD_A_SENTINEL";
+    sentinel.setAttribute("data-terminal-cmd-a-sentinel", "true");
+    document.body.append(sentinel);
     const range = document.createRange();
-    range.selectNodeContents(document.querySelector(".chat-interface") ?? document.body);
+    range.selectNodeContents(sentinel);
     const selection = window.getSelection();
     selection?.removeAllRanges();
     selection?.addRange(range);
@@ -109,7 +102,21 @@ test("keeps terminal control-I completion on the shell input", async ({ page, re
   await shellInput.focus();
   await page.keyboard.press("Meta+a");
   await expect(shellInput).toBeFocused();
-  await expect.poll(() => page.evaluate(() => window.getSelection()?.rangeCount ?? 0)).toBe(0);
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const selection = window.getSelection();
+        if (!selection || selection.rangeCount === 0) return true;
+        const parent = (node: Node | null) =>
+          node?.nodeType === Node.ELEMENT_NODE ? (node as Element) : node?.parentElement;
+        return (
+          !selection.toString().includes("EXTERNAL_CMD_A_SENTINEL") &&
+          !!parent(selection.anchorNode)?.closest(".terminal-instance") &&
+          !!parent(selection.focusNode)?.closest(".terminal-instance")
+        );
+      }),
+    )
+    .toBeTruthy();
 });
 
 function receivedOutputContains(frames: string[], marker: string) {
@@ -137,11 +144,26 @@ test("pauses capped terminal live output and resumes it with Escape", async ({ p
       if (typeof event.payload === "string") receivedFrames.push(event.payload);
     });
   });
-  await page.clock.install({ time: new Date("2026-10-02T12:00:00Z") });
   const terminal = await openTerminal(page, request);
   const shellInput = terminal.locator(".xterm-helper-textarea");
   const log = terminal.getByRole("log", { name: /terminal output/i });
+  await page.clock.install({ time: new Date() });
+  // pauseAt must be future relative to the emulated clock, which may tick
+  // between protocol calls before it is frozen.
+  await page.clock.pauseAt(new Date(Date.now() + 60_000));
+  await page.evaluate(() => {
+    const announcements: string[] = [];
+    window.addEventListener("shelley:a11y-announce", (event) => {
+      announcements.push((event as CustomEvent<{ text: string }>).detail.text);
+    });
+    (window as Window & { terminalAnnouncements?: string[] }).terminalAnnouncements = announcements;
+  });
+  // Reset any native-time output window created while the terminal mounted:
+  // log focus blurs xterm (clearing it), then shell focus starts a fake-time one.
+  await log.focus();
+  await expect(log).toBeFocused();
   await shellInput.focus();
+  await expect(shellInput).toBeFocused();
   // A bounded shell loop gives each fake-time step a real websocket output
   // within the helper's one-second idle window. Unlike `yes`, it cannot flood
   // the PTY or outlive this private test terminal.
@@ -152,12 +174,20 @@ test("pauses capped terminal live output and resumes it with Escape", async ({ p
     await page.keyboard.type(marker);
     await page.keyboard.press("Enter");
     await expect.poll(() => receivedOutputContains(receivedFrames, marker)).toBeTruthy();
-    await page.clock.fastForward(900);
+    // Flush the xterm write/mirror first: a websocket observer only proves the
+    // frame reached Chromium, not that TerminalInstance recorded its timestamp.
+    await page.clock.fastForward(80);
     await expect(log).toContainText(marker);
+    await page.clock.fastForward(820);
   }
 
-  const announcer = page.getByTestId("status-announcer");
-  await expect(announcer).toHaveText(/Terminal live output paused after 20 seconds/);
+  const announcements = () =>
+    page.evaluate(
+      () => (window as Window & { terminalAnnouncements?: string[] }).terminalAnnouncements ?? [],
+    );
+  await expect
+    .poll(announcements)
+    .toContainEqual(expect.stringMatching(/Terminal live output paused after 20 seconds/));
   await page.keyboard.press("Escape");
-  await expect(announcer).toHaveText("Terminal live output resumed.");
+  await expect.poll(announcements).toContain("Terminal live output resumed.");
 });
