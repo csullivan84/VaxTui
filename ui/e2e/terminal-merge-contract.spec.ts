@@ -201,9 +201,12 @@ test("pauses capped terminal live output and resumes it with Escape", async ({ p
         ),
       )
       .toBeTruthy();
-    await page.clock.fastForward(80);
+    // `fastForward` coalesces pending parser/render/debounce timers at its end
+    // tick. Run clock time chronologically so xterm's parser/render callbacks
+    // can schedule the 80ms mirror debounce before it is due.
+    await page.clock.runFor(100);
     await expect(log).toContainText(marker);
-    await page.clock.fastForward(820);
+    await page.clock.runFor(800);
   }
 
   const announcements = () =>
