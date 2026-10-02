@@ -8048,6 +8048,7 @@ button.tour-visibility-control:focus-visible,
 }
 
 .tour-change-row .tour-change-range {
+  flex: 1 1 auto;
   min-width: 0;
   padding: 0;
   overflow: hidden;
@@ -8074,6 +8075,7 @@ button.tour-visibility-control:focus-visible,
 }
 
 .tour-file-name {
+  flex: 1 1 auto;
   min-width: 0;
   display: flex;
   white-space: nowrap;
@@ -8200,6 +8202,7 @@ button.tour-visibility-control:focus-visible,
 }
 
 .diff-tree-label {
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -13373,6 +13376,7 @@ kbd {
 }
 
 .git-graph-main {
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -15023,6 +15027,7 @@ kbd {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  flex: 1 1 auto;
   min-width: 0;
 }
 .export-opt {
