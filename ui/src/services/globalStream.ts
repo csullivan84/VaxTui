@@ -45,6 +45,9 @@ const STALE_MS = 35000;
 // server is struggling. With the window, connect→quick-drop cycles keep
 // escalating backoff (1s→2s→5s→30s) like consecutive failures.
 const STABLE_CONNECTION_MS = 30000;
+// Replace an old handshake on return instead of trusting a frozen socket.
+const RESUME_CONNECT_STALE_MS = 5000;
+const CONNECT_TIMEOUT_MS = [10000, 20000, 30000];
 
 async function probeAuthentication(): Promise<boolean> {
   // exe.dev turns an unauthenticated request into a same-origin login
@@ -71,8 +74,11 @@ export interface GlobalStreamOptions {
    * received new messages while we were disconnected.
    */
   onReconnect?: () => void;
-  /** Server-wide disk space status: a snapshot after every (re)connect, then transitions. */
-  onDiskSpaceStatus?: (status: DiskSpaceStatus) => void;
+  /**
+   * Server-wide disk space status: a snapshot after every (re)connect, then
+   * transitions. snapshot is true for the first status on each connection.
+   */
+  onDiskSpaceStatus?: (status: DiskSpaceStatus, snapshot: boolean) => void;
 }
 
 export interface GlobalStreamHandle {
@@ -110,6 +116,8 @@ export function connectGlobalStream({
   let eventSource: EventSource | null = null;
   let reconnectTimer: number | null = null;
   let heartbeatTimer: number | null = null;
+  let connectTimer: number | null = null;
+  let connectionStartedAt = 0;
   let attempts = 0;
   let lastStatus: StreamStatus | null = null;
   // Wall-clock timestamp at which the CURRENT EventSource delivered its
@@ -118,6 +126,8 @@ export function connectGlobalStream({
   // accepting: only the former earns a backoff reset. See
   // STABLE_CONNECTION_MS.
   let connectionOpenedAt = 0;
+  // Whether the current connection has delivered its disk space snapshot.
+  let diskSnapshotSeen = false;
   // Wall-clock timestamp of the last frame (open or any message, incl.
   // heartbeat) received on the current connection. This is the source of
   // truth for connection liveness: unlike setTimeout-based watchdogs, it is
@@ -146,6 +156,11 @@ export function connectGlobalStream({
       window.clearTimeout(reconnectTimer);
       reconnectTimer = null;
     }
+  };
+
+  const clearConnectDeadline = () => {
+    if (connectTimer !== null) window.clearTimeout(connectTimer);
+    connectTimer = null;
   };
 
   const clearHeartbeat = () => {
@@ -187,11 +202,11 @@ export function connectGlobalStream({
   // zombie socket can report readyState OPEN while being silently dead.
   const reconnectIfStale = () => {
     if (closed) return;
-    // A CONNECTING socket (readyState 0) is mid-handshake and making
-    // progress; tearing it down would only restart it. Leave it be and let
-    // its onopen/onerror resolve. We only act on a missing socket, an
-    // explicitly-closed one, or an OPEN-but-silent (zombie) one.
-    if (eventSource && eventSource.readyState === 0) return;
+    // Keep a recent handshake; replace one that stalled while we were away.
+    if (eventSource && eventSource.readyState === 0) {
+      if (Date.now() - connectionStartedAt >= RESUME_CONNECT_STALE_MS) reconnectNow();
+      return;
+    }
     const stale =
       !eventSource || eventSource.readyState === 2 || Date.now() - lastFrameAt > STALE_MS;
     if (stale) reconnectNow();
@@ -205,7 +220,8 @@ export function connectGlobalStream({
       onNotificationEvent(data.notification_event);
     }
     if (data.disk_space_status && onDiskSpaceStatus) {
-      onDiskSpaceStatus(data.disk_space_status);
+      onDiskSpaceStatus(data.disk_space_status, !diskSnapshotSeen);
+      diskSnapshotSeen = true;
     }
 
     const convId = data.conversation_id;
@@ -277,6 +293,8 @@ export function connectGlobalStream({
     if (closed) return;
     const attemptID = ++connectionAttempt;
     clearReconnect();
+    clearConnectDeadline();
+    connectionStartedAt = Date.now();
     eventSource?.close();
     // Treat the start of a connection attempt as a liveness checkpoint so a
     // resume signal (visibilitychange/pageshow/online) that races the new
@@ -284,9 +302,12 @@ export function connectGlobalStream({
     // lastFrameAt and tear down the freshly-opened one.
     lastFrameAt = Date.now();
     connectionOpenedAt = 0;
-    eventSource = api.createStream({ conversationListHash: getHash() ?? undefined });
+    diskSnapshotSeen = false;
+    const source = api.createStream({ conversationListHash: getHash() ?? undefined });
+    eventSource = source;
 
     const markConnected = () => {
+      clearConnectDeadline();
       // NB: attempts is NOT reset here. A connection only counts as healthy
       // once it has survived STABLE_CONNECTION_MS (judged at error time);
       // resetting on open let a server stuck in an accept-then-drop cycle
@@ -306,12 +327,14 @@ export function connectGlobalStream({
       hasEverConnected = true;
     };
 
-    eventSource.onopen = () => {
+    source.onopen = () => {
+      if (closed || source !== eventSource) return;
       markConnected();
       resetHeartbeat();
     };
 
-    eventSource.onmessage = (ev) => {
+    source.onmessage = (ev) => {
+      if (closed || source !== eventSource) return;
       markConnected();
       resetHeartbeat();
       try {
@@ -322,8 +345,9 @@ export function connectGlobalStream({
       }
     };
 
-    eventSource.onerror = () => {
-      if (closed) return;
+    const failConnection = () => {
+      if (closed || source !== eventSource) return;
+      clearConnectDeadline();
       eventSource?.close();
       eventSource = null;
       clearHeartbeat();
@@ -351,6 +375,9 @@ export function connectGlobalStream({
       const delay = attempts <= 1 ? 1000 : attempts === 2 ? 2000 : attempts === 3 ? 5000 : 30000;
       reconnectTimer = window.setTimeout(connect, delay);
     };
+    source.onerror = failConnection;
+    const timeoutMs = CONNECT_TIMEOUT_MS[Math.min(attempts, CONNECT_TIMEOUT_MS.length - 1)];
+    connectTimer = window.setTimeout(failConnection, timeoutMs);
   };
 
   // On iOS Safari and other mobile browsers, EventSource may stay nominally
@@ -381,6 +408,7 @@ export function connectGlobalStream({
       closed = true;
       clearReconnect();
       clearHeartbeat();
+      clearConnectDeadline();
       eventSource?.close();
       eventSource = null;
       document.removeEventListener("visibilitychange", onVisibility);

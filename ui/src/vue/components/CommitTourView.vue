@@ -1,5 +1,11 @@
 <template>
-  <div ref="viewRef" class="commit-tour-view" @scroll.passive="handleScroll">
+  <div
+    ref="viewRef"
+    class="commit-tour-view"
+    data-review="Tour"
+    data-review-scroll
+    @scroll.passive="handleScroll"
+  >
     <article ref="documentRef" class="commit-tour-document">
       <div v-if="!isMobile" class="commit-tour-toolbar">
         <button
@@ -34,7 +40,12 @@
         :data-tour-anchor="TOUR_OVERVIEW_ANCHOR"
         class="commit-tour-overview"
       >
-        <section v-if="commitMessage" class="commit-tour-commit-message">
+        <section
+          v-if="commitMessage"
+          class="commit-tour-commit-message"
+          data-review="Commit message"
+          data-review-item
+        >
           <div class="commit-tour-commit-meta">
             <code :title="commitMessage.hash">{{ commitMessage.hash.slice(0, 8) }}</code>
             <span>{{ commitMessage.author }}</span>
@@ -49,11 +60,33 @@
           </details>
         </section>
 
-        <header v-if="tour.tour.title || tour.tour.intro" class="commit-tour-introduction">
+        <header
+          v-if="tour.tour.title || tour.tour.intro"
+          class="commit-tour-introduction"
+          data-review="Intro"
+          data-review-item
+        >
           <h1 v-if="tour.tour.title">{{ tour.tour.title }}</h1>
           <MarkdownContent v-if="tour.tour.intro" :text="tour.tour.intro" />
         </header>
       </div>
+
+      <CommitTourItems
+        v-if="tour.tour.decisions?.length"
+        :id="TOUR_DECISIONS_ANCHOR"
+        :data-tour-anchor="TOUR_DECISIONS_ANCHOR"
+        kind="decision"
+        :items="tour.tour.decisions"
+        @comment="(item, index) => openItemComment('decision', item, index)"
+      />
+      <CommitTourItems
+        v-if="tour.tour.questions?.length"
+        :id="TOUR_QUESTIONS_ANCHOR"
+        :data-tour-anchor="TOUR_QUESTIONS_ANCHOR"
+        kind="question"
+        :items="tour.tour.questions"
+        @comment="(item, index) => openItemComment('question', item, index)"
+      />
 
       <template v-for="(entry, position) in tour.tour.chunks" :key="entryKey(entry, position)">
         <MarkdownContent
@@ -61,20 +94,35 @@
           :id="tourEntryAnchor(position)"
           class="commit-tour-section-heading"
           :data-tour-anchor="tourEntryAnchor(position)"
+          :data-review="sections[position]"
+          data-review-item
           :text="entry.header"
+        />
+        <CommitTourMedia
+          v-else-if="isMediaEntry(entry)"
+          :id="tourEntryAnchor(position)"
+          :data-tour-anchor="tourEntryAnchor(position)"
+          :data-review="sections[position] ? `${sections[position]} › ${entry.name}` : entry.name"
+          data-review-item
+          :entry="entry"
+          :src="api.gitTourMediaURL(cwd, entry.blob)"
+          @comment="emit('open-comment', $event)"
         />
         <CommitTourChunk
           v-else
           :id="tourEntryAnchor(position)"
           :data-tour-anchor="tourEntryAnchor(position)"
           :entry="entry"
+          :section="sections[position]"
           :expanded="!entry.trivial || expandedAnchors.has(tourEntryAnchor(position))"
           :theme-type="themeType"
           :side-by-side="sideBySide"
           :overflow="isMobile ? 'wrap' : 'scroll'"
+          :load-file="loadFile"
           @update:expanded="emit('expand-change', tourEntryAnchor(position), $event)"
           @comment="emit('open-comment', $event)"
           @line-comment="emit('open-comment', $event)"
+          @layout-change="releaseNavigation"
         />
       </template>
     </article>
@@ -100,19 +148,33 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import type { ThemeTypes } from "@pierre/diffs";
-import type { GitTourEntry, GitTourHeaderEntry, GitTourResponse } from "../../services/api";
-import type { GitCommitMessage } from "../../types";
+import { api } from "../../services/api";
+import type { GitTourEntry, GitTourItem, GitTourResponse } from "../../services/api";
+import type { GitCommitMessage, GitFileDiff } from "../../types";
 import { isDarkModeActive } from "../../services/theme";
 import { useSideBySidePreference } from "../composables/diffViewPreference";
 import type { TourCommentTarget } from "../composables/tourComments";
 import CommitTourChunk from "./CommitTourChunk.vue";
+import CommitTourItems from "./CommitTourItems.vue";
+import CommitTourMedia from "./CommitTourMedia.vue";
 import MarkdownContent from "./MarkdownContent.vue";
-import { TOUR_OVERVIEW_ANCHOR, tourEntryAnchor } from "./commitTourContents";
+import {
+  TOUR_DECISIONS_ANCHOR,
+  TOUR_OVERVIEW_ANCHOR,
+  TOUR_QUESTIONS_ANCHOR,
+  headerLabel,
+  isHeaderEntry,
+  isMediaEntry,
+  tourEntryAnchor,
+} from "./commitTourContents";
 
 const props = defineProps<{
   tour: GitTourResponse;
   commitMessage: GitCommitMessage | null;
   expandedAnchors: Set<string>;
+  // Repository directory the tour was loaded from; needed to fetch media and
+  // whole-file contents for the chunks' full-file mode.
+  cwd: string;
 }>();
 const emit = defineEmits<{
   (e: "open-comment", target: TourCommentTarget): void;
@@ -125,6 +187,34 @@ const isMobile = ref(window.innerWidth < 768);
 const { sideBySidePreference, setSideBySidePreference } = useSideBySidePreference();
 const sideBySide = computed(() => !isMobile.value && sideBySidePreference.value);
 const shortHash = computed(() => props.tour.hash.slice(0, 8));
+
+// Whole-file contents at the toured commit, shared by every chunk of the same
+// file so expanding a second chunk does not refetch. Keyed by both paths since
+// a rename changes the left-hand side.
+const fileContentsCache = new Map<string, Promise<GitFileDiff>>();
+watch([() => props.tour.hash, () => props.cwd], () => fileContentsCache.clear());
+
+function loadFile(oldPath: string | null, newPath: string | null): Promise<GitFileDiff> {
+  const path = newPath ?? oldPath ?? "";
+  const key = `${oldPath ?? ""}\0${newPath ?? ""}`;
+  let pending = fileContentsCache.get(key);
+  if (!pending) {
+    pending = api
+      .getGitFileDiff(
+        props.tour.hash,
+        path,
+        props.cwd,
+        "self",
+        oldPath && oldPath !== path ? oldPath : undefined,
+      )
+      .catch((error: unknown) => {
+        fileContentsCache.delete(key);
+        throw error;
+      });
+    fileContentsCache.set(key, pending);
+  }
+  return pending;
+}
 const viewRef = ref<HTMLElement | null>(null);
 const documentRef = ref<HTMLElement | null>(null);
 const selectionPrompt = ref<{
@@ -183,18 +273,41 @@ watch(
   { flush: "sync" },
 );
 
+// A chunk swapping between its patch and the full file keeps its own changed
+// line in place; without this the resize handler would drag the last
+// table-of-contents jump back to the top instead.
+function releaseNavigation() {
+  navigationTarget = null;
+}
+
 function handleTourResize() {
   alignNavigationTarget();
   scheduleActiveAnchor();
 }
 
-function isHeaderEntry(entry: GitTourEntry): entry is GitTourHeaderEntry {
-  return "header" in entry;
+function entryKey(entry: GitTourEntry, position: number): string {
+  const kind = isHeaderEntry(entry) ? "header" : isMediaEntry(entry) ? "media" : "patch";
+  return `${kind}-${position}`;
 }
 
-function entryKey(entry: GitTourEntry, position: number): string {
-  return `${isHeaderEntry(entry) ? "header" : "patch"}-${position}`;
+// Decisions and questions quote their title, so an answer reads on its own:
+// "> commit 1a2b3c4d question 2: Should recordings autoplay?".
+function openItemComment(kind: "decision" | "question", item: GitTourItem, index: number) {
+  emit("open-comment", {
+    where: `${kind === "question" ? "Question" : "Decision"} ${index + 1}`,
+    reference: `commit ${shortHash.value} ${kind} ${index + 1}`,
+    selectedText: item.title,
+  });
 }
+
+// The heading each entry sits under, for recorded review context.
+const sections = computed(() => {
+  let current = "";
+  return props.tour.tour.chunks.map((entry) => {
+    if (isHeaderEntry(entry)) current = headerLabel(entry.header);
+    return current;
+  });
+});
 
 function composedClosest(node: Node | null, selector: string): HTMLElement | null {
   let current: Node | null = node;

@@ -43,6 +43,7 @@ type GitStateChangeFunc func(ctx context.Context, state *gitstate.GitState)
 // Config contains all configuration needed to create a Loop.
 type Config struct {
 	LLM              llm.Service
+	ModelID          string
 	History          []llm.Message
 	Tools            []*llm.Tool
 	RecordMessage    MessageRecordFunc
@@ -86,6 +87,7 @@ type Config struct {
 // Notably, when the turn ends, the "Loop" is over. TODO: maybe rename to Turn?
 type Loop struct {
 	llm              llm.Service
+	modelID          string
 	tools            []*llm.Tool
 	recordMessage    MessageRecordFunc
 	recordWarning    WarningRecordFunc
@@ -126,6 +128,7 @@ func NewLoop(config Config) *Loop {
 
 	return &Loop{
 		llm:              config.LLM,
+		modelID:          config.ModelID,
 		history:          config.History,
 		tools:            config.Tools,
 		recordMessage:    config.RecordMessage,
@@ -758,10 +761,8 @@ func (l *Loop) handleRefusal(ctx context.Context, resp *llm.Response) error {
 	// Build the user-visible notice. Start with the standard guidance, then
 	// append every field the provider gave us in the refusal reason (category
 	// and full explanation), so nothing is hidden from the user.
-	noticeText := "[The model declined to continue this request. Retrying the same " +
-		"request will likely be declined again. Switch to Opus to continue, " +
-		"or use /model to switch models. You can also try rephrasing or " +
-		"clarifying the intent instead.]"
+	noticeText := "[The model declined to continue this request. Choose another model " +
+		"or rephrase the request.]"
 	var refusalCategory, refusalExplanation string
 	if resp.RefusalDetails != nil {
 		refusalCategory = strings.TrimSpace(resp.RefusalDetails.Category)
@@ -787,6 +788,10 @@ func (l *Loop) handleRefusal(ctx context.Context, resp *llm.Response) error {
 	// the same session would show the model an assistant turn narrating its own
 	// refusal, biasing it toward refusing again. (Mirrors the llm_request error
 	// path above, which also records without appending.)
+	refusalModel := l.modelID
+	if refusalModel == "" {
+		refusalModel = resp.Model
+	}
 	errorMessage := llm.Message{
 		Role: llm.MessageRoleAssistant,
 		Content: []llm.Content{
@@ -798,6 +803,7 @@ func (l *Loop) handleRefusal(ctx context.Context, resp *llm.Response) error {
 		EndOfTurn:          true,
 		ErrorType:          llm.ErrorTypeRefusal,
 		ErrorRetryable:     false,
+		RefusalModel:       refusalModel,
 		RefusalCategory:    refusalCategory,
 		RefusalExplanation: refusalExplanation,
 	}
@@ -954,9 +960,20 @@ func (l *Loop) executeToolCalls(ctx context.Context, content []llm.Content) erro
 	finished.Add(len(toolUses))
 	start := make(chan struct{})
 	run := false
+	sequentialTails := make(map[string]<-chan struct{})
 	for i, c := range toolUses {
-		go func(i int, c llm.Content) {
+		var predecessor <-chan struct{}
+		var successor chan struct{}
+		if tool := l.findTool(c.ToolName); tool != nil && tool.Sequential {
+			predecessor = sequentialTails[c.ToolName]
+			successor = make(chan struct{})
+			sequentialTails[c.ToolName] = successor
+		}
+		go func(i int, c llm.Content, predecessor <-chan struct{}, successor chan struct{}) {
 			defer finished.Done()
+			if successor != nil {
+				defer close(successor)
+			}
 			ready.Done()
 			<-start
 			if !run {
@@ -968,8 +985,20 @@ func (l *Loop) executeToolCalls(ctx context.Context, content []llm.Content) erro
 				}
 				return
 			}
+			if predecessor != nil {
+				<-predecessor
+				if ctx.Err() != nil {
+					toolResults[i] = llm.Content{
+						Type:       llm.ContentTypeToolResult,
+						ToolUseID:  c.ID,
+						ToolError:  true,
+						ToolResult: llm.TextContent(notExecutedToolResultText),
+					}
+					return
+				}
+			}
 			toolResults[i] = l.executeToolCall(ctx, c)
-		}(i, c)
+		}(i, c, predecessor, successor)
 	}
 	ready.Wait()
 	run = ctx.Err() == nil

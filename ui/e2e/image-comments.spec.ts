@@ -2,8 +2,7 @@ import { test, expect, type Locator, type Page } from "@playwright/test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { deflateSync } from "node:zlib";
-import { createConversationViaAPI } from "./helpers";
+import { createConversationViaAPI, makePNG } from "./helpers";
 
 // Clicking an image in the conversation opens the annotation view: drag a box
 // around part of the image, type a comment in the dialog that opens, and the
@@ -403,6 +402,75 @@ test.describe("Image comments", () => {
     });
   }
 
+  // Images render at their intrinsic size unless styled, and a browser-tool
+  // screenshot taken at a phone's device scale factor is 1170x2532: wider than
+  // the message column and several screens tall. Every conversation image has
+  // to fit the column and the message area, keep its aspect ratio, and keep the
+  // comment badge on its own corner. The tall fixture is taller still, so it
+  // is over the height cap on both viewports.
+  for (const [name, viewport] of [
+    ["a phone", { width: 390, height: 844 }],
+    ["desktop", { width: 1280, height: 800 }],
+  ] as const) {
+    test(`images fit the conversation on ${name} viewport`, async ({ page, request }) => {
+      await page.setViewportSize(viewport);
+
+      const { dir, path: tall } = scratchPNG("tall.png", 1170, 4000);
+      writeFileSync(join(dir, "wide.png"), makePNG(3000, 200));
+
+      // Markdown images carry no size; tool cards pass width/height
+      // attributes (of the downscaled copy) to reserve their space.
+      const markdown = await createConversationViaAPI(
+        request,
+        "echo: ![tall](tall.png) ![wide](wide.png)",
+        { agentTimeout: 60000, cwd: dir },
+      );
+      await page.goto(`/c/${markdown}`);
+      await expectFits(page, page.locator('.markdown-content img[src*="tall.png"]'), 1170, 4000);
+      await expectFits(page, page.locator('.markdown-content img[src*="wide.png"]'), 3000, 200);
+
+      const tool = await createConversationViaAPI(request, `read_image: ${tall}`, {
+        agentTimeout: 60000,
+        cwd: dir,
+      });
+      await page.goto(`/c/${tool}`);
+      await expectFits(page, page.locator(".screenshot-tool .commentable-image"), 1170, 4000);
+    });
+  }
+
+  async function expectFits(page: Page, img: Locator, width: number, height: number) {
+    await expect(img).toBeVisible({ timeout: 30000 });
+    // Wait for the bytes: before they arrive a markdown image has no size.
+    await expect
+      .poll(() => img.evaluate((el: HTMLImageElement) => el.naturalWidth), { timeout: 15000 })
+      .toBeGreaterThan(0);
+
+    const scrollport = page.locator(".messages-container");
+    const link = img.locator("xpath=ancestor::*[contains(@class, 'commentable-image-link')][1]");
+    const [imgBox, portBox, portHeight, linkBox, badgeBox] = await Promise.all([
+      img.boundingBox(),
+      scrollport.boundingBox(),
+      scrollport.evaluate((el) => el.clientHeight),
+      link.boundingBox(),
+      link.locator(".commentable-image-badge").boundingBox(),
+    ]);
+    const what = `${width}x${height}`;
+    expect(imgBox!.x + imgBox!.width, `${what} fits the column`).toBeLessThanOrEqual(
+      portBox!.x + portBox!.width,
+    );
+    expect(imgBox!.height, `${what} fits the message area`).toBeLessThanOrEqual(portHeight);
+    expect(imgBox!.height, `${what} keeps its aspect ratio`).toBeCloseTo(
+      (imgBox!.width * height) / width,
+      0,
+    );
+    // The badge is positioned against the link, so the link has to shrink with
+    // the image rather than keep its natural width.
+    expect(linkBox!.width, `${what} link hugs the image`).toBeCloseTo(imgBox!.width, 0);
+    expect(badgeBox!.x + badgeBox!.width, `${what} badge on the image`).toBeLessThanOrEqual(
+      imgBox!.x + imgBox!.width,
+    );
+  }
+
   test("a touch drag draws a box, and a second finger cannot hijack it", async ({
     page,
     request,
@@ -535,53 +603,3 @@ test.describe("Image comments", () => {
     });
   });
 });
-
-/** A minimal valid RGB PNG of the given size, filled with a gradient. */
-function makePNG(width: number, height: number): Buffer {
-  const raw = Buffer.alloc(height * (1 + width * 3));
-  for (let y = 0; y < height; y++) {
-    const row = y * (1 + width * 3);
-    for (let x = 0; x < width; x++) {
-      const p = row + 1 + x * 3;
-      raw[p] = (x * 7) & 0xff;
-      raw[p + 1] = (y * 3) & 0xff;
-      raw[p + 2] = (x + y) & 0xff;
-    }
-  }
-  const ihdr = Buffer.alloc(13);
-  ihdr.writeUInt32BE(width, 0);
-  ihdr.writeUInt32BE(height, 4);
-  ihdr[8] = 8; // bit depth
-  ihdr[9] = 2; // color type: truecolor
-  return Buffer.concat([
-    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-    chunk("IHDR", ihdr),
-    chunk("IDAT", deflateSync(raw, { level: 1 })),
-    chunk("IEND", Buffer.alloc(0)),
-  ]);
-}
-
-function chunk(type: string, data: Buffer): Buffer {
-  const body = Buffer.concat([Buffer.from(type, "ascii"), data]);
-  const len = Buffer.alloc(4);
-  len.writeUInt32BE(data.length);
-  const crc = Buffer.alloc(4);
-  crc.writeUInt32BE(crc32(body));
-  return Buffer.concat([len, body, crc]);
-}
-
-const CRC_TABLE = (() => {
-  const table = new Int32Array(256);
-  for (let n = 0; n < 256; n++) {
-    let c = n;
-    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-    table[n] = c;
-  }
-  return table;
-})();
-
-function crc32(buf: Buffer): number {
-  let c = -1;
-  for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
-  return (c ^ -1) >>> 0;
-}

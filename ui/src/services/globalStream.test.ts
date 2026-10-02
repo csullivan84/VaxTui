@@ -310,7 +310,7 @@ await run("resume during a CONNECTING attempt does not tear it down", () => {
   // in-progress handshake alone rather than churning it.
   const connecting = latest();
   assert(connecting.readyState === 0, "socket is CONNECTING");
-  now += 120000; // even with an old wall clock
+  now += 2000;
   fakeDocument.visibilityState = "visible";
   fakeDocument.dispatch("visibilitychange");
   fakeWindow.dispatch("pageshow");
@@ -318,6 +318,74 @@ await run("resume during a CONNECTING attempt does not tear it down", () => {
   assert(!connecting.closed, "CONNECTING socket left intact");
   assert(FakeEventSource.instances.length === 1, "no extra EventSource opened");
   s.handle.close();
+});
+
+await run("resume replaces a stalled handshake and ignores its late callbacks", () => {
+  reset();
+  const s = newStream();
+  latest().emitOpen();
+  latest().emitError();
+  advance(1000);
+  const stale = latest();
+  fakeDocument.visibilityState = "hidden";
+  now += 85000;
+  fakeDocument.visibilityState = "visible";
+  fakeDocument.dispatch("visibilitychange");
+  assert(stale.closed, "stalled handshake cancelled");
+  assert(FakeEventSource.instances.length === 3, "fresh attempt started immediately");
+  stale.emitOpen();
+  stale.emitMessage({ heartbeat: true });
+  stale.emitError();
+  assert(s.statuses.at(-1) === "reconnecting", "late callbacks cannot change stream status");
+  assert(s.reconnects === 0, "no extra backfill before the new connection opens");
+  latest().emitOpen();
+  assert(s.statuses.at(-1) === "connected", "new attempt connected");
+  assert(s.reconnects === 1, "one backfill after recovery");
+  s.handle.close();
+});
+
+await run("hung handshakes time out with the existing retry backoff", () => {
+  reset();
+  const s = newStream();
+  for (const [deadline, backoff] of [
+    [10000, 1000],
+    [20000, 2000],
+    [30000, 5000],
+  ]) {
+    const pending = latest();
+    advance(deadline - 1);
+    assert(!pending.closed, "handshake not cancelled before its deadline");
+    advance(1);
+    assert(pending.closed, "hung handshake cancelled");
+    const status = s.statuses.at(-1);
+    pending.emitOpen();
+    pending.emitMessage({ heartbeat: true });
+    pending.emitError();
+    assert(s.statuses.at(-1) === status, "timed-out callbacks are inert during backoff");
+    const count = FakeEventSource.instances.length;
+    advance(backoff - 1);
+    assert(FakeEventSource.instances.length === count, "retry not due early");
+    advance(1);
+    assert(FakeEventSource.instances.length === count + 1, "retried on the existing ladder");
+  }
+  s.handle.close();
+  assert(timers.length === 0, "close cancels the pending handshake deadline");
+  advance(120000);
+  assert(FakeEventSource.instances.length === 4, "no retries after close");
+});
+
+await run("an open or first message cancels the handshake deadline", () => {
+  for (const event of ["open", "message"]) {
+    reset();
+    const s = newStream();
+    const live = latest();
+    if (event === "open") live.emitOpen();
+    else live.emitMessage({ heartbeat: true });
+    advance(10000);
+    assert(!live.closed, "connected stream survives the old handshake deadline");
+    assert(fetchCalls === 0, "no authentication probe for a successful handshake");
+    s.handle.close();
+  }
 });
 
 await run("heartbeat watchdog reconnects a foreground zombie", () => {
@@ -368,6 +436,31 @@ await run("reloads on an explicit authentication-required response", async () =>
 
   assert(reloadCalls === 1, "reloaded after the 401 response");
   s.handle.close();
+});
+
+await run("slow authentication probes can finish during retry backoff", async () => {
+  reset();
+  g.fetch = () =>
+    new Promise<Response>((resolve) =>
+      fakeSetTimeout(() => resolve({ type: "opaqueredirect", status: 0 } as Response), 3000),
+    );
+  const s = newStream();
+  try {
+    latest().emitOpen();
+    latest().emitError();
+    for (let step = 0; step < 12 && reloadCalls === 0; step++) {
+      advance(1000);
+      if (!latest().closed && latest().readyState === FakeEventSource.CONNECTING) {
+        latest().emitError();
+      }
+      await Promise.resolve();
+      await Promise.resolve();
+    }
+    assert(reloadCalls === 1, "slow sign-in probe reloads rather than retrying forever");
+  } finally {
+    s.handle.close();
+    g.fetch = fakeFetch;
+  }
 });
 
 await run("error backoff reconnects and then recovers", () => {
@@ -482,7 +575,7 @@ await run("disk_space_status frames reach onDiskSpaceStatus (no conversation_id)
   const handle = connectGlobalStream({
     getHash: () => "hash0",
     onListPatch: () => {},
-    onDiskSpaceStatus: (status) => seen.push(status),
+    onDiskSpaceStatus: (status, snapshot) => seen.push({ status, snapshot }),
   });
   latest().emitOpen();
   latest().emitMessage({ heartbeat: true });
@@ -495,8 +588,21 @@ await run("disk_space_status frames reach onDiskSpaceStatus (no conversation_id)
     available_bytes: 1_600_000_000,
   };
   latest().emitMessage({ disk_space_status: status });
-  assert(seen.length === 1, "disk_space_status delivered");
-  assert((seen[0] as typeof status).episode_id === 1, "payload passed through");
+  latest().emitMessage({ disk_space_status: { ...status, revision: 2 } });
+  type Seen = { status: typeof status; snapshot: boolean };
+  const got = seen as Seen[];
+  assert(got.length === 2, "disk_space_status delivered");
+  assert(got[0].status.episode_id === 1, "payload passed through");
+  assert(got[0].snapshot, "first status on a connection is its snapshot");
+  assert(!got[1].snapshot, "later statuses are transitions");
+  // A restarted server may resend an older revision (an unpersisted
+  // transition was lost), so each new connection's first status is again a
+  // snapshot.
+  latest().emitError();
+  advance(1000);
+  latest().emitOpen();
+  latest().emitMessage({ disk_space_status: status });
+  assert(got.length === 3 && got[2].snapshot, "first status after reconnect is a snapshot");
   handle.close();
 });
 

@@ -191,7 +191,7 @@ func (s *Server) handleWriteFile(w http.ResponseWriter, r *http.Request) {
 
 	// Write the file
 	if err := os.WriteFile(clean, []byte(req.Content), 0o644); err != nil {
-		http.Error(w, fmt.Sprintf("failed to write file: %v", err), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("failed to write file: %v", err), s.errorStatus(err))
 		return
 	}
 
@@ -295,7 +295,7 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		path, err := saveUploadFile(part.FileName(), part)
 		part.Close()
 		if err != nil {
-			writeUploadSaveError(w, err)
+			s.writeUploadSaveError(w, err)
 			return
 		}
 		writeUploadResponse(w, path)
@@ -323,7 +323,7 @@ func (s *Server) handleUploadRaw(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes)
 	path, err := saveUploadFile(filename, r.Body)
 	if err != nil {
-		writeUploadSaveError(w, err)
+		s.writeUploadSaveError(w, err)
 		return
 	}
 	writeUploadResponse(w, path)
@@ -352,13 +352,13 @@ func writeUploadParseError(w http.ResponseWriter, prefix string, err error) {
 	writeUploadError(w, http.StatusBadRequest, "invalid_multipart", prefix+err.Error())
 }
 
-func writeUploadSaveError(w http.ResponseWriter, err error) {
+func (s *Server) writeUploadSaveError(w http.ResponseWriter, err error) {
 	var maxErr *http.MaxBytesError
 	if errors.As(err, &maxErr) {
 		writeUploadError(w, http.StatusRequestEntityTooLarge, "request_body_too_large", "request body too large")
 		return
 	}
-	writeUploadError(w, http.StatusInternalServerError, "upload_save_failed", "failed to save file: "+err.Error())
+	writeUploadError(w, s.errorStatus(err), "upload_save_failed", "failed to save file: "+err.Error())
 }
 
 // saveUploadFile writes src into browse.UploadDir under a sanitized name
@@ -530,9 +530,9 @@ func (s *Server) staticHandler(fsys http.FileSystem) http.Handler {
 			return
 		}
 
-		// For JS, CSS, and source-map files, serve from .gz files (only the .gz
-		// versions are embedded to keep the binary small).
-		if strings.HasSuffix(r.URL.Path, ".js") || strings.HasSuffix(r.URL.Path, ".css") || strings.HasSuffix(r.URL.Path, ".map") {
+		// For JS, CSS, source-map and font files, serve from .gz files (only the
+		// .gz versions are embedded to keep the binary small).
+		if strings.HasSuffix(r.URL.Path, ".js") || strings.HasSuffix(r.URL.Path, ".css") || strings.HasSuffix(r.URL.Path, ".map") || strings.HasSuffix(r.URL.Path, ".woff2") {
 			gzPath := r.URL.Path + ".gz"
 			gzFile, err := fsys.Open(gzPath)
 			if err != nil {
@@ -564,9 +564,12 @@ func (s *Server) staticHandler(fsys http.FileSystem) http.Handler {
 			}
 
 			contentType := mime.TypeByExtension(filepath.Ext(r.URL.Path))
-			if contentType == "" && strings.HasSuffix(r.URL.Path, ".map") {
-				// Source maps are JSON; mime has no registered type for .map.
+			// Go's builtin mime table has neither; don't depend on the host's.
+			switch filepath.Ext(r.URL.Path) {
+			case ".map":
 				contentType = "application/json; charset=utf-8"
+			case ".woff2":
+				contentType = "font/woff2"
 			}
 			w.Header().Set("Content-Type", contentType)
 			w.Header().Set("Vary", "Accept-Encoding")
@@ -645,6 +648,11 @@ func (s *Server) serveIndexWithInit(w http.ResponseWriter, r *http.Request, fs h
 
 	userAgentsMdPath, _ := userAgentsMdPath()
 
+	transcriptionErr := s.transcriber.Available()
+	if transcriptionErr != nil && !errors.Is(transcriptionErr, errNoTranscriptionRoute) {
+		s.logger.Error("Failed to resolve transcription models", "error", transcriptionErr)
+	}
+
 	// Note: AGENTS.md content is NOT embedded in init data. It is fetched fresh
 	// via /api/user-agents-md when the editor modal opens so that reopening
 	// after a save shows current disk state, not stale page-load content.
@@ -660,6 +668,9 @@ func (s *Server) serveIndexWithInit(w http.ResponseWriter, r *http.Request, fs h
 		// model_setup_hint is absent (the catalog can empty AFTER page load, via
 		// a detached integration plus Refresh).
 		"is_exe_dev": isExeDev(),
+		// Recording is pointless without a transcription route; the UI
+		// explains how to get one instead of recording.
+		"transcription_available": transcriptionErr == nil,
 	}
 	// With no models the UI cannot send anything, so tell it WHY. On exe.dev
 	// the usual cause is a missing reflection or llm integration, and each has
@@ -739,8 +750,7 @@ func (s *Server) handleConversations(w http.ResponseWriter, r *http.Request) {
 
 	conversations, err := s.conversationListWithState(r.Context(), limit, offset, r.URL.Query().Get("q"), r.URL.Query().Get("search_content") == "true")
 	if err != nil {
-		s.logger.Error("Failed to get conversations", "error", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		s.internalError(w, "Failed to get conversations", err)
 		return
 	}
 
@@ -768,8 +778,7 @@ type ConversationListSnapshot struct {
 func (s *Server) handleConversationsSnapshot(w http.ResponseWriter, r *http.Request) {
 	list, hash, err := s.conversationListStream.snapshot(r.Context())
 	if err != nil {
-		s.logger.Error("Failed to compute conversation list snapshot", "error", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		s.internalError(w, "Failed to compute conversation list snapshot", err)
 		return
 	}
 	if list == nil {
@@ -1016,8 +1025,7 @@ func (s *Server) handleGetConversation(w http.ResponseWriter, r *http.Request, c
 		return
 	}
 	if err != nil {
-		s.logger.Error("Failed to get conversation messages", "conversationID", conversationID, "error", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		s.internalError(w, "Failed to get conversation messages", err, "conversationID", conversationID)
 		return
 	}
 
@@ -1098,8 +1106,7 @@ func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, 
 
 	senderUserData, err := s.senderUserData(ctx, *existing, req.SenderConversationID)
 	if err != nil {
-		s.logger.Error("Failed to resolve chat sender", "conversationID", conversationID, "error", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		s.internalError(w, "Failed to resolve chat sender", err, "conversationID", conversationID)
 		return
 	}
 
@@ -1146,8 +1153,7 @@ func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, 
 				return
 			}
 			if managerErr != nil {
-				s.logger.Error("Failed to get conversation manager", "conversationID", conversationID, "error", managerErr)
-				http.Error(w, "Internal server error", http.StatusInternalServerError)
+				s.internalError(w, "Failed to get conversation manager", managerErr, "conversationID", conversationID)
 				return
 			}
 			if s.handleModelCommand(recoveryCtx, w, conversationID, modelID, manager, req.Message) {
@@ -1187,6 +1193,17 @@ func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, 
 	if isTranscription && existing.Archived {
 		http.Error(w, "conversation is archived", http.StatusConflict)
 		return
+	}
+	// A queued item that can only fail would block every later message.
+	if isTranscription {
+		if err := s.transcriber.Available(); errors.Is(err, errNoTranscriptionRoute) {
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		} else if err != nil {
+			s.logger.Error("Failed to resolve transcription models", "conversationID", conversationID, "error", err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	// A built-in /btw is a detached child start, not a parent turn. Give an
@@ -1288,8 +1305,7 @@ func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, 
 			// first pins it — two same-instant sends on different models is a
 			// race the user has already lost either way.)
 		case err != nil:
-			s.logger.Error("Failed to promote draft", "conversationID", conversationID, "error", err)
-			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			s.internalError(w, "Failed to promote draft", err, "conversationID", conversationID)
 			return
 		case req.Model == "" && promoted.Model != nil && *promoted.Model != "" && *promoted.Model != modelID:
 			// An omitted-model send resolves to the draft's persisted model,
@@ -1312,8 +1328,7 @@ func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	if err != nil {
-		s.logger.Error("Failed to get conversation manager", "conversationID", conversationID, "error", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		s.internalError(w, "Failed to get conversation manager", err, "conversationID", conversationID)
 		return
 	}
 
@@ -1429,8 +1444,7 @@ func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, 
 	// and stays consistent with what actually happens here.
 	if willQueue {
 		if err := manager.QueueMessage(ctx, s, modelID, userMessage); err != nil {
-			s.logger.Error("Failed to queue user message", "conversationID", conversationID, "error", err)
-			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			s.internalError(w, "Failed to queue user message", err, "conversationID", conversationID)
 			return
 		}
 		w.WriteHeader(http.StatusAccepted)
@@ -1441,8 +1455,7 @@ func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, 
 	firstMessage, err := manager.AcceptUserMessage(ctx, llmService, modelID, userMessage)
 	if errors.Is(err, errQueuedMessagesPending) {
 		if err := manager.QueueMessage(ctx, s, modelID, userMessage); err != nil {
-			s.logger.Error("Failed to queue user message after concurrent queue reservation", "conversationID", conversationID, "error", err)
-			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			s.internalError(w, "Failed to queue user message after concurrent queue reservation", err, "conversationID", conversationID)
 			return
 		}
 		w.WriteHeader(http.StatusAccepted)
@@ -1454,8 +1467,7 @@ func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	if err != nil {
-		s.logger.Error("Failed to accept user message", "conversationID", conversationID, "error", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		s.internalError(w, "Failed to accept user message", err, "conversationID", conversationID)
 		return
 	}
 
@@ -1534,8 +1546,7 @@ func (s *Server) handleNewConversation(w http.ResponseWriter, r *http.Request) {
 
 	conversation, err := s.db.CreateConversation(ctx, nil, true, cwdPtr, &modelID, convOpts)
 	if err != nil {
-		s.logger.Error("Failed to create conversation", "error", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		s.internalError(w, "Failed to create conversation", err)
 		return
 	}
 	conversationID := conversation.ConversationID
@@ -1611,8 +1622,7 @@ func (s *Server) handleNewConversation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		s.logger.Error("Failed to get conversation manager", "conversationID", conversationID, "error", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		s.internalError(w, "Failed to get conversation manager", err, "conversationID", conversationID)
 		return
 	}
 
@@ -1648,8 +1658,7 @@ func (s *Server) handleNewConversation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		s.logger.Error("Failed to accept user message", "conversationID", conversationID, "error", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		s.internalError(w, "Failed to accept user message", err, "conversationID", conversationID)
 		return
 	}
 
@@ -1834,8 +1843,7 @@ func (s *Server) handleRetryConversation(w http.ResponseWriter, r *http.Request,
 		userEmail := r.Header.Get("X-ExeDev-Email")
 		manager, err = s.getOrCreateConversationManager(ctx, conversationID, userEmail)
 		if err != nil {
-			s.logger.Error("Failed to get conversation manager for retry", "conversationID", conversationID, "error", err)
-			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			s.internalError(w, "Failed to get conversation manager for retry", err, "conversationID", conversationID)
 			return
 		}
 		modelID := manager.GetModel()
@@ -1848,13 +1856,11 @@ func (s *Server) handleRetryConversation(w http.ResponseWriter, r *http.Request,
 			return
 		}
 		if err := manager.Hydrate(ctx); err != nil {
-			s.logger.Error("Failed to hydrate for retry", "conversationID", conversationID, "error", err)
-			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			s.internalError(w, "Failed to hydrate for retry", err, "conversationID", conversationID)
 			return
 		}
 		if err := manager.ensureLoop(llmService, modelID); err != nil {
-			s.logger.Error("Failed to ensure loop for retry", "conversationID", conversationID, "error", err)
-			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			s.internalError(w, "Failed to ensure loop for retry", err, "conversationID", conversationID)
 			return
 		}
 	}
@@ -1878,16 +1884,15 @@ func (s *Server) handleRetryConversation(w http.ResponseWriter, r *http.Request,
 
 // continueRequest is the optional JSON body for POST
 // /api/conversation/<id>/continue. An empty/omitted model falls back to the
-// default catalog model (Opus), matching the "switch to Opus and continue"
-// button a refusal error shows.
+// default catalog model for older clients.
 type continueRequest struct {
 	Model string `json:"model"`
 }
 
 // handleContinueConversation handles POST /api/conversation/<id>/continue.
-// It powers the "switch to Opus and continue" affordance offered on a refusal
-// error: it switches the conversation to a more capable model (Opus by
-// default) and re-fires the request the previous model declined. Requires a
+// It powers the choose-another-model affordance offered on a refusal error: it
+// switches the conversation to the selected model and re-fires the request the
+// previous model declined. Requires a
 // latest message that is a refusal error (error_type=refusal). The refusal row
 // is left untouched (append-only log) and excluded from context, so the new
 // model sees the same request.
@@ -1931,8 +1936,7 @@ func (s *Server) handleContinueConversation(w http.ResponseWriter, r *http.Reque
 	userEmail := r.Header.Get("X-ExeDev-Email")
 	manager, err := s.getOrCreateConversationManager(ctx, conversationID, userEmail)
 	if err != nil {
-		s.logger.Error("Failed to get conversation manager for continue", "conversationID", conversationID, "error", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		s.internalError(w, "Failed to get conversation manager for continue", err, "conversationID", conversationID)
 		return
 	}
 
@@ -2073,8 +2077,7 @@ func (s *Server) runStream(w http.ResponseWriter, r *http.Request, conversationI
 		var err error
 		listInitial, listNext, listRelease, err = s.conversationListStream.connect(ctx, query.Get("conversation_list_hash"))
 		if err != nil {
-			s.logger.Error("failed to initialize conversation list patches", "error", err)
-			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			s.internalError(w, "failed to initialize conversation list patches", err)
 			return
 		}
 		defer listRelease()
@@ -2156,8 +2159,7 @@ func (s *Server) runStream(w http.ResponseWriter, r *http.Request, conversationI
 			// hardcoded here, so treat any error as a server bug.
 			zw, err := zstd.NewWriter(w, zstd.WithEncoderLevel(zstd.SpeedDefault))
 			if err != nil {
-				s.logger.Error("zstd writer init failed", "error", err)
-				http.Error(w, "Internal server error", http.StatusInternalServerError)
+				s.internalError(w, "zstd writer init failed", err)
 				return false
 			}
 			compressedSink = zw
@@ -2213,12 +2215,13 @@ func (s *Server) runStream(w http.ResponseWriter, r *http.Request, conversationI
 	// must not call http.Error (which would inject uncompressed bytes into the
 	// gzip/zstd body). Simply return; the client treats the closed connection
 	// as a transient drop and reconnects via last_sequence_id.
-	errAfterStreamStart := func(w http.ResponseWriter, msg string) {
+	errAfterStreamStart := func(w http.ResponseWriter, msg string, err error, logArgs ...any) {
 		if streamStarted {
+			s.logger.Error(msg, append(logArgs, "error", err)...)
 			s.logger.Debug("abandoning compressed SSE stream after error", "msg", msg)
 			return
 		}
-		http.Error(w, msg, http.StatusInternalServerError)
+		s.internalError(w, msg, err, logArgs...)
 	}
 
 	for _, event := range listInitial {
@@ -2362,8 +2365,7 @@ func (s *Server) runStream(w http.ResponseWriter, r *http.Request, conversationI
 			return err
 		})
 		if err != nil {
-			s.logger.Error("Failed to get conversation data", "conversationID", conversationID, "error", err)
-			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			errAfterStreamStart(w, "Failed to get conversation data", err, "conversationID", conversationID)
 			return
 		}
 		if len(messages) > 0 {
@@ -2382,8 +2384,7 @@ func (s *Server) runStream(w http.ResponseWriter, r *http.Request, conversationI
 			return err
 		})
 		if err != nil {
-			s.logger.Error("Failed to get conversation data", "conversationID", conversationID, "error", err)
-			errAfterStreamStart(w, "Internal server error")
+			errAfterStreamStart(w, "Failed to get conversation data", err, "conversationID", conversationID)
 			return
 		}
 		if len(messages) > 0 {
@@ -2403,8 +2404,7 @@ func (s *Server) runStream(w http.ResponseWriter, r *http.Request, conversationI
 			return err
 		})
 		if err != nil {
-			s.logger.Error("Failed to get conversation data", "conversationID", conversationID, "error", err)
-			errAfterStreamStart(w, "Internal server error")
+			errAfterStreamStart(w, "Failed to get conversation data", err, "conversationID", conversationID)
 			return
 		}
 		if len(messages) > 0 {
@@ -2414,8 +2414,7 @@ func (s *Server) runStream(w http.ResponseWriter, r *http.Request, conversationI
 
 	manager, err := s.getOrCreateConversationManager(ctx, conversationID, "")
 	if err != nil {
-		s.logger.Error("Failed to get conversation manager", "conversationID", conversationID, "error", err)
-		errAfterStreamStart(w, "Internal server error")
+		errAfterStreamStart(w, "Failed to get conversation manager", err, "conversationID", conversationID)
 		return
 	}
 
@@ -2748,8 +2747,7 @@ func (s *Server) handleModelCommand(ctx context.Context, w http.ResponseWriter, 
 	}
 
 	if err := manager.ApplyModelSettings(ctx, ch); err != nil {
-		s.logger.Error("Failed to apply model settings", "conversationID", conversationID, "error", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		s.internalError(w, "Failed to apply model settings", err, "conversationID", conversationID)
 		return true
 	}
 	// ApplyModelSettings already broadcast the updated conversation (carrying
@@ -3113,8 +3111,7 @@ func (s *Server) handleSearchConversations(w http.ResponseWriter, r *http.Reques
 	}
 	results, err := s.searchConversationsFTSWithState(r.Context(), query, limit, offset)
 	if err != nil {
-		s.logger.Error("Failed to search conversations", "error", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		s.internalError(w, "Failed to search conversations", err)
 		return
 	}
 	if results == nil {
@@ -3159,8 +3156,7 @@ func (s *Server) handleArchivedConversations(w http.ResponseWriter, r *http.Requ
 	}
 
 	if err != nil {
-		s.logger.Error("Failed to get archived conversations", "error", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		s.internalError(w, "Failed to get archived conversations", err)
 		return
 	}
 
@@ -3170,8 +3166,7 @@ func (s *Server) handleArchivedConversations(w http.ResponseWriter, r *http.Requ
 	}
 	participants, err := s.db.ConversationParticipants(ctx, ids)
 	if err != nil {
-		s.logger.Error("Failed to get archived conversation participants", "error", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		s.internalError(w, "Failed to get archived conversation participants", err)
 		return
 	}
 	type archivedConversationResponse struct {
@@ -3200,8 +3195,7 @@ func (s *Server) handleArchiveConversation(w http.ResponseWriter, r *http.Reques
 	ctx := r.Context()
 	conversation, err := s.db.ArchiveConversation(ctx, conversationID)
 	if err != nil {
-		s.logger.Error("Failed to archive conversation", "conversationID", conversationID, "error", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		s.internalError(w, "Failed to archive conversation", err, "conversationID", conversationID)
 		return
 	}
 
@@ -3225,8 +3219,7 @@ func (s *Server) handleUnarchiveConversation(w http.ResponseWriter, r *http.Requ
 	ctx := r.Context()
 	conversation, err := s.db.UnarchiveConversation(ctx, conversationID)
 	if err != nil {
-		s.logger.Error("Failed to unarchive conversation", "conversationID", conversationID, "error", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		s.internalError(w, "Failed to unarchive conversation", err, "conversationID", conversationID)
 		return
 	}
 
@@ -3251,8 +3244,7 @@ func (s *Server) handleDeleteConversation(w http.ResponseWriter, r *http.Request
 	if err := s.deleteConversation(ctx, conversationID); err != nil {
 		// The terminals are already global at this point. That is harmless and
 		// visible to the user, so no rollback is attempted.
-		s.logger.Error("Failed to delete conversation", "conversationID", conversationID, "error", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		s.internalError(w, "Failed to delete conversation", err, "conversationID", conversationID)
 		return
 	}
 
@@ -3291,8 +3283,7 @@ func (s *Server) handleConversationBySlug(w http.ResponseWriter, r *http.Request
 		}
 	}
 	if err != nil {
-		s.logger.Error("Failed to get conversation by slug", "slug", slug, "error", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		s.internalError(w, "Failed to get conversation by slug", err, "slug", slug)
 		return
 	}
 
@@ -3333,8 +3324,7 @@ func (s *Server) handleRenameConversation(w http.ResponseWriter, r *http.Request
 			http.Error(w, "A conversation with that slug already exists", http.StatusConflict)
 			return
 		}
-		s.logger.Error("Failed to rename conversation", "conversationID", conversationID, "error", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		s.internalError(w, "Failed to rename conversation", err, "conversationID", conversationID)
 		return
 	}
 
@@ -3426,8 +3416,7 @@ func (s *Server) handleSetConversationCwd(w http.ResponseWriter, r *http.Request
 	// change visible to a turn that starts moments later.
 	manager, err := s.getOrCreateConversationManager(ctx, conversationID, userEmail)
 	if err != nil {
-		s.logger.Error("Failed to get conversation manager for cwd change", "conversationID", conversationID, "error", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		s.internalError(w, "Failed to get conversation manager for cwd change", err, "conversationID", conversationID)
 		return
 	}
 
@@ -3447,15 +3436,13 @@ func (s *Server) handleSetConversationCwd(w http.ResponseWriter, r *http.Request
 			http.Error(w, "Finish or stop the current turn to change the directory", http.StatusConflict)
 			return
 		}
-		s.logger.Error("Failed to change conversation cwd", "conversationID", conversationID, "error", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		s.internalError(w, "Failed to change conversation cwd", err, "conversationID", conversationID)
 		return
 	}
 
 	updated, err := s.db.GetConversationByID(ctx, conversationID)
 	if err != nil {
-		s.logger.Error("Failed to reload conversation after cwd change", "conversationID", conversationID, "error", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		s.internalError(w, "Failed to reload conversation after cwd change", err, "conversationID", conversationID)
 		return
 	}
 	go s.publishConversationListUpdate(ConversationListUpdate{
@@ -3508,8 +3495,7 @@ func (s *Server) handleUpdateConversationTags(w http.ResponseWriter, r *http.Req
 	tags := normalizeTags(req.Tags)
 	conversation, err := s.db.UpdateConversationTags(r.Context(), conversationID, tags)
 	if err != nil {
-		s.logger.Error("Failed to update conversation tags", "conversationID", conversationID, "error", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		s.internalError(w, "Failed to update conversation tags", err, "conversationID", conversationID)
 		return
 	}
 
@@ -3848,7 +3834,7 @@ func (s *Server) handleSendQueuedNow(w http.ResponseWriter, r *http.Request, con
 		return
 	}
 	if err != nil {
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		s.internalError(w, "Failed to get conversation", err, "conversationID", conversationID)
 		return
 	}
 	if conversation.Archived {
@@ -3857,8 +3843,7 @@ func (s *Server) handleSendQueuedNow(w http.ResponseWriter, r *http.Request, con
 	}
 	manager, err := s.getOrCreateConversationManager(r.Context(), conversationID, r.Header.Get("X-ExeDev-Email"))
 	if err != nil {
-		s.logger.Error("Failed to initialize conversation for send now", "conversationID", conversationID, "error", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		s.internalError(w, "Failed to initialize conversation for send now", err, "conversationID", conversationID)
 		return
 	}
 	if err := manager.SendQueuedNow(r.Context(), s, queuedID); err != nil {
@@ -3902,8 +3887,7 @@ func (s *Server) handleCancelQueued(w http.ResponseWriter, r *http.Request, conv
 		return
 	}
 	if err != nil {
-		s.logger.Error("Failed to cancel queued messages", "conversationID", conversationID, "error", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		s.internalError(w, "Failed to cancel queued messages", err, "conversationID", conversationID)
 		return
 	}
 	if !active {
@@ -3940,13 +3924,11 @@ func (s *Server) handleRegisterConversationHook(w http.ResponseWriter, r *http.R
 		return
 	}
 	if err != nil {
-		s.logger.Error("Failed to get conversation manager", "conversationID", conversationID, "error", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		s.internalError(w, "Failed to get conversation manager", err, "conversationID", conversationID)
 		return
 	}
 	if err := manager.RegisterEndOfTurnHook(r.Context(), db.ConversationHook{URL: req.URL}); err != nil {
-		s.logger.Error("Failed to register conversation hook", "conversationID", conversationID, "hook_url", req.URL, "error", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		s.internalError(w, "Failed to register conversation hook", err, "conversationID", conversationID, "hook_url", req.URL)
 		return
 	}
 
@@ -4025,8 +4007,7 @@ func (s *Server) handleForkConversation(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	if err != nil {
-		s.logger.Error("Failed to fork conversation", "conversationID", conversationID, "error", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		s.internalError(w, "Failed to fork conversation", err, "conversationID", conversationID)
 		return
 	}
 
@@ -4035,8 +4016,7 @@ func (s *Server) handleForkConversation(w http.ResponseWriter, r *http.Request, 
 	// model or reasoning via /model AFTER the cutoff, rewind those changes so
 	// the fork uses what was in effect at the fork point.
 	if err := s.applyForkPointModelState(ctx, conversationID, forked.ConversationID, cutoff); err != nil {
-		s.logger.Error("Failed to set fork-point model state", "conversationID", forked.ConversationID, "error", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		s.internalError(w, "Failed to set fork-point model state", err, "conversationID", forked.ConversationID)
 		return
 	}
 
@@ -4175,8 +4155,7 @@ func (s *Server) handleStartNewGeneration(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if err != nil {
-		s.logger.Error("Failed to start new generation", "conversationID", conversationID, "error", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		s.internalError(w, "Failed to start new generation", err, "conversationID", conversationID)
 		return
 	}
 
@@ -4382,8 +4361,7 @@ func (s *Server) handleCreateDraft(w http.ResponseWriter, r *http.Request) {
 	}
 	conv, err := s.db.CreateDraftConversation(ctx, cwdPtr, &modelID, convOpts, req.Draft)
 	if err != nil {
-		s.logger.Error("Failed to create draft", "error", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		s.internalError(w, "Failed to create draft", err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -4439,8 +4417,7 @@ func (s *Server) handleUpdateDraft(w http.ResponseWriter, r *http.Request, conve
 		return
 	}
 	if err != nil {
-		s.logger.Error("Failed to update draft", "conversationID", conversationID, "error", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		s.internalError(w, "Failed to update draft", err, "conversationID", conversationID)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

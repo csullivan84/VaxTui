@@ -7,6 +7,7 @@ import { mkdirSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { hermeticGitEnvironment, installHermeticGitEnvironment } from './git-test-env';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -16,7 +17,73 @@ const binPath = path.join(shelleyDir, 'bin', 'shelley');
 let serverProcess: ChildProcess | null = null;
 let tempDir: string | null = null;
 
+// Terminal sessions outlive the server by design, so end the ones the tests
+// left behind, along with every process group in each owned PTY session.
+// Interactive shells put foreground and background jobs in separate groups;
+// killing only the forkpty child's group leaves those jobs running forever.
+function killTerminalSessions(dir: string) {
+  const prefix = `exe-scroll: session ${dir}/`;
+  const procs = execFileSync('ps', ['-axo', 'pid=,ppid=,pgid=,sess=,command='], { encoding: 'utf8' })
+    .split('\n')
+    .flatMap((line) => {
+      const m = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/.exec(line);
+      return m ? [{
+        pid: Number(m[1]), ppid: Number(m[2]), pgid: Number(m[3]),
+        session: m[4], command: m[5],
+      }] : [];
+    });
+  const servers = procs.filter((p) => p.command.startsWith(prefix));
+  const serverSessions = new Map(servers.map((p) => [p.pid, p.session]));
+  // Linux ps prints the numeric SID; macOS ps prints a hex session pointer.
+  // forkpty's direct child leads its own group in a *different* session
+  // from the server. Match that session token exactly for every group.
+  const sessions = new Set(procs.filter((p) => p.pid === p.pgid && serverSessions.has(p.ppid)
+    && p.session !== serverSessions.get(p.ppid)).map((p) => p.session));
+  const kill = (pid: number) => {
+    try {
+      process.kill(pid, 'SIGKILL');
+    } catch {
+      // already gone
+    }
+  };
+  const groups = new Set(procs.filter((p) => sessions.has(p.session)).map((p) => p.pgid));
+  for (const group of groups) kill(-group);
+  for (const server of servers) kill(server.pid);
+}
+
 export default async function globalSetup() {
+  const originalEnvironment = { ...process.env };
+  // Keep fixture commands, Playwright workers, and the managed Shelley server
+  // independent of the developer's global/system git config and hooks.
+  const restoreGitEnvironment = installHermeticGitEnvironment();
+
+  const cleanup = () => {
+    const dir = tempDir;
+    tempDir = null;
+    try {
+      if (dir) {
+        killTerminalSessions(dir);
+        rmSync(dir, { recursive: true, force: true });
+      }
+    } finally {
+      delete process.env.SHELLEY_TEST_CWD;
+      restoreGitEnvironment();
+    }
+  };
+
+  try {
+    return await startTestEnvironment(cleanup, originalEnvironment);
+  } catch (error) {
+    if (serverProcess) {
+      serverProcess.kill('SIGKILL');
+      serverProcess = null;
+    }
+    cleanup();
+    throw error;
+  }
+}
+
+async function startTestEnvironment(cleanup: () => void, originalEnvironment: NodeJS.ProcessEnv) {
   // Give every shard its own home and cwd. The tests edit user AGENTS.md,
   // and prompt hydration scans cwd for guidance/skills: sharing the runner's
   // HOME or walking all of /tmp makes unrelated builds interfere.
@@ -29,14 +96,6 @@ export default async function globalSetup() {
   mkdirSync(home);
   process.env.SHELLEY_TEST_CWD = cwd;
 
-  const cleanup = () => {
-    if (tempDir) {
-      rmSync(tempDir, { recursive: true, force: true });
-      tempDir = null;
-    }
-    delete process.env.SHELLEY_TEST_CWD;
-  };
-
   // External servers keep their own environment; API fixtures still get a
   // small, real directory instead of the shared /tmp tree.
   if (process.env.TEST_SERVER_URL) {
@@ -47,8 +106,8 @@ export default async function globalSetup() {
   // Git-viewer specs need real history, not the runner's giant checkout.
   const git = (...args: string[]) => execFileSync('git', [
     '-C', cwd, '-c', 'user.name=Shelley Test', '-c', 'user.email=test@example.com',
-    '-c', 'commit.gpgsign=false', ...args,
-  ], { env: { ...process.env, HOME: home } });
+    '-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=/dev/null', ...args,
+  ], { env: hermeticGitEnvironment({ ...process.env, HOME: home }) });
   git('init', '--quiet', '--initial-branch=main');
   writeFileSync(path.join(cwd, 'example.txt'), 'before\n');
   git('add', 'example.txt');
@@ -56,12 +115,14 @@ export default async function globalSetup() {
   writeFileSync(path.join(cwd, 'example.txt'), 'after\n');
   git('commit', '--quiet', '-am', 'Update test fixture');
 
-  // Build shelley binary if it doesn't exist.
+  // Building is not part of Git fixture isolation and may need the developer's
+  // Git config for module fetching or version stamping.
   if (!existsSync(binPath)) {
     console.log('Building shelley binary…');
     execSync('go build -o bin/shelley ./cmd/shelley', {
       cwd: shelleyDir,
       stdio: 'inherit',
+      env: originalEnvironment,
     });
   }
 
@@ -86,12 +147,12 @@ export default async function globalSetup() {
   ], {
     cwd,
     stdio: 'inherit',
-    env: {
+    env: hermeticGitEnvironment({
       ...process.env,
       HOME: home,
       PWD: cwd,
       PREDICTABLE_DELAY_MS: process.env.PREDICTABLE_DELAY_MS || '20',
-    },
+    }),
   });
 
   serverProcess.on('exit', (code) => {

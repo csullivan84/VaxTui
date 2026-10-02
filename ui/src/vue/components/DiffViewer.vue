@@ -410,6 +410,7 @@
               ref="tourViewRef"
               :tour="tourResponse"
               :commit-message="selectedTourCommitMessage"
+              :cwd="props.cwd"
               :expanded-anchors="expandedTourAnchors"
               @expand-change="setTourExpanded"
               @active-anchor-change="handleTourActiveAnchor"

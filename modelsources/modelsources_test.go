@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 
@@ -13,6 +14,24 @@ import (
 	"shelley.exe.dev/llm/oai"
 	"shelley.exe.dev/models"
 )
+
+func TestMain(m *testing.M) {
+	env, err := exeenv.New("https", "exe.xyz")
+	if err != nil {
+		panic(err)
+	}
+	exeenv.Configure(env) // tests use fake integration clients, never live VM metadata
+	os.Exit(m.Run())
+}
+
+func testProdExeEnv(t *testing.T) exeenv.Environment {
+	t.Helper()
+	env, err := exeenv.New("https", "exe.xyz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return env
+}
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
@@ -66,7 +85,7 @@ func TestEnvSourceLabels(t *testing.T) {
 		{"claude-opus-4.6", "$ANTHROPIC_API_KEY"},
 		{"gpt-5.5", "$OPENAI_API_KEY"},
 		{"gemini-3.8-flash", "$GEMINI_API_KEY"},
-		{"deepseek-v4-flash-0731-fireworks", "$FIREWORKS_API_KEY"},
+		{"kimi-k3-fireworks", "$FIREWORKS_API_KEY"},
 		// Also pins that the embedded models.dev snapshot knows this model: the
 		// loop below requires a non-empty release date, which the UI sorts by.
 		{"deepseek-v4.1-flash-fireworks", "$FIREWORKS_API_KEY"},
@@ -218,6 +237,7 @@ func TestLLMIntegrationSourceLabelsAndFiltering(t *testing.T) {
 		Name: "llm", Host: "llm.int.exe.xyz", URL: "https://llm.int.exe.xyz",
 		Models: []IntegrationModel{
 			{ID: "openai/gpt-6-astra", Provider: "openai", NativeID: "gpt-6-astra", APIs: []string{"openai_chat", "openai_responses"}},
+			{ID: "openai/gpt-6.1-sol", Provider: "openai", NativeID: "gpt-6.1-sol", APIs: []string{"openai_chat", "openai_responses"}},
 			{ID: "openai/gpt-6-sol", Provider: "openai", NativeID: "gpt-6-sol", APIs: []string{"openai_chat", "openai_responses"}},
 			{ID: "openai/gpt-6-luna", Provider: "openai", NativeID: "gpt-6-luna", APIs: []string{"openai_chat", "openai_responses"}},
 			{ID: "anthropic/claude-opus-4-8", Provider: "anthropic", NativeID: "claude-opus-4-8", APIs: []string{"anthropic_messages"}},
@@ -231,9 +251,7 @@ func TestLLMIntegrationSourceLabelsAndFiltering(t *testing.T) {
 			{ID: "fireworks/glm-5p2", Provider: "fireworks", NativeID: "accounts/fireworks/models/glm-5p2", APIs: []string{"openai_chat"}},
 			{ID: "fireworks/glm-5p3", Provider: "fireworks", NativeID: "accounts/fireworks/models/glm-5p3", APIs: []string{"openai_chat"}},
 			{ID: "fireworks/glm-5p3-flash", Provider: "fireworks", NativeID: "accounts/fireworks/models/glm-5p3-flash", APIs: []string{"openai_chat"}},
-			{ID: "fireworks/kimi-k2p6", Provider: "fireworks", NativeID: "accounts/fireworks/models/kimi-k2p6", APIs: []string{"openai_chat"}},
-			{ID: "fireworks/deepseek-v4-pro-0813", Provider: "fireworks", NativeID: "accounts/fireworks/models/deepseek-v4-pro-0813", APIs: []string{"openai_chat"}},
-			{ID: "fireworks/deepseek-v4-flash-0731", Provider: "fireworks", NativeID: "accounts/fireworks/models/deepseek-v4-flash-0731", APIs: []string{"openai_chat"}},
+			{ID: "fireworks/kimi-k3", Provider: "fireworks", NativeID: "accounts/fireworks/models/kimi-k3", APIs: []string{"openai_chat"}},
 			{ID: "fireworks/deepseek-v4p1-flash", Provider: "fireworks", NativeID: "accounts/fireworks/models/deepseek-v4p1-flash", APIs: []string{"openai_chat"}},
 		},
 	}
@@ -241,6 +259,7 @@ func TestLLMIntegrationSourceLabelsAndFiltering(t *testing.T) {
 	wantLabel := "llm.int.exe.xyz"
 	for _, id := range []string{
 		"gpt-6-astra",
+		"gpt-6.1-sol",
 		"gpt-6-sol",
 		"gpt-6-luna",
 		"claude-opus-4.8",
@@ -254,9 +273,7 @@ func TestLLMIntegrationSourceLabelsAndFiltering(t *testing.T) {
 		"glm-5.2-fireworks",
 		"glm-5.3-fireworks",
 		"glm-5.3-flash-fireworks",
-		"kimi-k2.6-fireworks",
-		"deepseek-v4-pro-fireworks",
-		"deepseek-v4-flash-0731-fireworks",
+		"kimi-k3-fireworks",
 		// The gateway advertises this as fireworks/deepseek-v4p1-flash; it must
 		// resolve to the catalog entry (reasoning, images, Shelley's ID) rather
 		// than being materialized as a bare unknown model.
@@ -273,6 +290,7 @@ func TestLLMIntegrationSourceLabelsAndFiltering(t *testing.T) {
 	}
 	for id, want := range map[string]oai.Model{
 		"gpt-6-astra": oai.GPT6Astra,
+		"gpt-6.1-sol": oai.GPT61Sol,
 		"gpt-6-sol":   oai.GPT6Sol,
 		"gpt-6-luna":  oai.GPT6Luna,
 	} {
@@ -300,9 +318,7 @@ func TestLLMIntegrationSourceLabelsAndFiltering(t *testing.T) {
 		"glm-5p2",
 		"glm-5p3",
 		"glm-5p3-flash",
-		"kimi-k2p6",
-		"deepseek-v4-pro",
-		"deepseek-v4-flash-0731",
+		"kimi-k3",
 		"deepseek-v4p1-flash",
 		"gemini-3.8-flash",
 	} {
@@ -801,7 +817,7 @@ func TestDiscoverLLMIntegrationsFallsBackWhenReflectionRequestFails(t *testing.T
 				}, nil
 			})}
 
-			result := discoverLLMIntegrations(t.Context(), client, slog.New(slog.NewTextHandler(io.Discard, nil)), exeenv.FromHostname("box.exe.xyz"))
+			result := discoverLLMIntegrations(t.Context(), client, slog.New(slog.NewTextHandler(io.Discard, nil)), testProdExeEnv(t))
 			if result.Found != tt.wantFound {
 				t.Fatalf("Found = %v, want %v", result.Found, tt.wantFound)
 			}
@@ -840,7 +856,7 @@ func TestDiscoverLLMIntegrationsDoesNotFallbackAfterSuccessfulReflection(t *test
 		}, nil
 	})}
 
-	result := discoverLLMIntegrations(t.Context(), client, slog.New(slog.NewTextHandler(io.Discard, nil)), exeenv.FromHostname("box.exe.xyz"))
+	result := discoverLLMIntegrations(t.Context(), client, slog.New(slog.NewTextHandler(io.Discard, nil)), testProdExeEnv(t))
 	if result.Found {
 		t.Fatal("Found = true, want false")
 	}
@@ -865,7 +881,7 @@ func TestDiscoverLLMIntegrationsKeepsFoundWhenReflectedCatalogFails(t *testing.T
 		}, nil
 	})}
 
-	result := discoverLLMIntegrations(t.Context(), client, slog.New(slog.NewTextHandler(io.Discard, nil)), exeenv.FromHostname("box.exe.xyz"))
+	result := discoverLLMIntegrations(t.Context(), client, slog.New(slog.NewTextHandler(io.Discard, nil)), testProdExeEnv(t))
 	if !result.Found || len(result.Integrations) != 0 {
 		t.Fatalf("result = %+v, want found integration with unavailable catalog", result)
 	}
@@ -946,7 +962,7 @@ func TestDiscoverLLMIntegrationsReadsModelsJSONCatalog(t *testing.T) {
 		}, nil
 	})}
 
-	result := discoverLLMIntegrations(t.Context(), client, slog.New(slog.NewTextHandler(io.Discard, nil)), exeenv.FromHostname("box.exe.xyz"))
+	result := discoverLLMIntegrations(t.Context(), client, slog.New(slog.NewTextHandler(io.Discard, nil)), testProdExeEnv(t))
 	if !result.Found {
 		t.Fatal("Found = false, want true")
 	}
@@ -997,7 +1013,7 @@ func TestDiscoverLLMIntegrationsUsesTeamHost(t *testing.T) {
 		}, nil
 	})}
 
-	result := discoverLLMIntegrations(t.Context(), client, slog.New(slog.NewTextHandler(io.Discard, nil)), exeenv.FromHostname("box.exe.xyz"))
+	result := discoverLLMIntegrations(t.Context(), client, slog.New(slog.NewTextHandler(io.Discard, nil)), testProdExeEnv(t))
 	if !result.Found {
 		t.Fatal("Found = false, want true")
 	}
@@ -1109,7 +1125,7 @@ func TestBuiltBaseURLResolution(t *testing.T) {
 	}{
 		{"claude-opus-4.6", "https://api.anthropic.com"},
 		{"gpt-5.5", "https://api.openai.com"},
-		{"deepseek-v4-flash-0731-fireworks", "https://api.fireworks.ai/inference"},
+		{"kimi-k3-fireworks", "https://api.fireworks.ai/inference"},
 		{"gemini-3.8-flash", "https://generativelanguage.googleapis.com"},
 	} {
 		b := findBuilt(bs, tt.id)
@@ -1147,7 +1163,7 @@ func TestBuiltAPITypePopulated(t *testing.T) {
 	}{
 		{"claude-opus-4.6", models.APITypeAnthropicMessages},
 		{"gpt-5.5", models.APITypeOpenAIResponses},
-		{"deepseek-v4-flash-0731-fireworks", models.APITypeOpenAIChat},
+		{"kimi-k3-fireworks", models.APITypeOpenAIChat},
 		{"gemini-3.8-flash", models.APITypeGemini},
 		{"predictable", models.APITypeBuiltIn},
 	} {
@@ -1159,5 +1175,53 @@ func TestBuiltAPITypePopulated(t *testing.T) {
 		if b.APIType != tt.want {
 			t.Errorf("%s APIType = %q, want %q", tt.id, b.APIType, tt.want)
 		}
+	}
+}
+
+func TestTranscriptionModelsFromOpenAICredentials(t *testing.T) {
+	routes := func(sources ...Source) []models.TranscriptionModel {
+		return TranscriptionModels(sources)
+	}
+	want := func(endpoint, apiKey, source string) []models.TranscriptionModel {
+		return []models.TranscriptionModel{
+			{Model: "gpt-transcribe", Endpoint: endpoint, APIKey: apiKey, Source: source, FromCredentials: true},
+			{Model: "whisper-1", Endpoint: endpoint, APIKey: apiKey, Source: source, FromCredentials: true},
+		}
+	}
+	for _, tt := range []struct {
+		name string
+		got  []models.TranscriptionModel
+		want []models.TranscriptionModel
+	}{
+		{
+			name: "env key",
+			got:  routes(Env("a", "sk-openai", "g", "f"), Predictable()),
+			want: want("https://api.openai.com/v1/audio/transcriptions", "sk-openai", "$OPENAI_API_KEY"),
+		},
+		{
+			name: "gateway",
+			got:  routes(Gateway("https://gw.example.com", "", "", "")),
+			want: want("https://gw.example.com/openai/v1/audio/transcriptions", "implicit", "exe.dev gateway"),
+		},
+		{
+			name: "gateway with explicit key",
+			got:  routes(Gateway("https://gw.example.com", "", "sk-openai", "")),
+			want: want("https://gw.example.com/openai/v1/audio/transcriptions", "sk-openai", "$OPENAI_API_KEY"),
+		},
+		{
+			name: "no OpenAI credential",
+			got:  routes(Env("a", "", "g", "f"), Predictable()),
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if len(tt.got) != len(tt.want) {
+				t.Fatalf("routes = %+v, want %+v", tt.got, tt.want)
+			}
+			for i := range tt.want {
+				if tt.got[i] != tt.want[i] {
+					t.Fatalf("route %d = %+v, want %+v", i, tt.got[i], tt.want[i])
+				}
+			}
+		})
 	}
 }

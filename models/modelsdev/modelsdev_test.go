@@ -379,6 +379,7 @@ func TestLookupReleaseDate(t *testing.T) {
 		want     string
 	}{
 		{"https://llm.int.exe.xyz/v1/messages", "claude-haiku-4-5", "2025-10-15"},
+		{"https://llm.int.exe.xyz/v1", "gpt-6.1-sol", "2026-09-29"},
 		{"https://llm.int.exe.xyz/v1", "gpt-6-sol", "2026-09-22"},
 		{"https://llm.int.exe.xyz/v1", "gpt-6-luna", "2026-09-22"},
 		{"https://llm.int.exe.xyz/v1", "gpt-5.6-luna", "2026-07-09"},
@@ -402,11 +403,13 @@ func TestLookupCost(t *testing.T) {
 		// First-party models resolve by name alone even when the endpoint is
 		// an unknown gateway host.
 		{"anthropic via gateway", "https://llm.int.exe.xyz/v1/messages", "claude-opus-4-6", true, Cost{Input: 5, Output: 25, CacheRead: 0.5, CacheWrite: 6.25}},
+		{"sonnet 5.5 via gateway", "https://llm.int.exe.xyz/v1/messages", "claude-sonnet-5-5", true, Cost{Input: 2, Output: 10, CacheRead: 0.2, CacheWrite: 2.5}},
 		{"anthropic dated", "", "claude-sonnet-4-5-20250929", true, Cost{Input: 3, Output: 15, CacheRead: 0.3, CacheWrite: 3.75}},
 		// OpenAI snapshot names carry a date suffix that models.dev omits.
 		{"openai dated", "https://llm.int.exe.xyz/v1/responses", "gpt-5.5-2026-04-23", true, Cost{Input: 5, Output: 30, CacheRead: 0.5}},
 		{"openai undated", "", "gpt-5.3-codex", true, Cost{Input: 1.75, Output: 14, CacheRead: 0.175}},
 		{"astra via gateway", "https://llm.int.exe.xyz/v1/responses", "gpt-6-astra", true, Cost{Input: 10, Output: 50, CacheRead: 1, CacheWrite: 12.5}},
+		{"sol 6.1 via gateway", "https://llm.int.exe.xyz/v1/responses", "gpt-6.1-sol", true, Cost{Input: 2, Output: 10, CacheRead: 0.1, CacheWrite: 2.5}},
 		{"sol via gateway", "https://llm.int.exe.xyz/v1/responses", "gpt-6-sol", true, Cost{Input: 2, Output: 10, CacheRead: 0.2, CacheWrite: 2.5}},
 		{"luna via gateway", "https://llm.int.exe.xyz/v1/responses", "gpt-6-luna", true, Cost{Input: 0.1, Output: 0.5, CacheRead: 0.01, CacheWrite: 0.125}},
 		{"fireworks full path", "", "accounts/fireworks/models/kimi-k2p6", true, Cost{Input: 0.95, Output: 4, CacheRead: 0.16}},
@@ -438,6 +441,7 @@ func TestLookupAnthropicOutputLimit(t *testing.T) {
 	}{
 		{"canonical Anthropic", "https://api.anthropic.com/v1/messages", "claude-opus-4-5-20251101", 64000, true},
 		{"gateway Claude resolves canonical catalog", "https://llm.int.exe.xyz/anthropic/v1/messages", "claude-sonnet-5", 128000, true},
+		{"sonnet 5.5 uses snapshot limit", "https://llm.int.exe.xyz/anthropic/v1/messages", "claude-sonnet-5-5", 128000, true},
 		{"date alias resolves canonical catalog", "", "claude-opus-4-5-2026-01-01", 64000, true},
 		// The Fireworks endpoint must win over OpenRouter's differently priced
 		// gpt-oss-120b entry. No cross-provider catalog scan is allowed.
@@ -463,6 +467,7 @@ func TestLookupOutputLimit(t *testing.T) {
 		found    bool
 	}{
 		{"OpenAI endpoint", "https://api.openai.com/v1", "gpt-5.4", 128000, true},
+		{"GPT-6.1 Sol", "https://api.openai.com/v1", "gpt-6.1-sol", 128000, true},
 		{"GPT-6 Luna", "https://api.openai.com/v1", "gpt-6-luna", 128000, true},
 		{"Google endpoint", "https://generativelanguage.googleapis.com/v1beta", "gemini-3-flash-preview", 65536, true},
 		{"Fireworks endpoint", "https://api.fireworks.ai/inference/v1", "accounts/fireworks/models/gpt-oss-120b", 32768, true},

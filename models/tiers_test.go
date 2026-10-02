@@ -16,6 +16,26 @@ func TestAssignTiers(t *testing.T) {
 		}
 	})
 
+	t.Run("sonnet 5.5 supersedes sonnet 5", func(t *testing.T) {
+		tiers := AssignTiers([]string{"claude-sonnet-5.5", "claude-sonnet-5", "claude-sonnet-4.6"})
+		if tiers["claude-sonnet-5.5"] != Tier1 || tiers["claude-sonnet-5"] != Tier2 || tiers["claude-sonnet-4.6"] != Tier2 {
+			t.Fatalf("tiers = %v", tiers)
+		}
+	})
+
+	t.Run("GPT-6.1 Sol shadows Sol 6 and older Sol releases", func(t *testing.T) {
+		ids := []string{"gpt-6.1-sol", "gpt-6-sol", "gpt-5.6-sol", "gpt-5.5", "gpt-5.4"}
+		tiers := AssignTiers(ids)
+		if tiers["gpt-6.1-sol"] != Tier1 {
+			t.Errorf("gpt-6.1-sol tier = %d, want %d", tiers["gpt-6.1-sol"], Tier1)
+		}
+		for _, id := range ids[1:] {
+			if tiers[id] != Tier2 {
+				t.Errorf("%s tier = %d, want %d", id, tiers[id], Tier2)
+			}
+		}
+	})
+
 	t.Run("GPT-6 Sol shadows its superseded lineage", func(t *testing.T) {
 		ids := []string{"gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra"}
 		tiers := AssignTiers(ids)
@@ -117,13 +137,13 @@ func TestAssignTiers(t *testing.T) {
 		}
 	})
 
-	t.Run("deepseek v4.1 flash shadows 0731 flash", func(t *testing.T) {
-		tiers := AssignTiers([]string{"deepseek-v4.1-flash-fireworks", "deepseek-v4-flash-0731-fireworks"})
-		if tiers["deepseek-v4.1-flash-fireworks"] != Tier1 {
-			t.Errorf("v4.1 flash tier = %d, want %d", tiers["deepseek-v4.1-flash-fireworks"], Tier1)
+	t.Run("glm 5.3 shadows glm 5.2", func(t *testing.T) {
+		tiers := AssignTiers([]string{"glm-5.3-fireworks", "glm-5.2-fireworks"})
+		if tiers["glm-5.3-fireworks"] != Tier1 {
+			t.Errorf("glm 5.3 tier = %d, want %d", tiers["glm-5.3-fireworks"], Tier1)
 		}
-		if tiers["deepseek-v4-flash-0731-fireworks"] != Tier2 {
-			t.Errorf("0731 flash tier = %d, want %d", tiers["deepseek-v4-flash-0731-fireworks"], Tier2)
+		if tiers["glm-5.2-fireworks"] != Tier2 {
+			t.Errorf("glm 5.2 tier = %d, want %d", tiers["glm-5.2-fireworks"], Tier2)
 		}
 	})
 

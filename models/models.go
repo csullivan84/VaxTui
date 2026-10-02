@@ -122,12 +122,23 @@ type Built struct {
 	BaseURL string
 }
 
+// OpenAI transcription models used for recordings: TranscriptionTextModel
+// produces the canonical transcript, TranscriptionTimestampsModel the word and
+// segment timings.
+const (
+	TranscriptionTextModel       = "gpt-transcribe"
+	TranscriptionTimestampsModel = "whisper-1"
+)
+
 // TranscriptionModel is a known OpenAI-compatible transcription route.
 type TranscriptionModel struct {
 	Model    string
 	Endpoint string
 	APIKey   string
 	Source   string
+	// FromCredentials marks a route derived from OpenAI credentials (env key
+	// or gateway). Integration and custom routes take precedence over it.
+	FromCredentials bool
 }
 
 // Config holds runtime configuration for the Manager. Built-in models
@@ -253,6 +264,12 @@ func All() []Model {
 			Build: antSvc(ant.Claude55Opus),
 		},
 		{
+			ID: "claude-sonnet-5.5", Provider: ProviderAnthropic,
+			Description: "Claude Sonnet 5.5", APIModelName: ant.Claude55Sonnet,
+			APIType: APITypeAnthropicMessages, DefaultBaseURL: DefaultAnthropicBaseURL,
+			Build: antSvc(ant.Claude55Sonnet),
+		},
+		{
 			ID: "claude-opus-5", Provider: ProviderAnthropic,
 			Description: "Claude Opus 5", APIModelName: ant.Claude5Opus,
 			APIType: APITypeAnthropicMessages, DefaultBaseURL: DefaultAnthropicBaseURL,
@@ -275,6 +292,12 @@ func All() []Model {
 			Description: "GPT-6 Astra", APIModelName: oai.GPT6Astra.ModelName,
 			APIType: APITypeOpenAIResponses, DefaultBaseURL: DefaultOpenAIBaseURL,
 			Build: oaiResponsesSvc(oai.GPT6Astra),
+		},
+		{
+			ID: "gpt-6.1-sol", Provider: ProviderOpenAI,
+			Description: "GPT-6.1 Sol", APIModelName: oai.GPT61Sol.ModelName,
+			APIType: APITypeOpenAIResponses, DefaultBaseURL: DefaultOpenAIBaseURL,
+			Build: oaiResponsesSvc(oai.GPT61Sol),
 		},
 		{
 			ID: "gpt-6-sol", Provider: ProviderOpenAI,
@@ -349,29 +372,12 @@ func All() []Model {
 			Build: oaiResponsesSvcNamed(oai.Grok45, "xai"),
 		},
 		{
-			ID: "kimi-k2.6-fireworks", Provider: ProviderFireworks,
-			Description: "Kimi K2.6 on Fireworks", APIModelName: oai.KimiK26Fireworks.ModelName,
-			APIType: APITypeOpenAIChat, DefaultBaseURL: DefaultFireworksBaseURL,
-			Build: oaiChatSvc(oai.KimiK26Fireworks, "fireworks"),
-		},
-		{
-			ID: "kimi-k2.7-code-fireworks", Provider: ProviderFireworks,
-			Description: "Kimi K2.7 Code on Fireworks", APIModelName: oai.KimiK27CodeFireworks.ModelName,
-			APIType: APITypeOpenAIChat, DefaultBaseURL: DefaultFireworksBaseURL,
-			Build: oaiChatSvc(oai.KimiK27CodeFireworks, "fireworks"),
-		},
-		{
 			ID: "kimi-k3-fireworks", Provider: ProviderFireworks,
 			Description: "Kimi K3 on Fireworks", APIModelName: oai.KimiK3Fireworks.ModelName,
 			APIType: APITypeOpenAIChat, DefaultBaseURL: DefaultFireworksBaseURL,
 			Build: oaiChatSvc(oai.KimiK3Fireworks, "fireworks"),
 		},
-		{
-			ID: "deepseek-v4-pro-fireworks", Provider: ProviderFireworks,
-			Description: "DeepSeek V4 Pro 0813 on Fireworks — 1M-token context, reasoning and tool use; text-only, no images", APIModelName: oai.DeepseekV4ProFireworks.ModelName,
-			APIType: APITypeOpenAIChat, DefaultBaseURL: DefaultFireworksBaseURL,
-			Build: oaiChatSvc(oai.DeepseekV4ProFireworks, "fireworks"),
-		},
+
 		{
 			ID: "claude-opus-4.8", Provider: ProviderAnthropic,
 			Description: "Claude Opus 4.8 (default)", APIModelName: ant.Claude48Opus,
@@ -444,12 +450,7 @@ func All() []Model {
 			APIType: APITypeOpenAIChat, DefaultBaseURL: DefaultFireworksBaseURL,
 			Build: oaiChatSvc(oai.DeepseekV41FlashFireworks, "fireworks"),
 		},
-		{
-			ID: "deepseek-v4-flash-0731-fireworks", Provider: ProviderFireworks,
-			Description: "DeepSeek V4 Flash 0731 on Fireworks — 1M-token context, reasoning and tool use; text-only, no images", APIModelName: oai.DeepseekV4FlashFireworks.ModelName,
-			APIType: APITypeOpenAIChat, DefaultBaseURL: DefaultFireworksBaseURL,
-			Build: oaiChatSvc(oai.DeepseekV4FlashFireworks, "fireworks"),
-		},
+
 		{
 			ID: "glm-5.2-fireworks", Provider: ProviderFireworks,
 			Description: "GLM-5.2 on Fireworks", APIModelName: oai.GLM52Fireworks.ModelName,

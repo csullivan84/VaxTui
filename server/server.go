@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -385,7 +386,7 @@ type Server struct {
 	// events to every /api/stream2 subscriber. Events are tagged with their
 	// ConversationID so clients can route them.
 	streamPub         *subpub.SubPub[StreamResponse]
-	diskSpace         *diskSpaceMonitor
+	diskSpace         atomic.Pointer[diskSpaceMonitor]
 	shutdownCh        chan struct{} // Signals background routines to stop
 	listenPort        int           // TCP port the server is listening on
 	terminals         *TerminalSessions
@@ -452,7 +453,7 @@ func NewServer(database *db.DB, llmManager LLMProvider, toolSetConfig claudetool
 		exitDelay:               500 * time.Millisecond,
 		exitProcess:             os.Exit,
 		mediaRun:                runMediaCommand,
-		transcriber:             newOpenAIRecordingTranscriber(llmManager),
+		transcriber:             newOpenAIRecordingTranscriber(llmManager, predictableOnly),
 		transcriptionJobs:       make(map[string]transcriptionJob),
 		reflectionEmoji:         cachedReflectionEmoji,
 		commitTourJobs:          make(map[string]*commitTourJob),
@@ -489,6 +490,7 @@ func NewServer(database *db.DB, llmManager LLMProvider, toolSetConfig claudetool
 	// the single source of truth for the patch stream — no caller needs to
 	// invoke notifyConversationListChanged for ordinary database writes.
 	database.Pool().OnCommit(s.notifyConversationListChanged)
+	database.Pool().OnDiskFull(s.onDiskFull)
 
 	// Set up subagent support
 	s.toolSetConfig.SubagentRunner = NewSubagentRunner(s)
@@ -539,6 +541,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("/api/git/diffs", compressionHandler(http.HandlerFunc(s.handleGitDiffs)))
 	mux.Handle("/api/git/tour", compressionHandler(http.HandlerFunc(s.handleGitTour)))
 	mux.Handle("/api/git/tour/status", compressionHandler(http.HandlerFunc(s.handleCommitTourStatus)))
+	mux.Handle("/api/git/tour/media", http.HandlerFunc(s.handleGitTourMedia)) // Already-compressed images and video
 	mux.Handle("/api/git/graph", compressionHandler(http.HandlerFunc(s.handleGitGraph)))
 	mux.Handle("/api/git/commit-detail", compressionHandler(http.HandlerFunc(s.handleGitCommitDetail)))
 	mux.Handle("/api/git/diffs/", compressionHandler(http.HandlerFunc(s.handleGitDiffFiles)))
@@ -552,6 +555,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/read", s.handleRead)                                                                      // Serves images from disk
 	mux.HandleFunc("GET /api/message/{message_id}/image/{content_index}/{toolresult_index}", s.handleMessageImage) // Serves images from DB
 	mux.HandleFunc("GET /api/message/{message_id}/file", s.handleMessageFile)                                      // Serves local images referenced in message markdown
+	mux.HandleFunc("GET /api/message/{message_id}/download", s.handleMessageDownload)                              // Downloads files linked as sandbox:<path> in message markdown
 	mux.Handle("/api/write-file", http.HandlerFunc(s.handleWriteFile))                                             // Small response
 	mux.Handle("/api/read-file", compressionHandler(http.HandlerFunc(s.handleReadFile)))                           // Reads arbitrary text files as JSON
 	mux.Handle("/api/user-agents-md", http.HandlerFunc(s.handleUserAgentsMd))                                      // Small response
@@ -591,6 +595,9 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("/api/notification-channels", http.HandlerFunc(s.handleNotificationChannels))
 	mux.Handle("/api/notification-channels/", http.HandlerFunc(s.handleNotificationChannel))
 	mux.Handle("/api/notification-channel-types", http.HandlerFunc(s.handleNotificationChannelTypes))
+	mux.HandleFunc("GET /api/integrations", handleIntegrations)
+	mux.HandleFunc("POST /api/integrations/notify/test", s.handleTestExeNotify)
+	mux.HandleFunc("POST /api/integrations/slack/test", s.handleTestSlack)
 
 	// Models API (dynamic list refresh)
 	mux.Handle("GET /api/onboarding", compressionHandler(http.HandlerFunc(s.handleGetOnboarding)))
@@ -1192,7 +1199,7 @@ func (s *Server) buildCreateMessageParams(conversationID string, message llm.Mes
 	}
 	// Stamp the error type + retryable flag into user_data for error messages
 	// so the UI can decide which affordance to show (Retry button for retryable
-	// llm_request errors; the "switch to Opus and continue" action for refusals)
+	// llm_request errors; the model-picker continue action for refusals)
 	// without parsing llm_data.
 	if message.ErrorType != llm.ErrorTypeNone && ud == nil {
 		udMap := map[string]any{
@@ -1206,6 +1213,9 @@ func (s *Server) buildCreateMessageParams(conversationID string, message llm.Mes
 		}
 		if message.RefusalExplanation != "" {
 			udMap["refusal_explanation"] = message.RefusalExplanation
+		}
+		if message.RefusalModel != "" {
+			udMap["refusal_model"] = message.RefusalModel
 		}
 		ud = udMap
 	}
@@ -1986,7 +1996,7 @@ func (s *Server) StartWithListener(listener net.Listener) error {
 // The Unix socket listener gets only the logger middleware (no CSRF, no requireHeader)
 // since it is local and trusted.
 func (s *Server) StartWithListeners(tcpListener net.Listener, socketPath string) error {
-	if err := s.initDiskSpace(context.Background(), diskAvailableBytes); err != nil {
+	if err := s.initDiskSpace(context.Background(), diskBytes); err != nil {
 		return fmt.Errorf("initialize disk space monitor: %w", err)
 	}
 
@@ -1996,7 +2006,12 @@ func (s *Server) StartWithListeners(tcpListener net.Listener, socketPath string)
 	// upgrade-with-restart hands back the conversations that were mid-turn so we
 	// can resume them once the server is up.
 	resumeTurns, err := s.db.ConsumeResumeAfterUpgrade(context.Background())
-	if err != nil {
+	if db.IsDiskFull(err) {
+		// Serve anyway, or the user only sees the proxy's bare 502 instead of
+		// the full disk. The next start retries; until then, conversations
+		// left mid-turn still look busy.
+		s.logger.Error("Failed to recover agent_working state; serving anyway", "error", err)
+	} else if err != nil {
 		s.logger.Error("Failed to recover agent_working state", "error", err)
 		return err
 	}

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -408,6 +409,43 @@ func (s *Server) handleGitTour(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(GitTourResponse{Hash: target.Hash, Tour: resolved})
 }
 
+// handleGitTourMedia serves an image or recording embedded in a tour. Blobs
+// are content-addressed, so responses are immutable.
+func (s *Server) handleGitTourMedia(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	cwd := r.URL.Query().Get("cwd")
+	blob := r.URL.Query().Get("blob")
+	if cwd == "" || blob == "" {
+		http.Error(w, "cwd and blob are required", http.StatusBadRequest)
+		return
+	}
+	gitRoot, err := getGitRoot(cwd)
+	if err != nil {
+		http.Error(w, "not a git repository", http.StatusBadRequest)
+		return
+	}
+	data, mime, err := committour.ReadMedia(gitRoot, blob)
+	switch {
+	case errors.Is(err, committour.ErrNoMedia):
+		http.Error(w, "no such tour media", http.StatusNotFound)
+		return
+	case errors.Is(err, committour.ErrInvalidMedia):
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	case err != nil:
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", mime)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+	w.Header().Set("ETag", `"`+blob+`"`)
+	http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(data))
+}
+
 func writeGitTourNotFound(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusNotFound)
@@ -680,6 +718,18 @@ func (s *Server) handleGitFileDiff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Optional `oldPath` names the file on the left side when it was renamed
+	// in the selected commit; without it a renamed file reads as entirely added.
+	oldPath := filePath
+	if p := r.URL.Query().Get("oldPath"); p != "" {
+		cleanOld := filepath.Clean(p)
+		if strings.HasPrefix(cleanOld, "..") || filepath.IsAbs(cleanOld) {
+			http.Error(w, "invalid oldPath", http.StatusBadRequest)
+			return
+		}
+		oldPath = cleanOld
+	}
+
 	// Left side: state before the selected commit (or HEAD for working changes)
 	var baseRef string
 	if diffID == "working" {
@@ -692,7 +742,7 @@ func (s *Server) handleGitFileDiff(w http.ResponseWriter, r *http.Request) {
 	if baseRef == emptyTreeHash {
 		oldContent = ""
 	} else {
-		oldCmd := exec.Command("git", "show", baseRef+":"+filePath)
+		oldCmd := exec.Command("git", "show", baseRef+":"+oldPath)
 		oldCmd.Dir = gitRoot
 		oldOutput, _ := oldCmd.Output()
 		oldContent = string(oldOutput)

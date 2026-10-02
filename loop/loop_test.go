@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"shelley.exe.dev/gitstate"
@@ -1849,6 +1850,118 @@ func TestExecuteToolCallsRunsConcurrently(t *testing.T) {
 	}
 }
 
+func TestExecuteToolCallsRunsSequentialToolInRequestOrder(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		firstStarted := make(chan struct{})
+		releaseFirst := make(chan struct{})
+		secondStarted := make(chan struct{})
+		testTool := &llm.Tool{
+			Name:        "sequential_test",
+			Description: "Runs sibling calls in request order",
+			InputSchema: llm.MustSchema(`{"type":"object","required":["name"],"properties":{"name":{"type":"string"}}}`),
+			Sequential:  true,
+			Run: func(ctx context.Context, input json.RawMessage) llm.ToolOut {
+				var request struct {
+					Name string `json:"name"`
+				}
+				if err := json.Unmarshal(input, &request); err != nil {
+					return llm.ErrorToolOut(err)
+				}
+				switch request.Name {
+				case "first":
+					close(firstStarted)
+					select {
+					case <-releaseFirst:
+					case <-ctx.Done():
+						return llm.ErrorToolOut(ctx.Err())
+					}
+				case "second":
+					close(secondStarted)
+				default:
+					return llm.ErrorfToolOut("unexpected call %q", request.Name)
+				}
+				return llm.ToolOut{LLMContent: llm.TextContent(request.Name)}
+			},
+		}
+
+		loop := NewLoop(Config{
+			Tools: []*llm.Tool{testTool},
+			RecordMessage: func(context.Context, llm.Message, llm.Usage, []llm.PurposedUsage) error {
+				return nil
+			},
+		})
+		content := []llm.Content{
+			{ID: "first", Type: llm.ContentTypeToolUse, ToolName: testTool.Name, ToolInput: json.RawMessage(`{"name":"first"}`)},
+			{ID: "second", Type: llm.ContentTypeToolUse, ToolName: testTool.Name, ToolInput: json.RawMessage(`{"name":"second"}`)},
+		}
+
+		done := make(chan error, 1)
+		go func() { done <- loop.executeToolCalls(t.Context(), content) }()
+		<-firstStarted
+		synctest.Wait()
+		select {
+		case <-secondStarted:
+			t.Fatal("second sequential call started before first completed")
+		default:
+		}
+		close(releaseFirst)
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-secondStarted:
+		default:
+			t.Fatal("second sequential call never ran")
+		}
+	})
+}
+
+func TestExecuteToolCallsSkipsQueuedSequentialCallAfterCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	secondRan := false
+	tool := &llm.Tool{
+		Name:        "sequential_cancel",
+		Description: "Cancels before the queued call starts",
+		InputSchema: llm.MustSchema(`{"type":"object","required":["name"],"properties":{"name":{"type":"string"}}}`),
+		Sequential:  true,
+		Run: func(_ context.Context, input json.RawMessage) llm.ToolOut {
+			var request struct {
+				Name string `json:"name"`
+			}
+			if err := json.Unmarshal(input, &request); err != nil {
+				return llm.ErrorToolOut(err)
+			}
+			if request.Name == "first" {
+				cancel()
+				return llm.ErrorToolOut(context.Canceled)
+			}
+			secondRan = true
+			return llm.ErrorfToolOut("queued sequential call ran after cancellation")
+		},
+	}
+	var recorded llm.Message
+	loop := NewLoop(Config{
+		Tools: []*llm.Tool{tool},
+		RecordMessage: func(_ context.Context, message llm.Message, _ llm.Usage, _ []llm.PurposedUsage) error {
+			recorded = message
+			return nil
+		},
+	})
+	content := []llm.Content{
+		{ID: "first", Type: llm.ContentTypeToolUse, ToolName: tool.Name, ToolInput: json.RawMessage(`{"name":"first"}`)},
+		{ID: "second", Type: llm.ContentTypeToolUse, ToolName: tool.Name, ToolInput: json.RawMessage(`{"name":"second"}`)},
+	}
+	if err := loop.executeToolCalls(ctx, content); err != context.Canceled {
+		t.Fatalf("executeToolCalls error = %v, want context.Canceled", err)
+	}
+	if secondRan {
+		t.Error("queued sequential call ran after cancellation")
+	}
+	if len(recorded.Content) != 2 || recorded.Content[1].ToolResult[0].Text != notExecutedToolResultText {
+		t.Fatalf("queued result = %+v, want not executed", recorded.Content)
+	}
+}
+
 func TestExecuteToolCallsWithMissingTool(t *testing.T) {
 	var recordedMessages []llm.Message
 	recordFunc := func(ctx context.Context, message llm.Message, usage llm.Usage, otherUsage []llm.PurposedUsage) error {
@@ -2172,13 +2285,11 @@ func TestRefusal(t *testing.T) {
 	if !strings.Contains(errMsg.Content[0].Text, "declined") {
 		t.Errorf("error message should explain the refusal, got: %s", errMsg.Content[0].Text)
 	}
-	// The user-visible refusal notice must guide the user toward continuing on a
-	// more capable model: mention switching to Opus and the /model command.
-	if !strings.Contains(errMsg.Content[0].Text, "Opus") {
-		t.Errorf("error message should suggest switching to Opus, got: %s", errMsg.Content[0].Text)
+	if !strings.Contains(errMsg.Content[0].Text, "Choose another model") {
+		t.Errorf("error message should suggest another model, got: %s", errMsg.Content[0].Text)
 	}
-	if !strings.Contains(errMsg.Content[0].Text, "/model") {
-		t.Errorf("error message should mention the /model command, got: %s", errMsg.Content[0].Text)
+	if errMsg.RefusalModel != "predictable-v1" {
+		t.Errorf("error message should carry RefusalModel=predictable-v1, got %q", errMsg.RefusalModel)
 	}
 	// The provider's structured refusal reason must be captured on the message
 	// and surfaced in the notice text (the predictable service returns a "cyber"

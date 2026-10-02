@@ -554,8 +554,8 @@ func (b *BrowseTools) screenshotRun(ctx context.Context, input screenshotInput) 
 		// Take screenshot of specific element
 		actions = append(
 			actions,
-			chromedp.WaitReady(input.Selector),
-			chromedp.Screenshot(input.Selector, &buf, chromedp.NodeVisible),
+			chromedp.WaitReady(input.Selector, chromedp.ByQuery),
+			chromedp.Screenshot(input.Selector, &buf, chromedp.ByQuery, chromedp.NodeVisible),
 		)
 	} else {
 		// Take full page screenshot
@@ -797,6 +797,7 @@ examples as needed, use emulate_help, network_help, accessibility_help, or profi
 		Name:        "browser",
 		Description: description,
 		InputSchema: json.RawMessage(schema),
+		Sequential:  true,
 		Run:         llm.RunJSON(b.runCombined),
 	}
 }

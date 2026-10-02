@@ -370,6 +370,15 @@
           {{ t("diskSpaceRemaining") }}</span
         >
       </span>
+      <a
+        v-if="diskResizeSuggestUrl"
+        :href="diskResizeSuggestUrl"
+        target="_blank"
+        rel="noopener noreferrer"
+        class="disk-space-notice-link"
+        data-testid="disk-space-notice-link"
+        >{{ t("diskSpaceResize") }}</a
+      >
       <button
         type="button"
         class="btn-icon disk-space-notice-dismiss"
@@ -482,11 +491,7 @@
       :covered="showDiffViewer"
       :can-open-diff="true"
       :conversation-id="conversationId"
-      :can-request-tour="
-        !!currentConversation &&
-        !currentConversation.parent_conversation_id &&
-        !currentConversation.is_draft
-      "
+      :can-request-tour="canRequestTour"
       @close="
         showGitGraph = false;
         focusMessageInputIfUnfocused();
@@ -518,6 +523,14 @@
       :is-open="showDiffViewer"
       :initial-commit="diffViewerInitialCommit"
       :initial-file="diffViewerInitialFile"
+      :recording-conversation-id="
+        currentConversation && !currentConversation.archived && !currentConversation.is_draft
+          ? (conversationId ?? undefined)
+          : undefined
+      "
+      :start-review-conversation="startReviewConversation"
+      :follow-review-conversation="followReviewConversation"
+      :tour-conversation-id="canRequestTour ? (conversationId ?? undefined) : undefined"
       @close="onDiffViewerClose"
       @comment-text-change="(text) => (diffCommentText = text)"
       @cwd-change="(cwd) => (diffViewerCwd = cwd)"
@@ -568,7 +581,7 @@ import {
   queuedTranscriptionPath,
   queuedTranscriptionTaskState,
 } from "../../types";
-import { api } from "../../services/api";
+import { api, ApiError } from "../../services/api";
 import { announceA11y } from "../../services/a11yAnnouncer";
 import { btwStore } from "../../services/btwStore";
 import { messageStore } from "../../services/messageStore";
@@ -660,15 +673,17 @@ import {
   type ThinkingLevel,
 } from "./thinkingLevel";
 import { SELECTED_MODEL_KEY, pickReadyModel, storedSelectedModel } from "./selectedModel";
+import { RefusalContinueKey } from "./refusalContinue";
 
 import MessageInput from "./MessageInput.vue";
-import type { RecordingDestination, RecordingMode } from "./recordingDestination";
+import type { RecordingMode, RecordingPreparation } from "./recordingDestination";
 import ConversationTOC from "./ConversationTOC.vue";
 import ModelBar from "./ModelBar.vue";
 import SystemPromptView from "./SystemPromptView.vue";
 import DirectoryPickerModal from "./DirectoryPickerModal.vue";
 import MessageSelectionToolbar from "./MessageSelectionToolbar.vue";
 import DiffViewer from "./DiffViewer.vue";
+import type { ReviewConversationStart } from "./useReviewRecording";
 import ImageCommentModal from "./ImageCommentModal.vue";
 import GitGraphViewer from "./GitGraphViewer.vue";
 import AgentsMdEditorModal from "./AgentsMdEditorModal.vue";
@@ -810,6 +825,15 @@ const lastMessageId = computed(() => {
 });
 provide("lastMessageId", lastMessageId);
 
+// Tours are built by subagents, which only started top-level conversations
+// can spawn (server/commit_tour_request.go).
+const canRequestTour = computed(
+  () =>
+    !!props.currentConversation &&
+    !props.currentConversation.parent_conversation_id &&
+    !props.currentConversation.is_draft,
+);
+
 // When more than one distinct human user (by exe.dev email) has participated in
 // a conversation, descendant Message components show each user message's author
 // email. Empty-string emails are ignored (unauthenticated/direct access), so a
@@ -837,6 +861,16 @@ function formatDiskBytes(bytes: number): string {
   if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(1)} GB`;
   return `${Math.round(bytes / 1e6)} MB`;
 }
+
+// exe.dev VMs can grow their disk via the control plane; suggest the current
+// size rounded up to the next 10 GB plus 10 GB so the form opens pre-filled.
+const diskResizeSuggestUrl = computed(() => {
+  const total = props.diskSpaceStatus?.total_bytes;
+  if (!isExeDev || !total) return null;
+  const gb = Math.ceil(total / 1e9 / 10) * 10 + 10;
+  const vm = (window.__SHELLEY_INIT__?.hostname ?? "").split(".")[0];
+  return `https://exe.dev/suggest?command=${encodeURIComponent(`resize ${vm} --disk=${gb}GB`)}`;
+});
 
 async function dismissDiskSpaceNotice() {
   const status = props.diskSpaceStatus;
@@ -894,6 +928,7 @@ function thinkingLevelForModel(modelId: string, level: ThinkingLevel): ThinkingL
 const selectedModel = ref<string>(
   pickReadyModel(window.__SHELLEY_INIT__?.models || [], storedSelectedModel()),
 );
+provide(RefusalContinueKey, { models, selectedModel, thinkingLevel });
 // applyModel updates the picker's local state only (ref + localStorage).
 // Used both by user picks and by server echoes; never talks to the server.
 function applyModel(model: string) {
@@ -1867,7 +1902,12 @@ const welcomeParts = computed(() =>
 );
 
 const coalescedItems = computed(() => {
-  const items = perfWrap("chat.coalesceMessages", () => coalesceMessages(messages.value))();
+  const items = perfWrap("chat.coalesceMessages", () =>
+    coalesceMessages(
+      messages.value,
+      conversationInterrupted.value ? props.currentConversation?.current_generation : undefined,
+    ),
+  )();
   if (conversationViewMode.value === "all") return items;
   return items.filter(
     (item) =>
@@ -2814,7 +2854,7 @@ async function loadMessages(focusedId: string) {
   } catch (err) {
     if (!isCurrent()) return;
     console.error("Failed to load messages:", err);
-    error.value = "Failed to load messages";
+    error.value = err instanceof ApiError ? err.message : "Failed to load messages";
     clearConversationLoading();
   }
 }
@@ -2936,6 +2976,56 @@ function buildConversationOptions(): ChatRequest["conversation_options"] | undef
   };
 }
 
+// A narrated review recorded outside a live conversation goes, like a
+// composer recording, to this page's draft; if the page has moved on by the
+// time it's sent (or is archived), elsewhere (see ReviewConversationStart).
+function startReviewConversation(): ReviewConversationStart {
+  if (!canSendWithModel(selectedModel.value, readyModelIds.value)) {
+    throw new Error(noModelErrorMessage());
+  }
+  const sessionVersion = draftSessionVersion;
+  const archived = !!props.currentConversation?.archived;
+  const onPage = () => !archived && sessionVersion === draftSessionVersion;
+  const settings = () => ({
+    model: selectedModel.value,
+    conversation_options: buildConversationOptions(),
+  });
+  return {
+    settings: settings(),
+    draft: () => (onPage() ? (draftConvId ?? undefined) : undefined),
+    async resolve(cwd) {
+      if (!onPage()) return undefined;
+      // Read before waiting: the page may change while the draft is made.
+      const now = settings();
+      const conversationId = await ensureDraftConversation(inflightDraft?.text ?? draftText, {
+        model: now.model,
+        cwd,
+      });
+      return { conversationId, settings: now };
+    },
+  };
+}
+
+// Shows the conversation a sent review started, unless the user is in a
+// conversation of their own or has moved on since the send began.
+function followReviewConversation() {
+  const sessionVersion = draftSessionVersion;
+  const wanted = (id: string) => {
+    const viewed = props.currentConversation;
+    const inConversation = !!viewed && !viewed.is_draft && !viewed.archived;
+    return !inConversation && sessionVersion === draftSessionVersion && props.conversationId !== id;
+  };
+  return (id: string) => {
+    if (!wanted(id)) return;
+    api
+      .getConversationBySlug(id)
+      .then((started) => {
+        if (started && wanted(id)) props.onSelectConversation?.(started);
+      })
+      .catch((err) => console.error("Failed to open the review's conversation:", err));
+  };
+}
+
 async function sendFirstMessage(prompt: string) {
   if (!props.onFirstMessage) return;
   if (!canSendWithModel(selectedModel.value, readyModelIds.value)) {
@@ -2973,58 +3063,89 @@ const forkHandler = (messageId: string) => {
 };
 
 async function submitTranscriptionCommand(path: string, transcriptionContext: string) {
+  const preparation = prepareRecording(inflightDraft?.text ?? draftText);
   try {
     sending.value = true;
     error.value = null;
-    const destination = await prepareRecording(inflightDraft?.text ?? draftText);
+    const destination = await preparation.resolve();
     await destination.complete(path, transcriptionContext);
   } finally {
+    preparation.release();
     sending.value = false;
   }
 }
 
-async function prepareRecording(text: string): Promise<RecordingDestination> {
-  error.value = null;
-  // Snapshot every submission option before awaiting draft creation. The user
-  // can navigate and edit another composer while this recording is alive.
+function prepareRecording(text: string): RecordingPreparation {
+  const origin = props.conversationId;
+  const sessionVersion = draftSessionVersion;
+  const draft = { text, newSessionVersion: newDraftSessionVersion };
   const isDraft = !props.conversationId || !!props.currentConversation?.is_draft;
   const options = {
     model: selectedModel.value,
     cwd: isDraft ? selectedCwd.value || undefined : undefined,
     conversation_options: isDraft ? buildConversationOptions() : undefined,
   };
-  try {
-    const conversationId = props.conversationId || (await ensureDraftConversation(text));
-    return {
-      conversationId,
-      async returnTo() {
-        try {
-          const conversation = await api.getConversationBySlug(conversationId);
-          if (!conversation) throw new Error("The recording's conversation no longer exists.");
-          props.onSelectConversation?.(conversation);
-        } catch (err) {
-          error.value = err instanceof Error ? err.message : String(err);
+  const creation = { model: options.model, cwd: options.cwd };
+  let savedId = origin;
+  let accepted = false;
+  // The recorder owns retries until it closes; autosave must not create a
+  // competing destination after a failed attempt.
+  if (!origin) draftAutosave.cancel();
+
+  return {
+    async resolve() {
+      error.value = null;
+      try {
+        if (!savedId) {
+          savedId = await (sessionVersion === draftSessionVersion
+            ? ensureDraftConversation(text, creation)
+            : createDraftForSession(draft, sessionVersion, creation));
         }
-      },
-      async complete(path, context) {
-        const suffix = context.trim();
-        try {
-          await api.sendMessage(conversationId, {
-            message: `${SLASH_COMMANDS.TRANSCRIPTION.command} ${path}${suffix ? `\n${suffix}` : ""}`,
-            ...options,
-          });
-          clearSubmittedDraft(conversationId, text);
-        } catch (err) {
-          const detail = err instanceof Error ? err.message : String(err);
-          error.value = `Failed to submit recording to ${conversationId}: ${detail}. Retry in that conversation with /transcription ${path}`;
-          throw err;
-        }
-      },
-    };
-  } catch (err) {
-    error.value = err instanceof Error ? err.message : String(err);
-    throw err;
-  }
+        const conversationId = savedId;
+        return {
+          conversationId,
+          async returnTo(stillWanted) {
+            try {
+              const conversation = await api.getConversationBySlug(conversationId);
+              if (!conversation) throw new Error("The recording's conversation no longer exists.");
+              if (stillWanted()) props.onSelectConversation?.(conversation);
+            } catch (err) {
+              if (stillWanted()) error.value = err instanceof Error ? err.message : String(err);
+            }
+          },
+          async complete(path, context) {
+            error.value = null;
+            const suffix = context.trim();
+            try {
+              await api.sendMessage(conversationId, {
+                message: `${SLASH_COMMANDS.TRANSCRIPTION.command} ${path}${suffix ? `\n${suffix}` : ""}`,
+                ...options,
+              });
+              accepted = true;
+              clearSubmittedDraft(conversationId, text);
+            } catch (err) {
+              const detail = err instanceof Error ? err.message : String(err);
+              error.value = `Failed to submit recording to ${conversationId}: ${detail}. Retry in that conversation with /transcription ${path}`;
+              throw err;
+            }
+          },
+        };
+      } catch (err) {
+        error.value = err instanceof Error ? err.message : String(err);
+        throw err;
+      }
+    },
+    release() {
+      if (!origin && sessionVersion === draftSessionVersion) {
+        draftAutosave.schedule(draftText);
+      }
+    },
+  };
+}
+
+function handleRecordingUnsent(path: string, cause: unknown) {
+  const detail = cause instanceof Error ? cause.message : String(cause);
+  error.value = `${detail}. Retry with /transcription ${path}`;
 }
 
 function clearSubmittedDraft(conversationId: string, text: string) {
@@ -3318,8 +3439,11 @@ async function sendMessage(message: string) {
       await sendFirstMessage(message.trim());
     } else if (effectiveId) {
       beginModelHealthRequest();
-      await api.sendMessage(effectiveId, request);
+      const accepted = await api.sendMessage(effectiveId, request);
       clearSubmittedDraft(effectiveId, submittedDraft);
+      // A queued message starts no turn (e.g. it waits behind a failed
+      // recording), so drop the optimistic indicator for the server's state.
+      if (accepted.status === "queued") syncTransientFromStore(effectiveId);
     }
   } catch (err) {
     console.error("Failed to send message:", err);
@@ -3627,41 +3751,16 @@ let inflightDraft: { text: string; newSessionVersion: number } | null = null;
 // any server row exists (new-conversation view). See draftCache.
 let draftSyncedAt = "";
 
-async function ensureDraftConversation(value = draftText): Promise<string> {
+async function ensureDraftConversation(
+  value = draftText,
+  creation = { model: selectedModel.value, cwd: selectedCwd.value || undefined },
+): Promise<string> {
   if (draftConvId) return draftConvId;
   if (inflightCreate) return inflightCreate;
   const sessionVersion = draftSessionVersion;
   const draft = { text: value, newSessionVersion: newDraftSessionVersion };
   inflightDraft = draft;
-  const p = api
-    .createDraft({
-      draft: value,
-      model: selectedModel.value,
-      cwd: selectedCwd.value || undefined,
-    })
-    .then((conv) => {
-      // The pending create owns its latest text even after leaving /new. Move
-      // that cache to the saved id, without clearing a newer /new composer.
-      saveCachedDraft(conv.conversation_id, draft.text, conv.updated_at);
-      if (draft.newSessionVersion === newDraftSessionVersion) clearCachedDraft(null);
-      // A late draft response still belongs to its caller (e.g. a recording),
-      // but must not navigate away from the conversation selected meanwhile.
-      if (sessionVersion !== draftSessionVersion) return conv.conversation_id;
-      draftConvId = conv.conversation_id;
-      draftSyncedAt = conv.updated_at;
-      // A model picked while this createDraft was in flight had no draft id
-      // to PUT onto and would otherwise be dropped (and the row echo would
-      // revert the picker). Reconcile: the picker is authoritative.
-      if (conv.model && conv.model !== selectedModel.value) {
-        putDraftModel(conv.conversation_id, selectedModel.value);
-      }
-      // App receives the complete draft row before switching conversation ids,
-      // so its currentConversation fallback can identify this as a draft and
-      // skip message loading without pretending the empty cache is history.
-      lazyDraftId.value = conv.conversation_id;
-      props.onDraftCreated?.(conv);
-      return conv.conversation_id;
-    });
+  const p = createDraftForSession(draft, sessionVersion, creation);
   inflightCreate = p;
   try {
     return await p;
@@ -3669,6 +3768,36 @@ async function ensureDraftConversation(value = draftText): Promise<string> {
     if (inflightCreate === p) inflightCreate = null;
     if (inflightDraft === draft) inflightDraft = null;
   }
+}
+
+function createDraftForSession(
+  draft: { text: string; newSessionVersion: number },
+  sessionVersion: number,
+  creation: { model: string; cwd: string | undefined },
+): Promise<string> {
+  return api.createDraft({ draft: draft.text, ...creation }).then((conv) => {
+    // The pending create owns its latest text even after leaving /new. Move
+    // that cache to the saved id, without clearing a newer /new composer.
+    saveCachedDraft(conv.conversation_id, draft.text, conv.updated_at);
+    if (draft.newSessionVersion === newDraftSessionVersion) clearCachedDraft(null);
+    // A late draft response still belongs to its caller (e.g. a recording),
+    // but must not navigate away from the conversation selected meanwhile.
+    if (sessionVersion !== draftSessionVersion) return conv.conversation_id;
+    draftConvId = conv.conversation_id;
+    draftSyncedAt = conv.updated_at;
+    // A model picked while this createDraft was in flight had no draft id
+    // to PUT onto and would otherwise be dropped (and the row echo would
+    // revert the picker). Reconcile: the picker is authoritative.
+    if (conv.model && conv.model !== selectedModel.value) {
+      putDraftModel(conv.conversation_id, selectedModel.value);
+    }
+    // App receives the complete draft row before switching conversation ids,
+    // so its currentConversation fallback can identify this as a draft and
+    // skip message loading without pretending the empty cache is history.
+    lazyDraftId.value = conv.conversation_id;
+    props.onDraftCreated?.(conv);
+    return conv.conversation_id;
+  });
 }
 
 async function saveDraft(value: string) {

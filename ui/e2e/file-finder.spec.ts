@@ -1,6 +1,5 @@
 import { test, expect } from "@playwright/test";
 import { writeFileSync, mkdirSync } from "node:fs";
-import { execSync } from "node:child_process";
 import { join } from "node:path";
 import { createConversationViaAPI, selectWorkspace, withTempDir } from "./helpers";
 
@@ -169,7 +168,7 @@ test.describe("File finder content search", () => {
   }) => {
     await withTempDir("shelley-finder-grep-", async (dir) => {
       // git grep --untracked searches untracked files, so init suffices.
-      execSync("git init", { cwd: dir });
+      initGitRepo(dir);
       writeFileSync(join(dir, "recipes.txt"), "secret ingredient: cardamom\n");
       writeFileSync(join(dir, "shopping-list.txt"), "eggs and flour\n");
 
@@ -202,7 +201,7 @@ test.describe("File finder content search", () => {
     request,
   }) => {
     await withTempDir("shelley-finder-grep-mix-", async (dir) => {
-      execSync("git init", { cwd: dir });
+      initGitRepo(dir);
       // One file matches by name, another only by content: the finder should
       // show both, with the (fast, first-phase) name match on top.
       writeFileSync(join(dir, "cardamom-notes.md"), "about the spice\n");
@@ -233,7 +232,7 @@ test.describe("File finder content search", () => {
     request,
   }) => {
     await withTempDir("shelley-finder-grep-stale-", async (dir) => {
-      execSync("git init", { cwd: dir });
+      initGitRepo(dir);
       // "cardamom" hits only paprika-notes.txt by content; "paprika" hits it
       // by name. If the first keystroke's (delayed) content response applied
       // after the second keystroke's results, the row would gain a snippet

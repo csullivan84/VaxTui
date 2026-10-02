@@ -15,7 +15,6 @@ import (
 	"shelley.exe.dev/claudetool"
 	"shelley.exe.dev/client"
 	"shelley.exe.dev/db"
-	"shelley.exe.dev/exeenv"
 	"shelley.exe.dev/llm/llmhttp"
 	"shelley.exe.dev/models"
 	"shelley.exe.dev/modelsources"
@@ -38,14 +37,8 @@ type GlobalConfig struct {
 }
 
 type shelleyConfig struct {
-	LLMGateway     string                `json:"llm_gateway"`
-	DefaultModel   string                `json:"default_model"`
-	ExeEnvironment *exeEnvironmentConfig `json:"exe_environment"`
-}
-
-type exeEnvironmentConfig struct {
-	Scheme  string `json:"scheme"`
-	BoxHost string `json:"box_host"`
+	LLMGateway   string `json:"llm_gateway"`
+	DefaultModel string `json:"default_model"`
 }
 
 var (
@@ -459,13 +452,6 @@ func buildLLMConfig(global GlobalConfig, logger *slog.Logger, database *db.DB) (
 	if err != nil {
 		return nil, err
 	}
-	if config.ExeEnvironment != nil {
-		env, err := exeenv.New(config.ExeEnvironment.Scheme, config.ExeEnvironment.BoxHost)
-		if err != nil {
-			return nil, fmt.Errorf("exe_environment: %w", err)
-		}
-		exeenv.Configure(env)
-	}
 
 	httpc := llmhttp.NewClient(nil)
 	build := func(ctx context.Context) (string, []models.Built, []models.TranscriptionModel, error) {
@@ -686,6 +672,15 @@ func runModels(global GlobalConfig, args []string) {
 	}
 	tw.Flush()
 	fmt.Printf("\n%d models\n", len(llmCfg.Models))
+	if len(llmCfg.TranscriptionModels) == 0 {
+		return
+	}
+	fmt.Println()
+	fmt.Fprintln(tw, "TRANSCRIPTION MODEL\tENDPOINT\tSOURCE")
+	for _, m := range llmCfg.TranscriptionModels {
+		fmt.Fprintf(tw, "%s\t%s\t%s\n", m.Model, m.Endpoint, m.Source)
+	}
+	tw.Flush()
 }
 
 // systemdListener returns a net.Listener from systemd socket activation.

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -528,6 +529,91 @@ func TestHandleGitTour(t *testing.T) {
 			t.Fatalf("served tour not resolved: %s", response.Tour)
 		}
 	})
+}
+
+func TestHandleGitTourMedia(t *testing.T) {
+	t.Parallel()
+	h := NewTestHarness(t)
+	dir := setupTestGitRepo(t)
+	hash := strings.TrimSpace(testGitOutput(t, dir, "rev-parse", "HEAD"))
+	_, fragments, err := committour.Chunks(dir, hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	png := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR-pixels")
+	shot := filepath.Join(t.TempDir(), "shot.png")
+	if err := os.WriteFile(shot, png, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tour := &committour.Tour{Version: 1, Chunks: []committour.TourChunk{
+		{Media: shot, Comment: "After"},
+		{Patch: fragments[0], Comment: "Start here"},
+	}}
+	if _, err := committour.ResolveMedia(dir, tour, true); err != nil {
+		t.Fatal(err)
+	}
+	blob := tour.Chunks[0].Blob
+
+	get := func(query string, header http.Header) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/api/git/tour/media?"+query, nil)
+		for k, v := range header {
+			req.Header[k] = v
+		}
+		w := httptest.NewRecorder()
+		h.server.handleGitTourMedia(w, req)
+		return w
+	}
+	query := url.Values{"cwd": {dir}, "blob": {blob}}.Encode()
+
+	// Written but unpinned blobs are not tour media.
+	if w := get(query, nil); w.Code != http.StatusNotFound {
+		t.Fatalf("unpinned got %d: %s", w.Code, w.Body.String())
+	}
+	note, err := json.Marshal(tour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := committour.WriteNote(dir, hash, note, tour.MediaBlobs()...); err != nil {
+		t.Fatal(err)
+	}
+	w := get(query, nil)
+	if w.Code != http.StatusOK || w.Body.String() != string(png) {
+		t.Fatalf("got %d: %q", w.Code, w.Body.String())
+	}
+	for header, want := range map[string]string{
+		"Content-Type":           "image/png",
+		"X-Content-Type-Options": "nosniff",
+		"Cache-Control":          "private, max-age=31536000, immutable",
+	} {
+		if got := w.Header().Get(header); got != want {
+			t.Errorf("%s = %q, want %q", header, got, want)
+		}
+	}
+	// Recordings seek with range requests.
+	if w := get(query, http.Header{"Range": {"bytes=0-3"}}); w.Code != http.StatusPartialContent || w.Body.String() != string(png[:4]) {
+		t.Fatalf("range got %d: %q", w.Code, w.Body.String())
+	}
+	if w := get(url.Values{"cwd": {dir}, "blob": {"HEAD"}}.Encode(), nil); w.Code != http.StatusBadRequest {
+		t.Fatalf("non-hash blob got %d", w.Code)
+	}
+	if w := get(url.Values{"blob": {blob}}.Encode(), nil); w.Code != http.StatusBadRequest {
+		t.Fatalf("missing cwd got %d", w.Code)
+	}
+	// A pinned blob that does not sniff as media is refused.
+	text := strings.TrimSpace(testGitOutput(t, dir, "rev-parse", "HEAD:test.txt"))
+	if err := committour.WriteNote(dir, hash, note, text); err != nil {
+		t.Fatal(err)
+	}
+	if w := get(url.Values{"cwd": {dir}, "blob": {text}}.Encode(), nil); w.Code != http.StatusBadRequest {
+		t.Fatalf("pinned text got %d: %s", w.Code, w.Body.String())
+	}
+	// The tour itself still verifies with its media entry.
+	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/git/tour?cwd=%s&hash=%s", dir, hash), nil)
+	tw := httptest.NewRecorder()
+	h.server.handleGitTour(tw, req)
+	if tw.Code != http.StatusOK || !strings.Contains(tw.Body.String(), blob) {
+		t.Fatalf("tour got %d: %s", tw.Code, tw.Body.String())
+	}
 }
 
 func testGitOutput(t *testing.T, dir string, args ...string) string {
@@ -1768,5 +1854,82 @@ func TestHandleGitGraphMarksTours(t *testing.T) {
 	}
 	if tours[base] {
 		t.Errorf("base commit %s was marked as having a tour", base)
+	}
+}
+
+// TestHandleGitFileDiff_OldPath covers the optional oldPath query parameter,
+// which the commit tour uses to expand a renamed-and-modified file: the left
+// side must come from the pre-rename path so the file does not render as
+// entirely added.
+func TestHandleGitFileDiff_OldPath(t *testing.T) {
+	t.Parallel()
+	h := NewTestHarness(t)
+
+	tempDir := t.TempDir()
+	run := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = tempDir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("%v failed: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+
+	run("git", "init")
+	run("git", "config", "user.name", "Test")
+	run("git", "config", "user.email", "test@test.com")
+
+	os.WriteFile(filepath.Join(tempDir, "old.txt"), []byte("one\ntwo\n"), 0o644)
+	run("git", "add", "old.txt")
+	run("git", "commit", "-m", "base\n\nPrompt: test")
+
+	run("git", "mv", "old.txt", "new.txt")
+	os.WriteFile(filepath.Join(tempDir, "new.txt"), []byte("one\ntwo\nthree\n"), 0o644)
+	run("git", "add", "new.txt")
+	run("git", "commit", "-m", "rename and edit\n\nPrompt: test")
+	head := run("git", "rev-parse", "HEAD")
+
+	get := func(query string) GitFileDiff {
+		t.Helper()
+		req := httptest.NewRequest("GET", fmt.Sprintf("/api/git/file-diff/%s/new.txt?cwd=%s&to=self%s", head, tempDir, query), nil)
+		w := httptest.NewRecorder()
+		h.server.handleGitFileDiff(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		var fd GitFileDiff
+		if err := json.Unmarshal(w.Body.Bytes(), &fd); err != nil {
+			t.Fatalf("failed to unmarshal: %v", err)
+		}
+		return fd
+	}
+
+	// Without oldPath the pre-rename content is unavailable (existing behavior).
+	fd := get("")
+	if fd.OldContent != "" || fd.NewContent != "one\ntwo\nthree\n" {
+		t.Errorf("without oldPath: got old=%q new=%q", fd.OldContent, fd.NewContent)
+	}
+
+	fd = get("&oldPath=old.txt")
+	if fd.OldContent != "one\ntwo\n" {
+		t.Errorf("with oldPath: old content = %q, want %q", fd.OldContent, "one\ntwo\n")
+	}
+	if fd.NewContent != "one\ntwo\nthree\n" {
+		t.Errorf("with oldPath: new content = %q, want %q", fd.NewContent, "one\ntwo\nthree\n")
+	}
+	if fd.Path != "new.txt" {
+		t.Errorf("with oldPath: path = %q, want new.txt", fd.Path)
+	}
+
+	// oldPath is subject to the same traversal checks as the main path.
+	for _, bad := range []string{"../etc/passwd", "/etc/passwd"} {
+		req := httptest.NewRequest("GET", fmt.Sprintf("/api/git/file-diff/%s/new.txt?cwd=%s&to=self&oldPath=%s", head, tempDir, url.QueryEscape(bad)), nil)
+		w := httptest.NewRecorder()
+		h.server.handleGitFileDiff(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("oldPath=%q: expected 400, got %d", bad, w.Code)
+		}
 	}
 }

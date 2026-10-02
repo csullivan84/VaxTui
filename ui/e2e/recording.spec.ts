@@ -1,7 +1,12 @@
 import { expect, test, type APIRequestContext, type Page, type Route } from "@playwright/test";
-import { createConversationViaAPIWithDetails, testWorkingDirectory } from "./helpers";
+import {
+  createConversationViaAPIWithDetails,
+  installTranscriptionAvailability,
+  testWorkingDirectory,
+} from "./helpers";
 
-async function installMediaMocks(page: Page, screenCapture = true) {
+async function installMediaMocks(page: Page, screenCapture = true, transcription = true) {
+  await installTranscriptionAvailability(page, transcription);
   await page.addInitScript((screenCaptureAvailable) => {
     const mock = {
       displayRequests: 0,
@@ -13,8 +18,13 @@ async function installMediaMocks(page: Page, screenCapture = true) {
       meterPeak: 4,
       recorderStarts: 0,
       recorderStops: 0,
-      dataOnlyOnStop: false,
+      revokedPreviews: [] as string[],
       endDisplay: () => {},
+    };
+    const revokeObjectURL = URL.revokeObjectURL;
+    URL.revokeObjectURL = (url) => {
+      mock.revokedPreviews.push(url);
+      revokeObjectURL.call(URL, url);
     };
 
     class MockTrack extends EventTarget {
@@ -61,15 +71,13 @@ async function installMediaMocks(page: Page, screenCapture = true) {
         if (timeslice !== 1000) throw new Error(`unexpected timeslice ${timeslice}`);
         mock.recorderStarts++;
         this.state = "recording";
-        if (mock.dataOnlyOnStop) return;
         queueMicrotask(() => this.emitChunk("first", true));
         queueMicrotask(() => this.emitChunk("second"));
       }
       stop() {
         mock.recorderStops++;
         this.state = "inactive";
-        if (mock.dataOnlyOnStop) this.emitChunk("encodedlast", true);
-        else this.emitChunk("last");
+        this.emitChunk("last");
         queueMicrotask(() => this.onstop?.());
       }
       emitChunk(value: string, withWebMHeader = false) {
@@ -286,11 +294,11 @@ async function selectConversationFromDrawer(page: Page, conversationId: string) 
   await expect(row).toHaveClass(/active/);
 }
 
-async function pasteAttachment(page: Page, filename: string, contents = "attachment") {
+async function pasteAttachment(page: Page, filename: string, contents = "attachment", type = "text/plain") {
   await page.getByTestId("message-input").evaluate(
     (input, file) => {
       const transfer = new DataTransfer();
-      transfer.items.add(new File([file.contents], file.filename, { type: "text/plain" }));
+      transfer.items.add(new File([file.contents], file.filename, { type: file.type }));
       input.dispatchEvent(
         new ClipboardEvent("paste", {
           clipboardData: transfer,
@@ -299,7 +307,7 @@ async function pasteAttachment(page: Page, filename: string, contents = "attachm
         }),
       );
     },
-    { filename, contents },
+    { filename, contents, type },
   );
   await expect(page.locator(".message-attachment-ready")).toHaveCount(1);
 }
@@ -513,7 +521,16 @@ test.describe("media recording composer", () => {
         microphone: window.__recordingMock.microphoneRequests,
         starts: window.__recordingMock.recorderStarts,
       })),
-    ).toEqual({ display: 1, synchronousDisplay: 1, microphone: 0, starts: 0 });
+    ).toMatchObject({ display: 1, synchronousDisplay: 1 });
+    await expect(page.getByTestId("recording-panel")).toHaveAttribute("data-mode", "screen");
+    await expect
+      .poll(() =>
+        page.evaluate(() => ({
+          microphone: window.__recordingMock.microphoneRequests,
+          starts: window.__recordingMock.recorderStarts,
+        })),
+      )
+      .toEqual({ microphone: 1, starts: 1 });
 
     try {
       await openRecordingPalette(page);
@@ -567,10 +584,10 @@ test.describe("media recording composer", () => {
     await recordingShortcut(page, "screen");
     await draftStarted.promise;
     try {
-      await page.getByTestId("recording-pending-cancel-button").click({ timeout: 5000 });
+      await expect.poll(() => page.evaluate(() => window.__recordingMock.recorderStarts)).toBe(1);
+      await page.getByTestId("recording-cancel-button").click();
       await expect(page.getByTestId("voice-button")).toBeEnabled();
-      await expect.poll(() => page.evaluate(() => window.__recordingMock.stoppedTracks)).toBe(2);
-      expect(await page.evaluate(() => window.__recordingMock.recorderStarts)).toBe(0);
+      await expect.poll(() => page.evaluate(() => window.__recordingMock.stoppedTracks)).toBe(4);
       const response = page.waitForResponse("**/api/conversations/draft");
       releaseDraft.resolve();
       await response;
@@ -578,12 +595,626 @@ test.describe("media recording composer", () => {
       await expect(page.getByTestId("recording-panel")).toHaveCount(0);
       await recordingShortcut(page, "microphone");
       await expect(page.getByTestId("recording-panel")).toHaveAttribute("data-mode", "microphone");
-      await expect.poll(() => page.evaluate(() => window.__recordingMock.recorderStarts)).toBe(1);
+      await expect.poll(() => page.evaluate(() => window.__recordingMock.recorderStarts)).toBe(2);
       expect(await page.evaluate(() => window.__recordingMock.displayRequests)).toBe(1);
       await page.getByTestId("recording-cancel-button").click();
     } finally {
       releaseDraft.resolve();
     }
+  });
+
+  test("starts the microphone before a delayed draft and cancelling stops its tracks", async ({
+    page,
+  }) => {
+    const draftStarted = deferred();
+    const releaseDraft = deferred();
+    let uploadCount = 0;
+    await page.route("**/api/upload/raw?filename=*", async (route) => {
+      uploadCount++;
+      await fulfillJSON(route, { path: "/tmp/shelley-uploads/unexpected.webm" });
+    });
+    await page.route("**/api/conversations/draft", async (route) => {
+      const response = await route.fetch();
+      draftStarted.resolve();
+      await releaseDraft.promise;
+      await route.fulfill({ response });
+    });
+    await page.goto("/new");
+    await page.getByTestId("message-input").fill("Pending draft text.");
+    await recordingShortcut(page, "microphone");
+    try {
+      await expect(page.getByTestId("recording-inline")).toHaveCount(1);
+      await expect(page.locator(".recording-status")).toHaveAttribute("data-state", "recording");
+      await draftStarted.promise;
+      expect(await page.evaluate(() => window.__recordingMock.recorderStarts)).toBe(1);
+      await expect(page).toHaveURL(/\/new$/);
+
+      await page.getByTestId("recording-cancel-button").click();
+      await expect(page.getByTestId("recording-panel")).toHaveCount(0);
+      await expect(page.getByTestId("message-input")).toHaveValue("Pending draft text.");
+      await expect.poll(() => page.evaluate(() => window.__recordingMock.stoppedTracks)).toBe(1);
+      expect(uploadCount).toBe(0);
+
+      releaseDraft.resolve();
+      await expect(page).toHaveURL(/\/c\//);
+      await expect(page.getByTestId("recording-panel")).toHaveCount(0);
+      await expect(page.getByTestId("message-input")).toHaveValue("Pending draft text.");
+    } finally {
+      releaseDraft.resolve();
+    }
+  });
+
+  test("a Return clicked before the delayed draft resolves does not navigate after cancel", async ({
+    page,
+    request,
+  }) => {
+    const viewed = await createConversationViaAPIWithDetails(request, "echo: stay here");
+    const draftStarted = deferred();
+    const releaseDraft = deferred();
+    await page.route("**/api/conversations/draft", async (route) => {
+      const response = await route.fetch();
+      draftStarted.resolve();
+      await releaseDraft.promise;
+      await route.fulfill({ response });
+    });
+    await page.goto("/new");
+    await page.getByTestId("voice-button").click();
+    await draftStarted.promise;
+    try {
+      await selectConversationFromDrawer(page, viewed.conversationId);
+      await expect(floatingAncestor(page)).toHaveCount(1);
+      await page.getByTestId("recording-return-button").click();
+      await page.getByTestId("recording-cancel-button").click();
+      await expect(page.getByTestId("recording-panel")).toHaveCount(0);
+
+      const response = page.waitForResponse("**/api/conversations/draft");
+      releaseDraft.resolve();
+      await response;
+      await expect(page).toHaveURL(new RegExp(`/c/${viewed.slug}$`));
+      await expect(page.getByTestId("voice-button")).toBeEnabled();
+      await expect(page).toHaveURL(new RegExp(`/c/${viewed.slug}$`));
+    } finally {
+      releaseDraft.resolve();
+    }
+  });
+
+  test("a Return whose lookup finishes after cancel does not navigate", async ({
+    page,
+    request,
+  }) => {
+    const source = await createConversationViaAPIWithDetails(request, "echo: return source");
+    const viewed = await createConversationViaAPIWithDetails(request, "echo: return viewed");
+    const lookupStarted = deferred();
+    const releaseLookup = deferred();
+    await page.route(`**/api/conversation-by-slug/${source.conversationId}`, async (route) => {
+      lookupStarted.resolve();
+      await releaseLookup.promise;
+      await route.fallback();
+    });
+    await page.goto(`/c/${source.slug}`);
+    await expect(page.getByTestId("voice-button")).toBeEnabled();
+    await page.getByTestId("voice-button").click();
+    await expect(page.locator(".recording-status")).toHaveAttribute("data-state", "recording");
+    await selectConversationFromDrawer(page, viewed.conversationId);
+    await expect(floatingAncestor(page)).toHaveCount(1);
+    await page.evaluate(() => {
+      const fetch = window.fetch;
+      window.fetch = async (...args) => {
+        const response = await fetch(...args);
+        if (response.url.includes("/api/conversation-by-slug/")) {
+          const json = response.json.bind(response);
+          response.json = async () => {
+            const body = await json();
+            document.body.dataset.recordingReturnRead = "true";
+            return body;
+          };
+        }
+        return response;
+      };
+    });
+    try {
+      await page.getByTestId("recording-return-button").click();
+      await lookupStarted.promise;
+      await page.getByTestId("recording-cancel-button").click();
+      await expect(page.getByTestId("recording-panel")).toHaveCount(0);
+      releaseLookup.resolve();
+      // Wait for JSON consumption, not merely the response headers. The lookup's
+      // awaiting continuation runs before the next browser assertion.
+      await expect(page.locator("body")).toHaveAttribute("data-recording-return-read", "true");
+      await expect(page.getByTestId("voice-button")).toBeEnabled();
+      await expect(page).toHaveURL(new RegExp(`/c/${viewed.slug}$`));
+    } finally {
+      releaseLookup.resolve();
+    }
+  });
+
+  test("submits a recording that finished before its delayed draft to that draft", async ({
+    page,
+  }) => {
+    const draftStarted = deferred();
+    const releaseDraft = deferred();
+    let createdDraftId = "";
+    const chatRequests: string[] = [];
+    await page.route("**/api/conversations/draft", async (route) => {
+      const response = await route.fetch();
+      const draft = (await response.json()) as { conversation_id: string };
+      createdDraftId = draft.conversation_id;
+      draftStarted.resolve();
+      await releaseDraft.promise;
+      await route.fulfill({ response, json: draft });
+    });
+    let uploadCount = 0;
+    await page.route("**/api/upload/raw?filename=*", async (route) => {
+      uploadCount++;
+      await fulfillJSON(route, { path: "/tmp/shelley-uploads/early-stop.webm" });
+    });
+    await page.route("**/api/conversation/*/chat", async (route) => {
+      chatRequests.push(route.request().url());
+      await fulfillJSON(route, { status: "queued" }, 202);
+    });
+
+    await page.goto("/new");
+    await page.getByTestId("message-input").fill("Context for the early stop.");
+    await page.getByTestId("voice-button").click();
+    try {
+      await expect(page.locator(".recording-status")).toHaveAttribute("data-state", "recording");
+      await draftStarted.promise;
+      await page.getByTestId("recording-stop-button").click();
+      await expect(page.locator(".recording-status")).toHaveAttribute("data-state", "stopping");
+      await expect(page.getByTestId("recording-preserved-text")).toHaveText("Context for the early stop.");
+      await expect.poll(() => uploadCount).toBe(1);
+      await expect.poll(() => page.evaluate(() => window.__recordingMock.stoppedTracks)).toBe(1);
+      expect(chatRequests).toEqual([]);
+
+      releaseDraft.resolve();
+      await expect.poll(() => chatRequests.length).toBe(1);
+      expect(new URL(chatRequests[0]!).pathname).toBe(`/api/conversation/${createdDraftId}/chat`);
+      await expect(page).toHaveURL(new RegExp(`/c/${createdDraftId}$`));
+      await expect(page.getByTestId("message-input")).toHaveValue("");
+    } finally {
+      releaseDraft.resolve();
+    }
+  });
+
+  test("retains the uploaded recording when its delayed draft fails after stopping", async ({
+    page,
+  }) => {
+    const releaseDraft = deferred();
+    let chatRequests = 0;
+    await page.route("**/api/conversations/draft", async (route) => {
+      await releaseDraft.promise;
+      await route.fulfill({ status: 500, body: "draft unavailable" });
+    });
+    await page.route("**/api/upload/raw?filename=*", (route) =>
+      fulfillJSON(route, { path: "/tmp/shelley-uploads/orphaned.webm" }),
+    );
+    await page.route("**/api/conversation/*/chat", async (route) => {
+      chatRequests++;
+      await fulfillJSON(route, { status: "queued" }, 202);
+    });
+    await page.goto("/new");
+    const input = page.getByTestId("message-input");
+    await input.fill("Context that stays after the failed draft.");
+    await page.getByTestId("voice-button").click();
+    await expect(page.locator(".recording-status")).toHaveAttribute("data-state", "recording");
+    await page.getByTestId("recording-stop-button").click();
+    await expect(page.locator(".recording-status")).toHaveAttribute("data-state", "stopping");
+    releaseDraft.resolve();
+
+    await expect(page.getByTestId("recording-retained")).toBeVisible();
+    await expect(page.locator(".status-error")).toContainText(
+      "Retry with /transcription /tmp/shelley-uploads/orphaned.webm",
+    );
+    await expect(page.getByTestId("recording-cancel-button")).toHaveAccessibleName("Discard recording");
+    await page.getByTestId("recording-cancel-button").click();
+    await expect(input).toHaveValue("Context that stays after the failed draft.");
+    expect(chatRequests).toBe(0);
+  });
+
+  for (const navigateBeforeStop of [false, true]) {
+    test(`keeps early-stop attachments when navigating ${navigateBeforeStop ? "before" : "after"} Stop and submission fails`, async ({
+      page,
+      request,
+    }) => {
+      const viewed = await createDraftViaAPI(request, "A separately viewed draft.");
+      const draftCreated = deferred();
+      const releaseDraft = deferred();
+      let source = "";
+      await page.route("**/api/conversations/draft", async (route) => {
+        const response = await route.fetch();
+        source = ((await response.json()) as { conversation_id: string }).conversation_id;
+        draftCreated.resolve();
+        await releaseDraft.promise;
+        await route.fulfill({ response });
+      });
+      await page.route("**/api/upload/raw?filename=*", (route) =>
+        fulfillJSON(route, { path: "/tmp/shelley-uploads/early-attachment.webm" }),
+      );
+      await page.route("**/api/conversation/*/chat", (route) =>
+        route.fulfill({ status: 500, body: "acceptance unavailable" }),
+      );
+
+      await page.goto("/new");
+      const input = page.getByTestId("message-input");
+      await input.fill("Keep this text and attachment after the failed send.");
+      await pasteAttachment(page, "keep.txt");
+      await page.getByTestId("voice-button").click();
+      await draftCreated.promise;
+      try {
+        await expect(page.locator(".recording-status")).toHaveAttribute("data-state", "recording");
+        if (navigateBeforeStop) await selectConversationFromDrawer(page, viewed);
+        await page.getByTestId("recording-stop-button").click();
+        await expect(page.locator(".recording-status")).toHaveAttribute("data-state", "stopping");
+        if (!navigateBeforeStop) await selectConversationFromDrawer(page, viewed);
+        await expect(input).toHaveValue("A separately viewed draft.");
+        await expect(page.locator(".message-attachment-ready")).toHaveCount(0);
+
+        releaseDraft.resolve();
+        await expect(page.getByTestId("recording-retained")).toBeVisible();
+        await expect(page.locator(".status-error")).toContainText("acceptance unavailable");
+        await selectConversationFromDrawer(page, source);
+        await page.getByTestId("recording-cancel-button").click();
+        await expect(input).toHaveValue("Keep this text and attachment after the failed send.");
+        await expect(page.locator(".message-attachment-ready")).toHaveCount(1);
+        await expect(page.locator(".message-attachment-ready")).toContainText("keep.txt");
+      } finally {
+        releaseDraft.resolve();
+      }
+    });
+  }
+
+  for (const draftFails of [false, true]) {
+    test(`retries retained screen metadata ${draftFails ? "after draft failure" : "without reuploading the video"}`, async ({
+      page,
+    }) => {
+      const releaseDraft = deferred();
+      const metadataStarted = deferred();
+      const releaseMetadata = deferred();
+      let chatRequests = 0;
+      let uploads = 0;
+      let metadataRequests = 0;
+      let draftRequests = 0;
+      const metadataBodies: string[] = [];
+      if (draftFails) {
+        await page.route("**/api/conversations/draft", async (route) => {
+          draftRequests++;
+          if (draftRequests === 1) {
+            await releaseDraft.promise;
+            await route.fulfill({ status: 500, body: "draft unavailable" });
+          } else {
+            await route.continue();
+          }
+        });
+      }
+      await page.route("**/api/upload/raw?filename=*", async (route) => {
+        const filename = new URL(route.request().url()).searchParams.get("filename")!;
+        if (filename.endsWith(".json")) {
+          metadataRequests++;
+          metadataBodies.push(route.request().postData()!);
+          if (metadataRequests === 1) {
+            metadataStarted.resolve();
+            await releaseMetadata.promise;
+            await route.fulfill({ status: 500, body: "metadata unavailable" });
+          } else {
+            await fulfillJSON(route, { path: "/tmp/shelley-uploads/saved-screen.webm.json" });
+          }
+        } else {
+          uploads++;
+          await fulfillJSON(route, { path: "/tmp/shelley-uploads/saved-screen.webm" });
+        }
+      });
+      await page.route("**/api/conversation/*/chat", async (route) => {
+        chatRequests++;
+        await fulfillJSON(route, { status: "queued" }, 202);
+      });
+
+      await page.goto("/new");
+      const input = page.getByTestId("message-input");
+      await input.fill("Keep this screen recording context.");
+      await pasteAttachment(page, "screen-context.txt");
+      await recordingShortcut(page, "screen");
+      try {
+        await expect(page.locator(".recording-status")).toHaveAttribute("data-state", "recording");
+        await page.getByTestId("recording-stop-button").click();
+        await metadataStarted.promise;
+        if (draftFails) {
+          releaseDraft.resolve();
+          await expect(page.locator(".recording-status")).toHaveAttribute("data-state", "stopping");
+          await expect(page.locator(".status-error")).toContainText("draft unavailable");
+        }
+        releaseMetadata.resolve();
+        await expect(page.locator(".status-error")).toContainText(
+          "Retry with /transcription /tmp/shelley-uploads/saved-screen.webm",
+        );
+        await expect(page.locator(".status-error")).toContainText("metadata unavailable");
+        await expect(page.getByTestId("recording-retained")).toBeVisible();
+        await expect.poll(() => page.evaluate(() => window.__recordingMock.stoppedTracks)).toBe(4);
+        expect(chatRequests).toBe(0);
+        await page.getByTestId("recording-retry-button").click();
+        await expect(page.getByTestId("recording-panel")).toHaveCount(0);
+        expect(uploads).toBe(1);
+        expect(metadataRequests).toBe(2);
+        expect(metadataBodies[1]).toBe(metadataBodies[0]);
+        expect(chatRequests).toBe(1);
+        if (draftFails) expect(draftRequests).toBe(2);
+        expect(await page.evaluate(() => window.__recordingMock.recorderStarts)).toBe(1);
+        await expect(input).toHaveValue("");
+        await expect(page.locator(".message-attachment-ready")).toHaveCount(0);
+      } finally {
+        releaseDraft.resolve();
+        releaseMetadata.resolve();
+      }
+    });
+  }
+
+  test("retains an upload that finishes after draft failure", async ({
+    page,
+  }) => {
+    const uploadStarted = deferred();
+    const releaseUpload = deferred();
+    const releaseDraft = deferred();
+    await page.route("**/api/conversations/draft", async (route) => {
+      await releaseDraft.promise;
+      await route.fulfill({ status: 500, body: "draft unavailable" });
+    });
+    await page.route("**/api/upload/raw?filename=*", async (route) => {
+      uploadStarted.resolve();
+      await releaseUpload.promise;
+      await fulfillJSON(route, { path: "/tmp/shelley-uploads/late-upload.webm" });
+    });
+    await page.goto("/new");
+    await page.getByTestId("voice-button").click();
+    await expect(page.locator(".recording-status")).toHaveAttribute("data-state", "recording");
+    await page.getByTestId("recording-stop-button").click();
+    await uploadStarted.promise;
+    releaseDraft.resolve();
+    await expect(page.locator(".recording-status")).toHaveAttribute("data-state", "stopping");
+    await expect(page.locator(".status-error")).toContainText("draft unavailable");
+    releaseUpload.resolve();
+    await expect(page.locator(".status-error")).toContainText(
+      "Retry with /transcription /tmp/shelley-uploads/late-upload.webm",
+    );
+    await expect(page.getByTestId("recording-retained")).toBeVisible();
+    await page.getByTestId("recording-cancel-button").click();
+    await expect(page.getByTestId("voice-button")).toBeEnabled();
+  });
+
+  test("keeps the microphone recording after destination failure until the user cancels", async ({
+    page,
+  }) => {
+    const releaseDraft = deferred();
+    await page.route("**/api/conversations/draft", async (route) => {
+      await releaseDraft.promise;
+      await route.fulfill({ status: 500, body: "draft unavailable" });
+    });
+    await page.goto("/new");
+    const input = page.getByTestId("message-input");
+    await input.fill("Keep this after the failed draft.");
+    await pasteAttachment(page, "keep.txt");
+    await page.getByTestId("voice-button").click();
+    await expect(page.locator(".recording-status")).toHaveAttribute("data-state", "recording");
+    releaseDraft.resolve();
+
+    await expect(page.getByTestId("recording-error")).toContainText("draft unavailable");
+    await expect(page.locator(".recording-status")).toHaveAttribute("data-state", "recording");
+    expect(await page.evaluate(() => window.__recordingMock.stoppedTracks)).toBe(0);
+    await page.getByTestId("recording-cancel-button").click();
+    await expect(input).toHaveValue("Keep this after the failed draft.");
+    await expect(input).toBeEnabled();
+    await expect(page.locator(".message-attachment-ready")).toHaveCount(1);
+    await expect.poll(() => page.evaluate(() => window.__recordingMock.stoppedTracks)).toBe(1);
+    expect(await page.evaluate(() => window.__recordingMock.recorderStarts)).toBe(1);
+    await expect(page.getByTestId("voice-button")).toBeEnabled();
+  });
+
+  test("retries a failed recording destination after navigation without recapturing or changing its context", async ({
+    page,
+    request,
+  }) => {
+    const viewed = await createDraftViaAPI(request, "A separate draft.");
+    const releaseFirstDraft = deferred();
+    const newerDraftStarted = deferred();
+    const releaseNewerDraft = deferred();
+    const draftBodies: Record<string, unknown>[] = [];
+    const submissions: Array<{ url: string; body: Record<string, unknown> }> = [];
+    let source = "";
+    let uploads = 0;
+    await page.route("**/api/conversations/draft", async (route) => {
+      const body = route.request().postDataJSON() as Record<string, unknown>;
+      if (body.draft === "A newer new-conversation composer.") {
+        const response = await route.fetch();
+        newerDraftStarted.resolve();
+        await releaseNewerDraft.promise;
+        await route.fulfill({ response });
+        return;
+      }
+      draftBodies.push(body);
+      if (draftBodies.length === 1) {
+        await releaseFirstDraft.promise;
+        await route.fulfill({ status: 500, body: "draft unavailable" });
+      } else if (draftBodies.length === 2) {
+        await route.fulfill({ status: 500, body: "retry still unavailable" });
+      } else {
+        const response = await route.fetch();
+        source = ((await response.json()) as { conversation_id: string }).conversation_id;
+        await route.fulfill({ response });
+      }
+    });
+    await page.route("**/api/upload", (route) =>
+      fulfillJSON(route, { path: "/tmp/shelley-uploads/original-context.txt" }),
+    );
+    await page.route("**/api/upload/raw?filename=*", async (route) => {
+      uploads++;
+      await fulfillJSON(route, { path: "/tmp/shelley-uploads/retained.webm" });
+    });
+    await page.route("**/api/conversation/*/chat", async (route) => {
+      submissions.push({ url: route.request().url(), body: route.request().postDataJSON() });
+      await fulfillJSON(route, { status: "queued" }, 202);
+    });
+
+    await page.goto("/new");
+    await page.getByTestId("message-input").fill("Original recording context.");
+    await pasteAttachment(page, "original-context.txt");
+    await page.getByTestId("voice-button").click();
+    try {
+      await expect(page.locator(".recording-status")).toHaveAttribute("data-state", "recording");
+      releaseFirstDraft.resolve();
+      await expect(page.getByTestId("recording-error")).toContainText("draft unavailable");
+      await expect(page.locator(".recording-status")).toHaveAttribute("data-state", "recording");
+      expect(await page.evaluate(() => window.__recordingMock.stoppedTracks)).toBe(0);
+
+      await page.getByTestId("recording-stop-button").click();
+      await expect(page.getByTestId("recording-retained")).toBeVisible();
+      expect(draftBodies).toHaveLength(1);
+      expect(uploads).toBe(1);
+      expect(submissions).toHaveLength(0);
+      await expect.poll(() => page.evaluate(() => window.__recordingMock.stoppedTracks)).toBe(1);
+
+      await selectConversationFromDrawer(page, viewed);
+      const input = page.getByTestId("message-input");
+      await input.fill("Leave this different composer alone.");
+      await page.getByTestId("recording-retry-button").evaluate((button) => {
+        (button as HTMLButtonElement).click();
+        (button as HTMLButtonElement).click();
+      });
+      await expect(page.getByTestId("recording-error")).toContainText("retry still unavailable");
+      await expect(page.getByTestId("recording-retained")).toBeVisible();
+      expect(draftBodies).toHaveLength(2);
+      expect(submissions).toHaveLength(0);
+      await expect(input).toHaveValue("Leave this different composer alone.");
+
+      await page.locator("button.btn-new").click();
+      await input.fill("A newer new-conversation composer.");
+      await newerDraftStarted.promise;
+      await page.getByTestId("recording-retry-button").click();
+      await expect(page.getByTestId("recording-panel")).toHaveCount(0);
+      expect(draftBodies).toHaveLength(3);
+      expect(draftBodies[1]).toEqual(draftBodies[0]);
+      expect(draftBodies[2]).toEqual(draftBodies[0]);
+      expect(submissions).toHaveLength(1);
+      expect(new URL(submissions[0]!.url).pathname).toBe(`/api/conversation/${source}/chat`);
+      expect(submissions[0]!.body).toMatchObject({
+        message: "/transcription /tmp/shelley-uploads/retained.webm\nOriginal recording context. [/tmp/shelley-uploads/original-context.txt]",
+        model: "predictable",
+      });
+      expect(uploads).toBe(1);
+      expect(await page.evaluate(() => window.__recordingMock.recorderStarts)).toBe(1);
+      expect(await page.evaluate(() => window.__recordingMock.microphoneRequests)).toBe(1);
+      await expect(page).toHaveURL(/\/new$/);
+      await expect(input).toHaveValue("A newer new-conversation composer.");
+    } finally {
+      releaseFirstDraft.resolve();
+      releaseNewerDraft.resolve();
+    }
+  });
+
+  test("retries a failed raw upload using the retained audio bytes", async ({ page }) => {
+    const uploads: Buffer[] = [];
+    let chatRequests = 0;
+    await page.route("**/api/upload/raw?filename=*", async (route) => {
+      uploads.push(route.request().postDataBuffer()!);
+      if (uploads.length === 1) {
+        await route.fulfill({ status: 503, body: "upload unavailable" });
+      } else {
+        await fulfillJSON(route, { path: "/tmp/shelley-uploads/retried-upload.webm" });
+      }
+    });
+    await page.route("**/api/conversation/*/chat", async (route) => {
+      chatRequests++;
+      await fulfillJSON(route, { status: "queued" }, 202);
+    });
+    await page.goto("/new");
+    await page.getByTestId("voice-button").click();
+    await expect(page.locator(".recording-status")).toHaveAttribute("data-state", "recording");
+    await page.getByTestId("recording-stop-button").click();
+    await expect(page.getByTestId("recording-retained")).toBeVisible();
+    await expect(page.getByTestId("recording-error")).toContainText("upload unavailable");
+    expect(chatRequests).toBe(0);
+    await expect.poll(() => page.evaluate(() => window.__recordingMock.stoppedTracks)).toBe(1);
+    await page.getByTestId("recording-retry-button").click();
+    await expect(page.getByTestId("recording-panel")).toHaveCount(0);
+    expect(uploads).toHaveLength(2);
+    expect(uploads[1]).toEqual(uploads[0]);
+    expect(chatRequests).toBe(1);
+    expect(await page.evaluate(() => window.__recordingMock.recorderStarts)).toBe(1);
+  });
+
+  test("discards retained audio while its destination is pending without submitting later", async ({ page }) => {
+    const draftCreated = deferred();
+    const releaseDraft = deferred();
+    let source = "";
+    let uploads = 0;
+    let submissions = 0;
+    await page.route("**/api/conversations/draft", async (route) => {
+      const response = await route.fetch();
+      source = ((await response.json()) as { conversation_id: string }).conversation_id;
+      draftCreated.resolve();
+      await releaseDraft.promise;
+      await route.fulfill({ response });
+    });
+    await page.route("**/api/upload/raw?filename=*", async (route) => {
+      uploads++;
+      await fulfillJSON(route, { path: "/tmp/shelley-uploads/discard-pending.webm" });
+    });
+    await page.route("**/api/conversation/*/chat", async (route) => {
+      submissions++;
+      await fulfillJSON(route, { status: "queued" }, 202);
+    });
+    await page.goto("/new");
+    const input = page.getByTestId("message-input");
+    await input.fill("Keep the composer after discarding audio.");
+    await page.getByTestId("voice-button").click();
+    await draftCreated.promise;
+    try {
+      await expect(page.locator(".recording-status")).toHaveAttribute("data-state", "recording");
+      await page.getByTestId("recording-stop-button").click();
+      await expect.poll(() => uploads).toBe(1);
+      const discard = page.getByTestId("recording-cancel-button");
+      await expect(discard).toHaveAccessibleName("Discard recording");
+      await expect(discard).toBeEnabled();
+      await discard.click();
+      await expect(page.getByTestId("recording-panel")).toHaveCount(0);
+      await expect(input).toHaveValue("Keep the composer after discarding audio.");
+      releaseDraft.resolve();
+      await expect(page).toHaveURL(new RegExp(`/c/${source}$`));
+      await expect(input).toHaveValue("Keep the composer after discarding audio.");
+      expect(submissions).toBe(0);
+      expect(await page.evaluate(() => window.__recordingMock.stoppedTracks)).toBe(1);
+    } finally {
+      releaseDraft.resolve();
+    }
+  });
+
+  test("discarding a failed floating recording releases orphaned previews without touching the viewed composer", async ({
+    page,
+    request,
+  }) => {
+    const viewed = await createDraftViaAPI(request, "Keep the viewed draft.");
+    await page.route("**/api/conversations/draft", (route) =>
+      route.fulfill({ status: 500, body: "draft unavailable" }),
+    );
+    await page.route("**/api/upload", (route) =>
+      fulfillJSON(route, { path: "/tmp/shelley-uploads/attachment.png" }),
+    );
+    await page.route("**/api/upload/raw?filename=*", (route) =>
+      fulfillJSON(route, { path: "/tmp/shelley-uploads/discarded.webm" }),
+    );
+    await page.goto("/new");
+    await pasteAttachment(page, "source.png", "image", "image/png");
+    const preview = await page.locator(".message-attachment-thumb").getAttribute("src");
+    await page.getByTestId("voice-button").click();
+    await expect(page.getByTestId("recording-error")).toContainText("draft unavailable");
+    await expect(page.locator(".recording-status")).toHaveAttribute("data-state", "recording");
+    await selectConversationFromDrawer(page, viewed);
+    await pasteAttachment(page, "viewed.txt");
+    await page.getByTestId("recording-stop-button").click();
+    await expect(page.getByTestId("recording-retained")).toBeVisible();
+    expect(await page.evaluate(() => window.__recordingMock.revokedPreviews)).toEqual([]);
+    await page.getByTestId("recording-cancel-button").click();
+    await expect(page.getByTestId("recording-panel")).toHaveCount(0);
+    expect(await page.evaluate(() => window.__recordingMock.revokedPreviews)).toEqual([preview]);
+    await expect(page.getByTestId("message-input")).toHaveValue("Keep the viewed draft.");
+    await expect(page.locator(".message-attachment-ready")).toContainText("viewed.txt");
   });
 
   for (const menu of ["palette", "file menu"] as const) {
@@ -660,7 +1291,7 @@ test.describe("media recording composer", () => {
     await expect(input).toBeEnabled();
   });
 
-  test("releases a selected screen and preserves the draft when destination creation fails", async ({
+  test("keeps screen capture after destination failure until the user cancels", async ({
     page,
   }) => {
     let draftBody: Record<string, unknown> | null = null;
@@ -680,7 +1311,10 @@ test.describe("media recording composer", () => {
       .toMatchObject({
         draft: "Do not lose this failed recording draft.",
       });
-    await expect(page.getByTestId("recording-panel")).toHaveCount(0);
+    await expect(page.getByTestId("recording-error")).toContainText("draft unavailable");
+    await expect(page.locator(".recording-status")).toHaveAttribute("data-state", "recording");
+    expect(await page.evaluate(() => window.__recordingMock.stoppedTracks)).toBe(0);
+    await page.getByTestId("recording-cancel-button").click();
     await expect(input).toHaveValue("Do not lose this failed recording draft.");
     await expect(input).toBeEnabled();
     await expect
@@ -690,10 +1324,8 @@ test.describe("media recording composer", () => {
       await page.evaluate(() => ({
         display: window.__recordingMock.displayRequests,
         synchronousDisplay: window.__recordingMock.synchronousDisplayRequests,
-        microphone: window.__recordingMock.microphoneRequests,
-        starts: window.__recordingMock.recorderStarts,
       })),
-    ).toEqual({ display: 1, synchronousDisplay: 1, microphone: 0, starts: 0 });
+    ).toEqual({ display: 1, synchronousDisplay: 1 });
   });
 
   test("hides recording palette actions while an attachment uploads", async ({ page, request }) => {
@@ -1175,7 +1807,8 @@ test.describe("media recording composer", () => {
     await page.getByTestId("voice-button").click();
     await draftCreated.promise;
     expect(createdDraftId).not.toBe("");
-    expect(await page.evaluate(() => window.__recordingMock.recorderStarts)).toBe(0);
+    await expect(page.getByTestId("recording-inline")).toHaveCount(1);
+    await expect.poll(() => page.evaluate(() => window.__recordingMock.recorderStarts)).toBe(1);
 
     try {
       await selectConversationFromDrawer(page, viewed.conversationId);
@@ -1315,7 +1948,8 @@ test.describe("media recording composer", () => {
 
     await input.fill(recordedText);
     await page.getByTestId("voice-button").click();
-    expect(await page.evaluate(() => window.__recordingMock.recorderStarts)).toBe(0);
+    await expect(page.getByTestId("recording-inline")).toHaveCount(1);
+    await expect.poll(() => page.evaluate(() => window.__recordingMock.recorderStarts)).toBe(1);
 
     try {
       await selectConversationFromDrawer(page, viewed.conversationId);
@@ -1381,7 +2015,8 @@ test.describe("media recording composer", () => {
     await oldDraftCreated.promise;
     await page.getByTestId("voice-button").click();
     expect(oldDraftId).not.toBe("");
-    expect(await page.evaluate(() => window.__recordingMock.recorderStarts)).toBe(0);
+    await expect(page.getByTestId("recording-inline")).toHaveCount(1);
+    await expect.poll(() => page.evaluate(() => window.__recordingMock.recorderStarts)).toBe(1);
 
     try {
       await selectConversationFromDrawer(page, viewed.conversationId);
@@ -1433,6 +2068,7 @@ test.describe("media recording composer", () => {
       await fulfillJSON(route, { status: "queued" }, 202);
     });
 
+    await page.clock.install();
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto("/new");
     const inputBeforeRecording = page.getByTestId("message-input");
@@ -1450,6 +2086,7 @@ test.describe("media recording composer", () => {
     await expect(page.locator(".message-attachment-ready")).toHaveCount(1);
     await expect(page.getByTestId("voice-video-icon")).toBeVisible();
     const composerHeight = (await inputBeforeRecording.boundingBox())?.height;
+    await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
     await page.getByTestId("voice-button").click();
 
     await expect(page.getByTestId("recording-panel")).toBeVisible();
@@ -1462,7 +2099,11 @@ test.describe("media recording composer", () => {
     await expect(page.getByTestId("recording-status")).toHaveText("Recording…");
     await expect(page.locator(".recording-status")).toHaveAttribute("data-state", "preroll");
     await expect(page.getByTestId("recording-waveform")).toHaveClass(/recording-waveform-preroll/);
+    await page.clock.runFor(99);
+    await expect(page.locator(".recording-status")).toHaveAttribute("data-state", "preroll");
+    await page.clock.runFor(1);
     await expect(page.locator(".recording-status")).toHaveAttribute("data-state", "recording");
+    await page.clock.resume();
     await expect(page.getByTestId("recording-status")).toHaveText("Recording…");
     await expect(page.getByTestId("recording-preserved-text")).toHaveText(
       "Keep this note with the recording.",
@@ -1490,11 +2131,13 @@ test.describe("media recording composer", () => {
 
     await page.getByTestId("recording-stop-button").click();
     await transcriptionRequested.promise;
+    await expect(page.locator(".recording-status")).toHaveAttribute("data-state", "stopping");
+    await expect(page.getByTestId("recording-cancel-button")).toBeDisabled();
+    releaseAcceptance.resolve();
     await expect(page.getByTestId("recording-panel")).toHaveCount(0);
     const input = page.getByTestId("message-input");
     await expect(input).toBeVisible();
 
-    releaseAcceptance.resolve();
     await expect(input).toBeEnabled();
     await expect(input).toBeFocused();
     await input.fill("I can keep typing while the server transcribes.");
@@ -1512,6 +2155,52 @@ test.describe("media recording composer", () => {
     expect([...uploadedBody.subarray(0, 4)]).toEqual([0x1a, 0x45, 0xdf, 0xa3]);
     expect(uploadedBody.subarray(4).toString()).toBe("firstsecondlast");
     expect(await page.evaluate(() => window.__recordingMock.stoppedTracks)).toBeGreaterThan(0);
+  });
+
+  test("fits the recording controls in a narrow desktop composer", async ({ page }) => {
+    await page.setViewportSize({ width: 660, height: 800 });
+    await page.goto("/new");
+    const input = page.getByTestId("message-input");
+    await expect(input).toBeVisible({ timeout: 30_000 });
+    await input.fill("Keep this long note with the recording so the status has to truncate.");
+    await page.getByTestId("voice-button").click();
+    await expect(page.locator(".recording-status")).toHaveAttribute("data-state", "recording");
+
+    const box = async (selector: string) => {
+      const rect = await page.locator(selector).boundingBox();
+      if (!rect) throw new Error(`${selector} has no box`);
+      return { left: rect.x, right: rect.x + rect.width, width: rect.width };
+    };
+    const panel = await box(".recording-panel");
+    const main = await box(".recording-panel-main");
+    const waveform = await box('[data-testid="recording-waveform"]');
+    const preserved = await box('[data-testid="recording-preserved-text"]');
+    const timer = await box('[data-testid="recording-timer"]');
+    const screen = await box('[data-testid="recording-screen-button"]');
+    const cancel = await box('[data-testid="recording-cancel-button"]');
+    expect(waveform.left).toBeGreaterThan(panel.left);
+    expect(waveform.right).toBeLessThanOrEqual(preserved.left);
+    expect(preserved.width).toBeGreaterThan(40);
+    expect(preserved.right).toBeLessThanOrEqual(timer.left);
+    expect(timer.width).toBeGreaterThan(30);
+    expect(timer.right).toBeLessThanOrEqual(main.right);
+    expect(main.right).toBeLessThanOrEqual(screen.left);
+    expect(cancel.right).toBeLessThan(panel.right);
+    // The secondary action goes icon-only before the primary ones do.
+    await expect(
+      page.getByTestId("recording-screen-button").locator(".recording-action-label"),
+    ).toBeHidden();
+    await expect(
+      page.getByTestId("recording-stop-button").locator(".recording-action-label"),
+    ).toBeVisible();
+    await expect(
+      page.getByTestId("recording-cancel-button").locator(".recording-action-label"),
+    ).toBeVisible();
+
+    await page.getByTestId("recording-cancel-button").click();
+    await expect(input).toHaveValue(
+      "Keep this long note with the recording so the status has to truncate.",
+    );
   });
 
   test("discards microphone capture and submits screen recording for transcription", async ({
@@ -1565,9 +2254,82 @@ test.describe("media recording composer", () => {
     expect(uploadedFilenames[1]).toBe("screen.webm.json");
   });
 
+  test("hovering the record button offers Voice & Screen with a single screen request", async ({
+    page,
+  }) => {
+    await page.goto("/new");
+    const menu = page.getByTestId("record-menu");
+    await expect(menu).toHaveCount(0);
+    await page.getByTestId("voice-button").hover();
+    await expect(menu).toBeVisible();
+    await expect(menu.getByRole("button")).toHaveCount(2);
+    await expect(menu.getByRole("button").first()).toHaveAccessibleName("Voice");
+    await expect(menu.getByRole("button").last()).toHaveAccessibleName("Voice & Screen");
+
+    // Moving away closes it.
+    await page.getByTestId("attach-button").hover();
+    await expect(menu).toHaveCount(0);
+
+    await page.getByTestId("voice-button").hover();
+    await menu.getByRole("button", { name: "Voice & Screen" }).click();
+    await expect(page.getByTestId("recording-panel")).toHaveAttribute("data-mode", "screen");
+    await expect(page.getByTestId("recording-status")).toHaveText("Recording screen + microphone…");
+    expect(
+      await page.evaluate(() => ({
+        display: window.__recordingMock.displayRequests,
+        synchronous: window.__recordingMock.synchronousDisplayRequests,
+        microphone: window.__recordingMock.microphoneRequests,
+      })),
+    ).toEqual({ display: 1, synchronous: 1, microphone: 1 });
+  });
+
+  test("long-pressing the record button opens the menu without starting a recording", async ({
+    page,
+  }) => {
+    await page.clock.install();
+    await page.goto("/new");
+    const button = page.getByTestId("voice-button");
+    const menu = page.getByTestId("record-menu");
+    await button.dispatchEvent("pointerdown", { pointerType: "touch", button: 0, isPrimary: true });
+    await page.clock.runFor(200);
+    await expect(menu).toHaveCount(0);
+    await page.clock.runFor(400);
+    await expect(menu).toBeVisible();
+    // The click that ends a long press must not also start voice recording.
+    await button.dispatchEvent("pointerup", { pointerType: "touch", button: 0, isPrimary: true });
+    await button.dispatchEvent("click", { detail: 1 });
+    await expect(page.getByTestId("recording-panel")).toHaveCount(0);
+    await expect(menu).toBeVisible();
+
+    await menu.getByRole("button", { name: "Voice", exact: true }).click();
+    await expect(page.getByTestId("recording-panel")).toHaveAttribute("data-mode", "microphone");
+    expect(await page.evaluate(() => window.__recordingMock.displayRequests)).toBe(0);
+  });
+
+  test("keyboard focus reveals the record choices and Escape returns focus to the button", async ({
+    page,
+  }) => {
+    await page.goto("/new");
+    const button = page.getByTestId("voice-button");
+    const menu = page.getByTestId("record-menu");
+    await page.getByTestId("attach-button").focus();
+    await page.keyboard.press("Tab");
+    await expect(button).toBeFocused();
+    await expect(menu).toBeVisible();
+    await page.keyboard.press("Tab");
+    await page.keyboard.press("Tab");
+    await expect(menu.getByRole("button", { name: "Voice & Screen" })).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(menu).toHaveCount(0);
+    await expect(button).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(page.getByTestId("recording-panel")).toHaveAttribute("data-mode", "microphone");
+  });
+
   test("uses the recorder lifetime when screen sharing ends during pre-roll", async ({ page }) => {
-    const captureStartedAt = new Date("2026-09-17T12:00:00Z");
-    await page.clock.setFixedTime(captureStartedAt);
+    await page.clock.install();
+    const captureStartedAt = new Date(await page.evaluate(() => Date.now() + 1000));
+    await page.clock.pauseAt(captureStartedAt);
     let metadata: { duration_ms?: number } | null = null;
     await page.route("**/api/upload/raw?filename=*", async (route) => {
       const filename = new URL(route.request().url()).searchParams.get("filename") ?? "";
@@ -1586,10 +2348,12 @@ test.describe("media recording composer", () => {
 
     await page.goto("/new");
     await page.getByTestId("voice-button").click();
+    await expect(page.locator(".recording-status")).toHaveAttribute("data-state", "preroll");
+    await page.clock.runFor(100);
     await expect(page.locator(".recording-status")).toHaveAttribute("data-state", "recording");
     await page.getByTestId("recording-screen-button").click();
     await expect(page.locator(".recording-status")).toHaveAttribute("data-state", "preroll");
-    await page.clock.setFixedTime(new Date(captureStartedAt.getTime() + 1000));
+    await page.clock.setFixedTime(new Date(captureStartedAt.getTime() + 1100));
     await page.evaluate(() => {
       window.__recordingMock.endDisplay();
     });
@@ -1737,13 +2501,21 @@ test.describe("media recording composer", () => {
     await expect(input).toHaveValue("Keep failed draft");
   });
 
-  test("keeps the original draft when durable acceptance fails", async ({ page }) => {
-    await page.route("**/api/upload/raw?filename=*", (route) =>
-      fulfillJSON(route, { path: "/tmp/shelley-uploads/preserved.webm" }),
-    );
-    await page.route("**/api/conversation/*/chat", (route) =>
-      route.fulfill({ status: 500, body: "transcription unavailable" }),
-    );
+  test("retains the original recording and retries failed durable acceptance", async ({ page }) => {
+    let uploads = 0;
+    const submissions: Array<{ url: string; body: Record<string, unknown> }> = [];
+    await page.route("**/api/upload/raw?filename=*", async (route) => {
+      uploads++;
+      await fulfillJSON(route, { path: "/tmp/shelley-uploads/preserved.webm" });
+    });
+    await page.route("**/api/conversation/*/chat", async (route) => {
+      submissions.push({ url: route.request().url(), body: route.request().postDataJSON() });
+      if (submissions.length === 1) {
+        await route.fulfill({ status: 500, body: "transcription unavailable" });
+      } else {
+        await fulfillJSON(route, { status: "queued" }, 202);
+      }
+    });
 
     await page.goto("/new");
     await page.getByTestId("message-input").fill("Keep this draft");
@@ -1751,9 +2523,16 @@ test.describe("media recording composer", () => {
     await expect(page.getByTestId("recording-status")).toHaveText("Recording…");
     await page.getByTestId("recording-stop-button").click();
 
-    await expect(page.getByTestId("recording-panel")).toHaveCount(0);
-    await expect(page.getByTestId("message-input")).toHaveValue("Keep this draft");
+    await expect(page.getByTestId("recording-retained")).toBeVisible();
+    await expect(page.getByTestId("recording-preserved-text")).toHaveText("Keep this draft");
     await expect(page.getByTestId("transcription-task")).toHaveCount(0);
+    await page.getByTestId("recording-retry-button").click();
+    await expect(page.getByTestId("recording-panel")).toHaveCount(0);
+    await expect(page.getByTestId("message-input")).toHaveValue("");
+    expect(uploads).toBe(1);
+    expect(submissions).toHaveLength(2);
+    expect(submissions[1]).toEqual(submissions[0]);
+    expect(await page.evaluate(() => window.__recordingMock.recorderStarts)).toBe(1);
   });
 
   test("keeps microphone recording when screen selection fails", async ({ page }) => {
@@ -1810,64 +2589,32 @@ test.describe("media recording composer", () => {
     await expect(page.getByTestId("message-input")).toHaveValue("");
     expect(await page.evaluate(() => window.__recordingMock.stoppedTracks)).toBeGreaterThan(0);
   });
-
-  test("cancels captured pre-roll without uploading", async ({ page }) => {
-    let uploadCount = 0;
-    await page.route("**/api/upload/raw?filename=*", async (route) => {
-      uploadCount++;
-      await fulfillJSON(route, { path: "/tmp/shelley-uploads/unexpected.webm" });
-    });
-
-    await page.goto("/new");
-    await page.getByTestId("voice-button").click();
-    await expect.poll(() => page.evaluate(() => window.__recordingMock.recorderStarts)).toBe(1);
-    await expect(page.locator(".recording-status")).toHaveAttribute("data-state", "preroll");
-    await page.getByTestId("recording-cancel-button").click();
-
-    await expect(page.getByTestId("recording-panel")).toHaveCount(0);
-    expect(uploadCount).toBe(0);
-    expect(await page.evaluate(() => window.__recordingMock.stoppedTracks)).toBeGreaterThan(0);
-  });
-
-  test("accepts encoded data emitted when a short recording stops", async ({ page }) => {
-    let uploadedBody = Buffer.alloc(0);
-    const uploadStarted = deferred();
-    const releaseUpload = deferred();
-    await page.route("**/api/upload/raw?filename=*", async (route) => {
-      uploadedBody = route.request().postDataBuffer() ?? Buffer.alloc(0);
-      uploadStarted.resolve();
-      await releaseUpload.promise;
-      await fulfillJSON(route, { path: "/tmp/shelley-uploads/short.webm" });
-    });
-    await page.route("**/api/conversation/*/chat", async (route) => {
-      await fulfillJSON(route, { status: "queued" }, 202);
-    });
-
-    await page.goto("/new");
-    await page.evaluate(() => {
-      window.__recordingMock.dataOnlyOnStop = true;
-    });
-    await page.getByTestId("voice-button").click();
-    await expect(page.locator(".recording-status")).toHaveAttribute("data-state", "preroll");
-    await page.getByTestId("recording-stop-button").click();
-    await uploadStarted.promise;
-    await expect(page.getByTestId("recording-status")).toHaveText("Finishing recording…");
-    releaseUpload.resolve();
-    await expect(page.getByTestId("recording-panel")).toHaveCount(0);
-    expect([...uploadedBody.subarray(0, 4)]).toEqual([0x1a, 0x45, 0xdf, 0xa3]);
-    expect(uploadedBody.subarray(4).toString()).toBe("encodedlast");
-  });
 });
 
 test("keeps audio recording available without screen capture", async ({ page }) => {
   await installMediaMocks(page, false);
+  await page.clock.install();
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/new");
   await expect(page.getByTestId("voice-microphone-icon")).toBeVisible();
   await expect(page.getByTestId("voice-video-icon")).toHaveCount(0);
+  await page.getByTestId("voice-button").hover();
+  await page.clock.runFor(1000);
+  await expect(page.getByTestId("record-menu")).toHaveCount(0);
   await openRecordingPalette(page);
   await expect(recordingPaletteItem(page, "Record audio")).toBeVisible();
   await expect(recordingPaletteItem(page, "Record audio and screen")).toHaveCount(0);
+});
+
+test("explains missing transcription instead of recording", async ({ page }) => {
+  await installMediaMocks(page, true, false);
+  await page.goto("/new");
+  await page.getByTestId("voice-button").click();
+  await expect(page.locator(".status-error")).toContainText("Set OPENAI_API_KEY");
+  await expect(page.getByTestId("recording-panel")).toHaveCount(0);
+  await recordingShortcut(page, "microphone");
+  await expect(page.getByTestId("recording-panel")).toHaveCount(0);
+  expect(await page.evaluate(() => window.__recordingMock.microphoneRequests)).toBe(0);
 });
 
 test("hides recording palette actions when media recording is unavailable", async ({ page }) => {
@@ -1895,7 +2642,7 @@ declare global {
       meterPeak: number;
       recorderStarts: number;
       recorderStops: number;
-      dataOnlyOnStop: boolean;
+      revokedPreviews: string[];
       endDisplay: () => void;
     };
   }

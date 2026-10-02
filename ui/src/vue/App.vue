@@ -222,6 +222,12 @@
             commandPaletteOpen = false;
           }
         "
+        @open-integrations-modal="
+          () => {
+            integrationsModalOpen = true;
+            commandPaletteOpen = false;
+          }
+        "
         @open-notifications-modal="
           () => {
             notificationsModalOpen = true;
@@ -250,6 +256,22 @@
         "
         @models-changed="modelsRefreshTrigger++"
         @open-providers="openProviderSetup"
+      />
+
+      <IntegrationsModal
+        :is-open="integrationsModalOpen"
+        @open-models-modal="
+          () => {
+            integrationsModalOpen = false;
+            modelsModalOpen = true;
+          }
+        "
+        @close="
+          () => {
+            integrationsModalOpen = false;
+            focusMessageInputIfUnfocused();
+          }
+        "
       />
 
       <NotificationsModal
@@ -297,6 +319,7 @@ import ConversationDrawer from "./components/ConversationDrawer.vue";
 import CommandPalette from "./components/CommandPalette.vue";
 import HerdsPage from "./components/HerdsPage.vue";
 import ModelsModal from "./components/ModelsModal.vue";
+import IntegrationsModal from "./components/IntegrationsModal.vue";
 import NotificationsModal from "./components/NotificationsModal.vue";
 import FeatureFlagsModal from "./components/FeatureFlagsModal.vue";
 import FileFinderModal from "./components/FileFinderModal.vue";
@@ -313,7 +336,7 @@ import {
   type ConversationListPatchEvent,
   type DiskSpaceStatus,
 } from "../types";
-import { api, type OnboardingStatus, type Workspace } from "../services/api";
+import { api, ApiError, type OnboardingStatus, type Workspace } from "../services/api";
 import { btwStore } from "../services/btwStore";
 import { messageStore } from "../services/messageStore";
 import {
@@ -470,6 +493,7 @@ const diffViewerTrigger = ref(0);
 const gitGraphTrigger = ref(0);
 const terminalTrigger = ref(0);
 const modelsModalOpen = ref(false);
+const integrationsModalOpen = ref(false);
 const notificationsModalOpen = ref(false);
 const featureFlagsModalOpen = ref(false);
 // Fuzzy file finder (Cmd/Ctrl+P) + the generic editor it opens.
@@ -489,9 +513,14 @@ const error = ref<string | null>(null);
 const ephemeralTerminals = ref<EphemeralTerminal[]>([]);
 const streamStatus = ref<StreamStatus>("connected");
 // Server-wide low-disk notice; the server sends a snapshot on every (re)connect.
+// Revisions only order statuses from one server process: a transition that
+// could not be persisted (e.g. the disk was full) is lost on restart, so a
+// snapshot is accepted even when its revision is older.
 const diskSpaceStatus = ref<DiskSpaceStatus | null>(null);
-function applyDiskSpaceStatus(status: DiskSpaceStatus) {
-  if (diskSpaceStatus.value && status.revision < diskSpaceStatus.value.revision) return;
+function applyDiskSpaceStatus(status: DiskSpaceStatus, snapshot = false) {
+  if (!snapshot && diskSpaceStatus.value && status.revision < diskSpaceStatus.value.revision) {
+    return;
+  }
   diskSpaceStatus.value = status;
 }
 const reconnectNonce = ref(0);
@@ -720,7 +749,8 @@ async function loadConversations() {
     }
   } catch (err) {
     console.error("Failed to load conversations:", err);
-    error.value = "Failed to load conversations. Please refresh the page.";
+    // The server's reason (e.g. a full disk) beats a generic line.
+    error.value = err instanceof ApiError ? err.message : t("failedToLoadConversations");
   } finally {
     loading.value = false;
   }
@@ -1014,8 +1044,9 @@ async function handleDistillNewGeneration(
   instructions?: string,
 ) {
   try {
+    // Compaction happens in place; don't touch currentConversationId here or
+    // a user who navigated away mid-request gets pulled back.
     await api.distillNewGeneration(sourceConversationId, model, cwd, method, instructions);
-    currentConversationId.value = sourceConversationId;
   } catch (err) {
     console.error("Failed to compact into new generation:", err);
     error.value = "Failed to compact conversation";

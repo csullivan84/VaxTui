@@ -49,20 +49,6 @@ func TestAll(t *testing.T) {
 	}
 }
 
-func TestDeepSeekV4ProviderCapabilityDescriptions(t *testing.T) {
-	for _, id := range []string{"deepseek-v4-flash-0731-fireworks", "deepseek-v4-pro-fireworks"} {
-		model := ByID(id)
-		if model == nil {
-			t.Fatalf("model %q missing", id)
-		}
-		for _, capability := range []string{"1M-token context", "reasoning", "tool use", "text-only", "no images"} {
-			if !strings.Contains(model.Description, capability) {
-				t.Errorf("%s description %q missing %q", id, model.Description, capability)
-			}
-		}
-	}
-}
-
 func TestNativeDeepSeekRemoved(t *testing.T) {
 	for _, id := range []string{"deepseek-v4-flash", "deepseek-v4-pro"} {
 		if ByID(id) != nil {

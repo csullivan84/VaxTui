@@ -239,26 +239,6 @@ var (
 		SupportsImages:   false,
 	}
 
-	DeepseekV4ProFireworks = Model{
-		UserName:         "deepseek-v4-pro-fireworks",
-		ModelName:        "accounts/fireworks/models/deepseek-v4-pro-0813",
-		TextVerbosity:    "",
-		URL:              FireworksURL,
-		APIKeyEnv:        FireworksAPIKeyEnv,
-		IsReasoningModel: false,
-		SupportsImages:   false,
-	}
-
-	DeepseekV4FlashFireworks = Model{
-		UserName:         "deepseek-v4-flash-0731-fireworks",
-		ModelName:        "accounts/fireworks/models/deepseek-v4-flash-0731",
-		TextVerbosity:    "",
-		URL:              FireworksURL,
-		APIKeyEnv:        FireworksAPIKeyEnv,
-		IsReasoningModel: false,
-		SupportsImages:   false,
-	}
-
 	DeepseekV41FlashFireworks = Model{
 		UserName:         "deepseek-v4.1-flash-fireworks",
 		ModelName:        "accounts/fireworks/models/deepseek-v4p1-flash",
@@ -322,26 +302,6 @@ var (
 	GLM53FlashFireworks = Model{
 		UserName:         "glm-5.3-flash-fireworks",
 		ModelName:        "accounts/fireworks/models/glm-5p3-flash",
-		TextVerbosity:    "",
-		URL:              FireworksURL,
-		APIKeyEnv:        FireworksAPIKeyEnv,
-		IsReasoningModel: true,
-		SupportsImages:   true,
-	}
-
-	KimiK26Fireworks = Model{
-		UserName:         "kimi-k2.6-fireworks",
-		ModelName:        "accounts/fireworks/models/kimi-k2p6",
-		TextVerbosity:    "",
-		URL:              FireworksURL,
-		APIKeyEnv:        FireworksAPIKeyEnv,
-		IsReasoningModel: true,
-		SupportsImages:   true,
-	}
-
-	KimiK27CodeFireworks = Model{
-		UserName:         "kimi-k2.7-code-fireworks",
-		ModelName:        "accounts/fireworks/models/kimi-k2p7-code",
 		TextVerbosity:    "",
 		URL:              FireworksURL,
 		APIKeyEnv:        FireworksAPIKeyEnv,
@@ -415,6 +375,17 @@ var (
 	GPT6Astra = Model{
 		UserName:           "gpt-6-astra",
 		ModelName:          "gpt-6-astra",
+		TextVerbosity:      "low",
+		URL:                OpenAIURL,
+		APIKeyEnv:          OpenAIAPIKeyEnv,
+		IsReasoningModel:   true,
+		SupportsApplyPatch: true,
+		SupportsImages:     true,
+	}
+
+	GPT61Sol = Model{
+		UserName:           "gpt-6.1-sol",
+		ModelName:          "gpt-6.1-sol",
 		TextVerbosity:      "low",
 		URL:                OpenAIURL,
 		APIKeyEnv:          OpenAIAPIKeyEnv,
@@ -639,6 +610,7 @@ func filterReasoningForOrigin(msg llm.Message, origin llm.MessageOrigin) llm.Mes
 var ModelsRegistry = []Model{
 	// Current OpenAI
 	GPT6Astra,
+	GPT61Sol,
 	GPT6Sol,
 	GPT6Luna,
 	GPT56Sol,
@@ -666,8 +638,6 @@ var ModelsRegistry = []Model{
 	TogetherQwen3,
 	TogetherMistralSmall,
 	// Fireworks / misc providers
-	DeepseekV4ProFireworks,
-	DeepseekV4FlashFireworks,
 	DeepseekV41FlashFireworks,
 	MoonshotKimiK2,
 	MistralMedium,
@@ -675,8 +645,6 @@ var ModelsRegistry = []Model{
 	GLM52Fireworks,
 	GLM53Fireworks,
 	GLM53FlashFireworks,
-	KimiK26Fireworks,
-	KimiK27CodeFireworks,
 	KimiK3Fireworks,
 	GPTOSS120B,
 	LlamaCPP,
@@ -1089,8 +1057,22 @@ func toToolCallLLMContent(toolCall openai.ToolCall) llm.Content {
 		ID:        id,
 		Type:      llm.ContentTypeToolUse,
 		ToolName:  toolCall.Function.Name,
-		ToolInput: json.RawMessage(toolCall.Function.Arguments),
+		ToolInput: toolArgumentsInput(toolCall.Function.Arguments),
 	}
+}
+
+// toolArgumentsInput converts a provider's tool arguments string into
+// ToolInput. Providers may return empty or malformed strings; both must stay
+// serializable so the assistant message can be persisted.
+func toolArgumentsInput(arguments string) json.RawMessage {
+	if arguments == "" {
+		return json.RawMessage(`{}`)
+	}
+	if json.Valid([]byte(arguments)) {
+		return json.RawMessage(arguments)
+	}
+	encoded, _ := json.Marshal(arguments)
+	return encoded
 }
 
 // toToolResultLLMContent converts a tool result message from OpenAI to llm.Content.
