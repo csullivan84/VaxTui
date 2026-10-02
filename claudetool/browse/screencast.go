@@ -52,8 +52,14 @@ type screencastState struct {
 	// stopCh is closed to signal the ack goroutine to stop.
 	stopCh chan struct{}
 	// stopped is closed by the ack goroutine when it exits.
-	stopped   chan struct{}
-	startDone chan struct{}
+	stopped    chan struct{}
+	startDone  chan struct{}
+	rearmDone  chan struct{}
+	rearming   bool
+	generation uint64
+	rearmErr   error
+	config     screencastConfig
+	browserCtx context.Context
 
 	newEncoder screencastEncoderFactory
 	startCDP   screencastStartCDP
@@ -94,6 +100,11 @@ type screencastAckCDP func(context.Context, int64) error
 type screencastStopCDP func(context.Context) error
 type screencastEncoderFactory func(string, string) (screencastEncoder, error)
 
+type screencastConfig struct {
+	format                                      page.ScreencastFormat
+	quality, maxWidth, maxHeight, everyNthFrame int64
+}
+
 type screencastStopResult struct {
 	done chan struct{}
 	err  error // written before done is closed
@@ -106,6 +117,7 @@ type screencastStopResources struct {
 	ffmpegIn   io.WriteCloser
 	encoder    screencastEncoder
 	outputPath string
+	rearmErr   error
 	timeout    time.Duration
 }
 
@@ -263,6 +275,10 @@ func (b *BrowseTools) screencastStartWithContext(browserCtx context.Context, for
 	sc.mu.Lock()
 	sc.active = true
 	sc.startDone = startDone
+	sc.generation++
+	sc.rearmErr = nil
+	sc.config = screencastConfig{scFormat, quality, maxWidth, maxHeight, everyNthFrame}
+	sc.browserCtx = browserCtx
 	sc.sessionID = sessionID
 	sc.outputPath = outputPath
 	sc.frameCount = 0
@@ -360,6 +376,9 @@ func (b *BrowseTools) rollbackScreencastStart() error {
 	sc.ackCh = nil
 	sc.stopCh = nil
 	sc.stopped = nil
+	sc.rearmErr = nil
+	sc.config = screencastConfig{}
+	sc.browserCtx = nil
 	sc.mu.Unlock()
 	b.finishScreencastStart()
 	return errors.Join(cleanup...)
@@ -403,6 +422,58 @@ func (b *BrowseTools) screencastStopCDP(ctx context.Context) error {
 	return chromedp.Run(ctx, page.StopScreencast())
 }
 
+// handleScreencastNavigation re-arms Page.startScreencast after a top-level
+// navigation replaces the renderer that owned the prior stream.
+func (b *BrowseTools) handleScreencastNavigation(e *page.EventFrameNavigated) {
+	if e == nil || e.Frame == nil || e.Frame.ParentID != "" {
+		return
+	}
+	sc := &b.screencast
+	sc.mu.Lock()
+	if !sc.active || sc.rearming {
+		sc.mu.Unlock()
+		return
+	}
+	generation, config, browserCtx := sc.generation, sc.config, sc.browserCtx
+	sc.rearming = true
+	sc.rearmDone = make(chan struct{})
+	sc.mu.Unlock()
+	go b.rearmScreencast(browserCtx, generation, config)
+}
+
+func (b *BrowseTools) rearmScreencast(browserCtx context.Context, generation uint64, config screencastConfig) {
+	b.waitForScreencastInitialStart()
+	err := error(nil)
+	if browserCtx == nil {
+		err = fmt.Errorf("screencast browser context is unavailable")
+	} else {
+		sc := &b.screencast
+		sc.mu.Lock()
+		active := sc.active && sc.rearming && sc.generation == generation
+		sc.mu.Unlock()
+		if active {
+			if err = b.screencastStopCDP(browserCtx); err == nil {
+				err = b.screencastStartCDP(browserCtx, config.format, config.quality, config.maxWidth, config.maxHeight, config.everyNthFrame)
+			}
+		}
+	}
+
+	sc := &b.screencast
+	sc.mu.Lock()
+	if sc.rearming && sc.generation == generation {
+		if err != nil {
+			sc.rearmErr = fmt.Errorf("re-arm screencast after navigation: %w", err)
+		}
+		done := sc.rearmDone
+		sc.rearming = false
+		sc.rearmDone = nil
+		sc.mu.Unlock()
+		close(done)
+		return
+	}
+	sc.mu.Unlock()
+}
+
 // screencastFFmpegCommand encodes CDP's JPEG or PNG frames as H.264 MP4.
 func screencastFFmpegCommand(inputFormat, outputPath string) *exec.Cmd {
 	return exec.Command(
@@ -439,7 +510,7 @@ func (sc *screencastState) claimStopLocked() *screencastStopResources {
 	resources := &screencastStopResources{
 		result: result, stopCh: sc.stopCh, stopped: sc.stopped,
 		ffmpegIn: sc.ffmpegIn, encoder: sc.encoder, outputPath: sc.outputPath,
-		timeout: screencastStopTimeout,
+		rearmErr: sc.rearmErr, timeout: screencastStopTimeout,
 	}
 	sc.stopCh = nil
 	sc.ffmpegIn = nil
@@ -447,7 +518,7 @@ func (sc *screencastState) claimStopLocked() *screencastStopResources {
 	return resources
 }
 
-func (b *BrowseTools) waitForScreencastStart() {
+func (b *BrowseTools) waitForScreencastInitialStart() {
 	sc := &b.screencast
 	sc.mu.Lock()
 	done := sc.startDone
@@ -458,6 +529,31 @@ func (b *BrowseTools) waitForScreencastStart() {
 			wait()
 		}
 		<-done
+	}
+}
+
+func (b *BrowseTools) waitForScreencastStart() {
+	for {
+		sc := &b.screencast
+		sc.mu.Lock()
+		startDone, rearmDone := sc.startDone, sc.rearmDone
+		starting, rearming := sc.starting, sc.rearming
+		sc.mu.Unlock()
+		if starting && startDone != nil {
+			if wait := sc.startWait; wait != nil {
+				wait()
+			}
+			<-startDone
+			continue
+		}
+		if rearming && rearmDone != nil {
+			if wait := sc.startWait; wait != nil {
+				wait()
+			}
+			<-rearmDone
+			continue
+		}
+		return
 	}
 }
 
@@ -518,6 +614,9 @@ func (b *BrowseTools) finishScreencastStop(resources *screencastStopResources) (
 		if err := resources.encoder.Wait(); err != nil {
 			return fmt.Errorf("ffmpeg failed: %w: %s", err, resources.encoder.Stderr())
 		}
+	}
+	if resources.rearmErr != nil {
+		return resources.rearmErr
 	}
 	info, err := os.Stat(resources.outputPath)
 	if err != nil {

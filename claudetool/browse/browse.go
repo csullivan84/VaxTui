@@ -340,6 +340,8 @@ func (b *BrowseTools) handleBrowserEvent(ev any) {
 		}
 	case *page.EventScreencastFrame:
 		b.handleScreencastFrame(e)
+	case *page.EventFrameNavigated:
+		b.handleScreencastNavigation(e)
 	case *tracing.EventDataCollected:
 		b.traceMutex.Lock()
 		if b.tracingActive {
