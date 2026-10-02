@@ -49,6 +49,35 @@ func TestAll(t *testing.T) {
 	}
 }
 
+func TestGPT61SolInBuiltInCatalog(t *testing.T) {
+	for _, m := range All() {
+		if m.ID != "gpt-6.1-sol" {
+			continue
+		}
+		if m.APIModelName != "gpt-6.1-sol" || m.Description != "GPT-6.1 Sol" || m.APIType != APITypeOpenAIResponses || m.Build == nil {
+			t.Fatalf("GPT-6.1 Sol = %+v", m)
+		}
+		return
+	}
+	t.Fatal("GPT-6.1 Sol not in built-in catalog")
+}
+
+func TestSonnet55InBuiltInCatalog(t *testing.T) {
+	var found bool
+	for _, m := range All() {
+		if m.ID != "claude-sonnet-5.5" {
+			continue
+		}
+		found = true
+		if m.APIModelName != "claude-sonnet-5-5" || m.Description != "Claude Sonnet 5.5" || m.APIType != APITypeAnthropicMessages || m.Build == nil {
+			t.Fatalf("Sonnet 5.5 = %+v", m)
+		}
+	}
+	if !found {
+		t.Fatal("Claude Sonnet 5.5 not in built-in catalog")
+	}
+}
+
 func TestNativeDeepSeekRemoved(t *testing.T) {
 	for _, id := range []string{"deepseek-v4-flash", "deepseek-v4-pro"} {
 		if ByID(id) != nil {

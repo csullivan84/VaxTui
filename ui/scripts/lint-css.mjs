@@ -15,6 +15,10 @@ const typeScale = new Map([
   ["--font-size-12", "0.75rem"],
   ["--font-size-13", "0.8125rem"],
   ["--font-size-14", "0.875rem"],
+  ["--font-size-heading-1", "2rem"],
+  ["--font-size-heading-2", "1.45rem"],
+  ["--font-size-heading-3", "1.15rem"],
+  ["--font-size-heading-1-mobile", "1.65rem"],
 ]);
 const legacyFontSizes = new Set([
   "0.6rem",
@@ -59,7 +63,7 @@ const legacyFontSizes = new Set([
 ]);
 const expectedLegacyFontSizeDeclarations = 157;
 const expectedDuplicateRuleGroups = 193;
-const expectedExcessDuplicateRules = 533;
+const expectedExcessDuplicateRules = 531;
 const legacyFontShorthands = new Set([
   "13px/1.55 ui-monospace,\n    SFMono-Regular,\n    Menlo,\n    Consolas,\n    monospace",
 ]);
