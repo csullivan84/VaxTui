@@ -484,8 +484,13 @@ func TestScreencastStartPublishesBeforeSynchronousFirstFrame(t *testing.T) {
 	if frames != 1 || encoder.writer.String() != "frame" {
 		t.Fatalf("synchronous first frame was not recorded: frames=%d data=%q", frames, encoder.writer.String())
 	}
-	if got := <-acks; got != 17 {
-		t.Fatalf("ack = %d, want 17", got)
+	select {
+	case got := <-acks:
+		if got != 17 {
+			t.Fatalf("ack = %d, want 17", got)
+		}
+	case <-t.Context().Done():
+		t.Fatal("first frame was not acknowledged")
 	}
 }
 
@@ -521,5 +526,61 @@ func TestScreencastStartFailureRollsBackPublishedResources(t *testing.T) {
 	defer b.screencast.mu.Unlock()
 	if b.screencast.active || b.screencast.starting || b.screencast.sessionID != "" || b.screencast.outputPath != "" || b.screencast.frameCount != 0 || !b.screencast.startTime.IsZero() || b.screencast.encoder != nil || b.screencast.ffmpegIn != nil || b.screencast.ackCh != nil || b.screencast.stopCh != nil || b.screencast.stopped != nil {
 		t.Fatalf("rollback left published state: %+v", b.screencast)
+	}
+}
+
+func TestScreencastStopWaitsForPublishedStart(t *testing.T) {
+	encoder := &fakeScreencastEncoder{writer: &fakeScreencastWriter{}}
+	startEntered := make(chan struct{})
+	releaseStart := make(chan struct{})
+	stopWaited := make(chan struct{})
+	startResult := make(chan error, 1)
+	stopResult := make(chan error, 1)
+	b := &BrowseTools{screencast: screencastState{
+		newEncoder: func(_, outputPath string) (screencastEncoder, error) {
+			if err := os.WriteFile(outputPath, []byte("recording"), 0o644); err != nil {
+				return nil, err
+			}
+			return encoder, nil
+		},
+		startCDP: func(context.Context, page.ScreencastFormat, int64, int64, int64, int64) error {
+			close(startEntered)
+			<-releaseStart
+			return nil
+		},
+		stopCDP:   func(context.Context) error { return nil },
+		startWait: func() { close(stopWaited) },
+	}}
+	if err := b.beginScreencastStart(); err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		_, err := b.screencastStartWithContext(t.Context(), "jpeg", 60, 1280, 720, 1)
+		startResult <- err
+	}()
+	<-startEntered
+	go func() { stopResult <- b.screencastStopInternal() }()
+	select {
+	case <-stopWaited:
+	case err := <-stopResult:
+		t.Fatalf("stop completed before the published start: %v", err)
+	case <-t.Context().Done():
+		t.Fatal("stop did not wait for the published start")
+	}
+	b.screencast.mu.Lock()
+	if !b.screencast.active || b.screencast.stop != nil {
+		b.screencast.mu.Unlock()
+		t.Fatalf("stop claimed a starting screencast: %+v", b.screencast)
+	}
+	b.screencast.mu.Unlock()
+	close(releaseStart)
+	if err := <-startResult; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-stopResult; err != nil {
+		t.Fatal(err)
+	}
+	if encoder.waits != 1 || encoder.stops != 0 {
+		t.Fatalf("encoder finalized %d waits and %d stops, want one wait and no rollback stop", encoder.waits, encoder.stops)
 	}
 }

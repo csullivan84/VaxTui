@@ -3,6 +3,7 @@ package browse
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -51,12 +52,14 @@ type screencastState struct {
 	// stopCh is closed to signal the ack goroutine to stop.
 	stopCh chan struct{}
 	// stopped is closed by the ack goroutine when it exits.
-	stopped chan struct{}
+	stopped   chan struct{}
+	startDone chan struct{}
 
 	newEncoder screencastEncoderFactory
 	startCDP   screencastStartCDP
 	ackCDP     screencastAckCDP
 	stopCDP    screencastStopCDP
+	startWait  func()
 }
 
 type screencastEncoder interface {
@@ -217,12 +220,11 @@ func (b *BrowseTools) beginScreencastStart() error {
 
 func (b *BrowseTools) screencastStartWithContext(browserCtx context.Context, format string, quality, maxWidth, maxHeight, everyNthFrame int64) (string, error) {
 	sc := &b.screencast
+	published := false
 	defer func() {
-		sc.mu.Lock()
-		if sc.starting {
-			sc.starting = false
+		if !published {
+			b.finishScreencastStart()
 		}
-		sc.mu.Unlock()
 	}()
 
 	scFormat := page.ScreencastFormatJpeg
@@ -257,9 +259,10 @@ func (b *BrowseTools) screencastStartWithContext(browserCtx context.Context, for
 	ackCh := make(chan int64, 4)
 	stopCh := make(chan struct{})
 	stoppedCh := make(chan struct{})
+	startDone := make(chan struct{})
 	sc.mu.Lock()
 	sc.active = true
-	sc.starting = false
+	sc.startDone = startDone
 	sc.sessionID = sessionID
 	sc.outputPath = outputPath
 	sc.frameCount = 0
@@ -279,13 +282,30 @@ func (b *BrowseTools) screencastStartWithContext(browserCtx context.Context, for
 	go b.screencastAckLoop(browserCtx, ackCh, stopCh, stoppedCh)
 
 	if err := b.screencastStartCDP(browserCtx, scFormat, quality, maxWidth, maxHeight, everyNthFrame); err != nil {
-		b.rollbackScreencastStart()
+		published = true
+		if cleanupErr := b.rollbackScreencastStart(); cleanupErr != nil {
+			return "", fmt.Errorf("failed to start screencast: %w", errors.Join(err, cleanupErr))
+		}
 		return "", fmt.Errorf("failed to start screencast: %w", err)
 	}
+	published = true
+	b.finishScreencastStart()
 	return sessionID, nil
 }
 
-func (b *BrowseTools) rollbackScreencastStart() {
+func (b *BrowseTools) finishScreencastStart() {
+	sc := &b.screencast
+	sc.mu.Lock()
+	done := sc.startDone
+	sc.startDone = nil
+	sc.starting = false
+	sc.mu.Unlock()
+	if done != nil {
+		close(done)
+	}
+}
+
+func (b *BrowseTools) rollbackScreencastStart() error {
 	sc := &b.screencast
 	sc.mu.Lock()
 	resources := &screencastStopResources{
@@ -294,19 +314,11 @@ func (b *BrowseTools) rollbackScreencastStart() {
 	}
 	if sc.stopTimer != nil {
 		sc.stopTimer.Stop()
+		sc.stopTimer = nil
 	}
+	// Keep starting true until the encoder and all claimed writers are gone.
+	// Concurrent stops wait on startDone instead of claiming these resources.
 	sc.active = false
-	sc.starting = false
-	sc.sessionID = ""
-	sc.outputPath = ""
-	sc.frameCount = 0
-	sc.startTime = time.Time{}
-	sc.stopTimer = nil
-	sc.encoder = nil
-	sc.ffmpegIn = nil
-	sc.ackCh = nil
-	sc.stopCh = nil
-	sc.stopped = nil
 	sc.mu.Unlock()
 
 	if resources.stopCh != nil {
@@ -315,25 +327,45 @@ func (b *BrowseTools) rollbackScreencastStart() {
 	if resources.stopped != nil {
 		<-resources.stopped
 	}
+	var cleanup []error
+	if resources.encoder != nil {
+		if err := resources.encoder.Stop(); err != nil {
+			cleanup = append(cleanup, fmt.Errorf("stop screencast encoder: %w", err))
+		}
+	}
 	sc.writers.Wait()
 	if resources.ffmpegIn != nil {
-		_ = resources.ffmpegIn.Close()
+		if err := resources.ffmpegIn.Close(); err != nil {
+			cleanup = append(cleanup, fmt.Errorf("close screencast encoder input: %w", err))
+		}
 	}
 	if resources.encoder != nil {
-		_ = resources.encoder.Stop()
-		_ = resources.encoder.Wait()
+		if err := resources.encoder.Wait(); err != nil {
+			cleanup = append(cleanup, fmt.Errorf("wait for screencast encoder: %w", err))
+		}
 	}
 	if resources.outputPath != "" {
-		_ = os.Remove(resources.outputPath)
+		if err := os.Remove(resources.outputPath); err != nil && !os.IsNotExist(err) {
+			cleanup = append(cleanup, fmt.Errorf("remove screencast output: %w", err))
+		}
 	}
+
+	sc.mu.Lock()
+	sc.sessionID = ""
+	sc.outputPath = ""
+	sc.frameCount = 0
+	sc.startTime = time.Time{}
+	sc.encoder = nil
+	sc.ffmpegIn = nil
+	sc.ackCh = nil
+	sc.stopCh = nil
+	sc.stopped = nil
+	sc.mu.Unlock()
+	b.finishScreencastStart()
+	return errors.Join(cleanup...)
 }
 
-func (b *BrowseTools) clearScreencastStart() {
-	sc := &b.screencast
-	sc.mu.Lock()
-	sc.starting = false
-	sc.mu.Unlock()
-}
+func (b *BrowseTools) clearScreencastStart() { b.finishScreencastStart() }
 
 func (b *BrowseTools) newScreencastEncoder(inputFormat, outputPath string) (screencastEncoder, error) {
 	if factory := b.screencast.newEncoder; factory != nil {
@@ -415,9 +447,24 @@ func (sc *screencastState) claimStopLocked() *screencastStopResources {
 	return resources
 }
 
+func (b *BrowseTools) waitForScreencastStart() {
+	sc := &b.screencast
+	sc.mu.Lock()
+	done := sc.startDone
+	starting := sc.starting
+	sc.mu.Unlock()
+	if starting && done != nil {
+		if wait := sc.startWait; wait != nil {
+			wait()
+		}
+		<-done
+	}
+}
+
 // screencastStopInternal stops the screencast, or waits for an in-progress
 // stop to finish. Safe to call from any goroutine.
 func (b *BrowseTools) screencastStopInternal() error {
+	b.waitForScreencastStart()
 	sc := &b.screencast
 	sc.mu.Lock()
 	var resources *screencastStopResources
@@ -484,6 +531,7 @@ func (b *BrowseTools) finishScreencastStop(resources *screencastStopResources) (
 
 // screencastStop stops the screencast and returns summary info.
 func (b *BrowseTools) screencastStop() (sessionID, outputPath string, frameCount int, duration time.Duration, err error) {
+	b.waitForScreencastStart()
 	sc := &b.screencast
 	sc.mu.Lock()
 	if !sc.active {
