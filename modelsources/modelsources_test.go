@@ -1209,6 +1209,10 @@ func TestTranscriptionModelsFromOpenAICredentials(t *testing.T) {
 			want: want("https://gw.example.com/openai/v1/audio/transcriptions", "sk-openai", "$OPENAI_API_KEY"),
 		},
 		{
+			name: "Codex OAuth is not an audio transcription credential",
+			got:  routes(OpenAICodex("fixture-token", "fixture-account")),
+		},
+		{
 			name: "no OpenAI credential",
 			got:  routes(Env("a", "", "g", "f"), Predictable()),
 		},

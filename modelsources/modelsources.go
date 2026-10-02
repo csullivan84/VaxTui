@@ -307,7 +307,7 @@ func TranscriptionModels(sources []Source) []models.TranscriptionModel {
 			continue
 		}
 		conn := src.providers[models.ProviderOpenAI]
-		if conn == nil {
+		if conn == nil || conn.codexOAuthResponses {
 			continue
 		}
 		baseURL := cmp.Or(conn.baseURL, models.DefaultOpenAIBaseURL)
