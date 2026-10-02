@@ -29,6 +29,7 @@
     <textarea
       ref="inputRef"
       :value="text"
+      :aria-label="`Comment text for ${where}`"
       placeholder="Enter your comment..."
       class="diff-viewer-comment-input"
       @input="emit('update:text', ($event.target as HTMLTextAreaElement).value)"

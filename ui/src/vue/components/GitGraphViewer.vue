@@ -70,7 +70,7 @@
       />
 
       <div class="git-graph-body" ref="bodyRef">
-        <div class="git-graph-list">
+        <div class="git-graph-list" role="list" aria-label="Commits">
           <div v-if="loading && !data" class="git-graph-status">Loading…</div>
           <div v-if="error" class="git-graph-status git-graph-error">{{ error }}</div>
           <div v-if="!loading && !error && commits.length === 0" class="git-graph-status">
@@ -83,7 +83,11 @@
               :ref="(el) => setRowRef(el, c.hash)"
               :class="`git-graph-row${c.hash === selected ? ' git-graph-row-selected' : ''}`"
               :style="{ height: `${ROW_H}px` }"
+              role="listitem"
+              tabindex="0"
+              :aria-label="`Commit ${c.shortHash || c.hash.slice(0, 7)}: ${c.subject}`"
               @click="selectCommit(c.hash)"
+              @keydown="onCommitRowKeydown($event, c.hash)"
               @dblclick="canOpenDiff && emit('open-diff', c.hash, cwd)"
             >
               <span class="git-graph-hash">{{ c.shortHash }}</span>
@@ -586,6 +590,12 @@ function selectCommit(hash: string) {
   }
 }
 
+function onCommitRowKeydown(event: KeyboardEvent, hash: string) {
+  if (event.key !== "Enter" && event.key !== " ") return;
+  event.preventDefault();
+  selectCommit(hash);
+}
+
 // Esc handling (React effect on [isOpen, covered, onClose, sheetOpen]).
 function onEscKey(e: KeyboardEvent) {
   if (e.key === "Escape") {
@@ -610,6 +620,7 @@ watch(
 // Arrow/j/k/Enter navigation (React effect on
 // [isOpen, commits, selected, selectCommit, onOpenDiff, cwd]).
 function onNavKey(e: KeyboardEvent) {
+  if (e.defaultPrevented) return;
   const target = e.target;
   if (target instanceof Element) {
     if (target.closest("input, textarea, select")) return;
