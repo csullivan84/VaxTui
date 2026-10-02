@@ -65,7 +65,7 @@ test("voice-and-screen record menu declares popup state for keyboard users", asy
   await page.goto("/new");
   const button = page.getByTestId("voice-button");
   await button.focus();
-  await expect(button).toHaveAttribute("aria-haspopup", "menu");
+  await expect(button).not.toHaveAttribute("aria-haspopup");
   await expect(button).toHaveAttribute("aria-expanded", "true");
   await expect(page.getByTestId("record-menu")).toBeVisible();
   await page.keyboard.press("Escape");
