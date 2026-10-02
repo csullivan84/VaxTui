@@ -2653,3 +2653,36 @@ declare global {
     };
   }
 }
+
+test("recording unavailable event reaches ChatInterface as an actionable status error", async ({ page }) => {
+  await installMediaMocks(page, true, false);
+  await page.goto("/new");
+  await page.getByTestId("voice-button").click();
+  await expect(page.locator(".status-error")).toContainText("Set OPENAI_API_KEY");
+  await expect(page.getByTestId("recording-panel")).toHaveCount(0);
+});
+
+test("an unaccepted recording re-enables draft autosave after release", async ({ page }) => {
+  await installMediaMocks(page);
+  let draftId = "";
+  let updates = 0;
+  await page.route("**/api/conversations/draft", async (route) => {
+    const response = await route.fetch();
+    const payload = (await response.json()) as { conversation_id: string };
+    draftId = payload.conversation_id;
+    await route.fulfill({ response });
+  });
+  await page.route("**/api/conversation/*/draft", async (route) => {
+    if (route.request().method() === "PUT") updates++;
+    await route.continue();
+  });
+  await page.goto("/new");
+  const input = page.getByTestId("message-input");
+  await input.fill("Keep this unaccepted recording draft.");
+  await page.getByTestId("voice-button").click();
+  await expect(page.getByTestId("recording-panel")).toBeVisible();
+  await expect.poll(() => draftId).not.toBe("");
+  await page.getByTestId("recording-cancel-button").click();
+  await expect.poll(() => updates).toBeGreaterThan(0);
+  await expect(input).toHaveValue("Keep this unaccepted recording draft.");
+});
