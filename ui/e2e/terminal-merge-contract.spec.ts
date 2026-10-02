@@ -1,12 +1,27 @@
 import { expect, test } from "@playwright/test";
-import { createConversationViaAPIWithDetails, selectWorkspace, testWorkingDirectory } from "./helpers";
+import {
+  createConversationViaAPIWithDetails,
+  selectWorkspace,
+  testWorkingDirectory,
+} from "./helpers";
 
-async function openTerminal(page: Parameters<typeof selectWorkspace>[0], request: Parameters<typeof selectWorkspace>[1]) {
-  const { conversationId } = await createConversationViaAPIWithDetails(request, "terminal accessibility test");
+async function openTerminal(
+  page: Parameters<typeof selectWorkspace>[0],
+  request: Parameters<typeof selectWorkspace>[1],
+) {
+  const { conversationId } = await createConversationViaAPIWithDetails(
+    request,
+    "terminal accessibility test",
+  );
   await page.goto(`/c/${conversationId}`);
+  const tabs = page.locator(".terminal-panel-tab");
+  const existingTabs = await tabs.count();
   await page.locator(".chat-overflow-menu-wrapper .btn-icon").click();
   await page.locator(".overflow-menu-item", { hasText: /terminal/i }).click();
-  const terminal = page.locator(".terminal-panel-content [data-terminal-id]").filter({ visible: true });
+  await expect(tabs).toHaveCount(existingTabs + 1);
+  const terminal = page
+    .locator(".terminal-panel-content [data-terminal-id]")
+    .filter({ visible: true });
   await expect(terminal).toBeVisible();
   return terminal;
 }
@@ -21,19 +36,49 @@ test("spawns a workspace-scoped terminal and exposes its output as a keyboard-re
 
   const terminal = await openTerminal(page, request);
   await expect(terminal.getByRole("log", { name: /terminal output/i })).toBeVisible();
-  await expect.poll(() => socketURLs.find((url) => url.includes("/api/exec-ws")) ?? "").toContain("workspace_id=");
+  // Other suite conversations can have restored terminals, whose sockets only
+  // reattach by term_id. This panel action must add a fresh terminal spawn.
+  await expect
+    .poll(
+      () => socketURLs.find((url) => url.includes("/api/exec-ws") && url.includes("cmd=")) ?? "",
+    )
+    .toContain("workspace_id=");
 
   const log = terminal.getByRole("log", { name: /terminal output/i });
   await log.focus();
   await expect(log).toBeFocused();
-  // Escape from the output log must leave the terminal for the intended composer,
-  // rather than merely proving that Tab already moved focus away from the log.
+  // Escape from the output log follows the actual forward focus destination
+  // outside the panel; do not assume that it is always the composer.
+  const escapeTarget = `terminal-escape-target-${Date.now()}`;
+  const hasForwardTarget = await page.evaluate((target) => {
+    const panel = document.querySelector(".terminal-panel");
+    if (!panel) return false;
+    const candidates = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex="0"]',
+      ),
+    ).filter((element) => element.offsetParent !== null || element === document.activeElement);
+    const next = candidates.find(
+      (element) =>
+        !panel.contains(element) &&
+        !!(panel.compareDocumentPosition(element) & Node.DOCUMENT_POSITION_FOLLOWING),
+    );
+    if (!next) return false;
+    next.setAttribute("data-terminal-escape-target", target);
+    return true;
+  }, escapeTarget);
   await log.press("Escape");
-  await expect(page.getByTestId("message-input")).toBeFocused();
+  if (hasForwardTarget) {
+    await expect(page.locator(`[data-terminal-escape-target="${escapeTarget}"]`)).toBeFocused();
+  } else {
+    await expect(page.getByTestId("message-input")).toBeFocused();
+  }
 
   await log.focus();
   await log.press("Tab");
-  await expect.poll(() => page.evaluate(() => document.activeElement?.className ?? "")).toContain("xterm-helper-textarea");
+  await expect
+    .poll(() => page.evaluate(() => document.activeElement?.className ?? ""))
+    .toContain("xterm-helper-textarea");
 });
 
 test("keeps terminal control-I completion on the shell input", async ({ page, request }) => {
@@ -67,9 +112,31 @@ test("keeps terminal control-I completion on the shell input", async ({ page, re
   await expect.poll(() => page.evaluate(() => window.getSelection()?.rangeCount ?? 0)).toBe(0);
 });
 
+function receivedOutputContains(frames: string[], marker: string) {
+  return frames.some((frame) => {
+    try {
+      const message = JSON.parse(frame) as { type?: string; data?: string };
+      return (
+        message.type === "output" &&
+        typeof message.data === "string" &&
+        Buffer.from(message.data, "base64").toString().includes(marker)
+      );
+    } catch {
+      return false;
+    }
+  });
+}
+
 test("pauses capped terminal live output and resumes it with Escape", async ({ page, request }) => {
   // Fake browser time keeps this behavioral cap regression quick without a sleep;
   // output still comes from an actual private terminal PTY over its websocket.
+  const receivedFrames: string[] = [];
+  page.on("websocket", (socket) => {
+    if (!socket.url().includes("/api/exec-ws")) return;
+    socket.on("framereceived", (event) => {
+      if (typeof event.payload === "string") receivedFrames.push(event.payload);
+    });
+  });
   await page.clock.install({ time: new Date("2026-10-02T12:00:00Z") });
   const terminal = await openTerminal(page, request);
   const shellInput = terminal.locator(".xterm-helper-textarea");
@@ -84,8 +151,9 @@ test("pauses capped terminal live output and resumes it with Escape", async ({ p
     const marker = `TERMINAL_A11Y_LIVE_${elapsed}`;
     await page.keyboard.type(marker);
     await page.keyboard.press("Enter");
-    await expect(log).toContainText(marker, { timeout: 10_000 });
+    await expect.poll(() => receivedOutputContains(receivedFrames, marker)).toBeTruthy();
     await page.clock.fastForward(900);
+    await expect(log).toContainText(marker);
   }
 
   const announcer = page.getByTestId("status-announcer");
