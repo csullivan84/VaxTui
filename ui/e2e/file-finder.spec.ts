@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { createConversationViaAPI, selectWorkspace, withTempDir } from "./helpers";
+import { createConversationViaAPI, initGitRepo, selectWorkspace, withTempDir } from "./helpers";
 
 // The fuzzy file finder (Cmd/Ctrl+P) ANDs whitespace-separated terms, so
 // a half-remembered filename typed as words finds the file: "vm storage s3"

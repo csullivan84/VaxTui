@@ -1,7 +1,12 @@
 import { test, expect } from "@playwright/test";
-import { createConversationViaAPIWithDetails } from "./helpers";
+import {
+  createConversationViaAPIWithDetails,
+  selectWorkspace,
+  testWorkingDirectory,
+} from "./helpers";
 
 test("keeps the terminal inside its padded content area", async ({ page, request }) => {
+  await selectWorkspace(page, request, testWorkingDirectory());
   await page.addInitScript(() => {
     const sizeMessages: Array<{ type: string; cols: number; rows: number }> = [];
     Object.defineProperty(window, "__terminalSizeMessages", { value: sizeMessages });
@@ -55,11 +60,16 @@ test("keeps the terminal inside its padded content area", async ({ page, request
           const terminalRect = el.getBoundingClientRect();
           const contentRect = el.parentElement!.getBoundingClientRect();
           const screenRect = el.querySelector(".xterm-screen")!.getBoundingClientRect();
+          const xtermRect = el.querySelector(".terminal-instance-xterm")!.getBoundingClientRect();
           return {
             terminalBottom: terminalRect.bottom <= contentRect.bottom,
             terminalRight: terminalRect.right <= contentRect.right,
             screenBottom: screenRect.bottom <= terminalRect.bottom,
             screenRight: screenRect.right <= terminalRect.right,
+            // The first socket init can precede the parent's flex layout.
+            // Wait for a real fitted screen, not that provisional 10-column
+            // init, before comparing the later narrowed terminal.
+            screenFitted: screenRect.width >= xtermRect.width - 20,
           };
         }),
       )
@@ -68,6 +78,7 @@ test("keeps the terminal inside its padded content area", async ({ page, request
         terminalRight: true,
         screenBottom: true,
         screenRight: true,
+        screenFitted: true,
       });
   };
 
@@ -78,8 +89,8 @@ test("keeps the terminal inside its padded content area", async ({ page, request
         (await terminalSizeMessages()).find((message) => message.type === "init")?.cols ?? 0,
     )
     .toBeGreaterThan(0);
-  const initialCols = (await terminalSizeMessages()).find(
-    (message) => message.type === "init",
+  const initialCols = (await terminalSizeMessages()).findLast(
+    (message) => message.type === "init" || message.type === "resize",
   )!.cols;
 
   await page.getByLabel("Minimize terminals").click();

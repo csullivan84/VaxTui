@@ -1,6 +1,8 @@
 import { execFileSync } from "node:child_process";
 import { expect, test, type Page } from "@playwright/test";
 import type { AttachedIntegration } from "../src/services/api";
+import { en } from "../src/i18n/en";
+import { es } from "../src/i18n/es";
 
 const gh: AttachedIntegration = {
   name: "gh",
@@ -107,13 +109,13 @@ async function fixture(page: Page, entries = [gh, llm, notify, reflection]) {
   return detailRequests;
 }
 
-async function openPanel(page: Page) {
+async function openPanel(page: Page, copy = en) {
   await page.keyboard.press("ControlOrMeta+k");
   const search = page.getByRole("combobox", { name: "Search commands and conversations" });
   await expect(search).toBeVisible();
-  await search.fill("integration");
-  await page.getByRole("option", { name: /VM Integrations/i }).click();
-  await expect(page.getByRole("dialog", { name: "VM Integrations" })).toBeVisible();
+  await search.fill(copy.vmIntegrations);
+  await page.getByRole("option", { name: copy.vmIntegrations }).click();
+  await expect(page.getByRole("dialog", { name: copy.vmIntegrations })).toBeVisible();
 }
 
 async function select(page: Page, name: string) {
@@ -288,8 +290,8 @@ test("parses the GitHub repository from reflection help and copies its clone com
     .toBe(gh.help);
   await expect(page.locator(".integrations-guide")).not.toHaveAttribute("open");
   expect(detailRequests).toEqual(["gh"]);
-  await expect(page.locator(".integrations-modal").getByRole("tab")).toHaveCount(0);
-  const attached = page.locator(".integrations-tabs button").first();
+  await expect(page.locator(".integrations-modal").getByRole("tab")).toHaveCount(2);
+  const attached = page.getByRole("tab", { name: /Attached/ });
   await attached.focus();
   await page.keyboard.press("Enter");
   await expect(page.locator(".integrations-name-btn")).toHaveCount(4);
@@ -519,7 +521,7 @@ test("uses the selected language for the panel and command", async ({ page }) =>
   await page.addInitScript(() => localStorage.setItem("shelley-locale", "es"));
   await page.goto("/new");
   await expect(page.getByTestId("message-input")).toBeVisible();
-  await openPanel(page);
+  await openPanel(page, es);
   await expect(page.locator(".integrations-modal .modal-title")).not.toHaveText("VM integrations");
   await expect(page.locator(".integrations-modal .modal-title")).toContainText(/integraciones/i);
   await select(page, "notify");

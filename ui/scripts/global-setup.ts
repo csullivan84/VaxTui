@@ -33,39 +33,35 @@ let tempDir: string | null = null;
 // killing only the forkpty child's group leaves those jobs running forever.
 function killTerminalSessions(dir: string) {
   const prefix = `exe-scroll: session ${dir}/`;
-  const procs = execFileSync("ps", ["-axo", "pid=,ppid=,pgid=,sess=,command="], {
+  const procs = execFileSync("ps", ["-axo", "pid=,ppid=,pgid=,command="], {
     encoding: "utf8",
   })
     .split("\n")
     .flatMap((line) => {
-      const m = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/.exec(line);
+      const m = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(.*)$/.exec(line);
       return m
         ? [
             {
               pid: Number(m[1]),
               ppid: Number(m[2]),
               pgid: Number(m[3]),
-              session: m[4],
-              command: m[5],
+              command: m[4],
             },
           ]
         : [];
     });
   const servers = procs.filter((p) => p.command.startsWith(prefix));
-  const serverSessions = new Map(servers.map((p) => [p.pid, p.session]));
-  // Linux ps prints the numeric SID; macOS ps prints a hex session pointer.
-  // forkpty's direct child leads its own group in a *different* session
-  // from the server. Match that session token exactly for every group.
-  const sessions = new Set(
-    procs
-      .filter(
-        (p) =>
-          p.pid === p.pgid &&
-          serverSessions.has(p.ppid) &&
-          p.session !== serverSessions.get(p.ppid),
-      )
-      .map((p) => p.session),
+  const serverPids = new Set(servers.map((p) => p.pid));
+  // forkpty's direct child leads its own process group. Follow its actual
+  // descendants: macOS can report sess=0 for every process, so that column
+  // cannot establish which foreground/background jobs belong to this PTY.
+  const owned = new Set(
+    procs.filter((p) => p.pid === p.pgid && serverPids.has(p.ppid)).map((p) => p.pid),
   );
+  for (let previousSize = -1; previousSize !== owned.size; ) {
+    previousSize = owned.size;
+    for (const proc of procs) if (owned.has(proc.ppid)) owned.add(proc.pid);
+  }
   const kill = (pid: number) => {
     try {
       process.kill(pid, "SIGKILL");
@@ -73,7 +69,7 @@ function killTerminalSessions(dir: string) {
       // already gone
     }
   };
-  const groups = new Set(procs.filter((p) => sessions.has(p.session)).map((p) => p.pgid));
+  const groups = new Set(procs.filter((p) => owned.has(p.pid)).map((p) => p.pgid));
   for (const group of groups) kill(-group);
   for (const server of servers) kill(server.pid);
 }

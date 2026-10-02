@@ -72,14 +72,18 @@ def terminal(name, command=None):
                        and f"/{name}.sock" in p[4]]
             if servers:
                 server = servers[0][0]
-                leaders = [p for p in rows if p[1] == server and p[0] == p[2]
-                           and p[3] != servers[0][3]]
+                leaders = [p for p in rows if p[1] == server and p[0] == p[2]]
                 if leaders:
                     leader = leaders[0][0]
-                    session = leaders[0][3]
-                    shell = next((p for p in rows if p[3] == session
+                    owned = {leader}
+                    while True:
+                        descendants = owned | {p[0] for p in rows if p[1] in owned}
+                        if descendants == owned:
+                            break
+                        owned = descendants
+                    shell = next((p for p in rows if p[0] in owned
                                   and p[4].endswith("/bash -i")), None)
-                    jobs = [p for p in rows if p[3] == session and p[4] == "sleep 120"
+                    jobs = [p for p in rows if p[0] in owned and p[4] == "sleep 120"
                             and p[2] not in (leader, shell[2])] if shell else []
                     if shell and (name == "idle" or
                                   (name == "background" and any(p[0] == bg for p in jobs)) or
@@ -88,7 +92,9 @@ def terminal(name, command=None):
                                     job=(bg if bg else jobs[0][0]) if jobs else None,
                                     job_group=jobs[0][2] if jobs else None)
             select.select([master], [], [], 0.05)
-        raise AssertionError(f"{name} PTY command never started")
+        owned = {p[0] for p in rows if f"/{name}.sock" in p[4]}
+        related = [p for p in rows if p[0] in owned or p[1] in owned]
+        raise AssertionError(f"{name} PTY command never started: {related!r}")
     finally:
         os.close(master)
         client.kill()
@@ -110,9 +116,13 @@ except BaseException:
     # could return its PIDs to the caller.
     rows = snapshot()
     servers = {p[0]: p for p in rows if p[4].startswith(f"exe-scroll: session {root}/")}
-    sessions = {p[3] for p in rows if p[1] in servers and p[0] == p[2]
-                and p[3] != servers[p[1]][3]}
-    for group in {p[2] for p in rows if p[3] in sessions}:
+    owned = {p[0] for p in rows if p[1] in servers and p[0] == p[2]}
+    while True:
+        descendants = owned | {p[0] for p in rows if p[1] in owned}
+        if descendants == owned:
+            break
+        owned = descendants
+    for group in {p[2] for p in rows if p[0] in owned}:
         try:
             os.killpg(group, signal.SIGKILL)
         except ProcessLookupError:
