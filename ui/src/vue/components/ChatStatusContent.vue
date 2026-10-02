@@ -90,7 +90,6 @@
     v-else-if="interrupted && conversationId"
     class="status-bar-active"
     data-testid="conversation-interrupted"
-    role="status"
   >
     <div class="status-interrupted-group">
       <span class="status-message">Conversation Interrupted</span>

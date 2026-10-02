@@ -50,20 +50,24 @@ const pairBuild = await build({
       const noOp = () => {};
       export { i18nPlugin };
       export default defineComponent({
-        props: { agentWorking: Boolean, streamStatus: String, error: String },
+        props: {
+          agentWorking: Boolean, interrupted: Boolean, streamStatus: String,
+          error: String, noModels: Boolean,
+        },
         setup(props) {
           return () => [
             h(StatusAnnouncer, {
               agentWorking: props.agentWorking,
+              interrupted: props.interrupted,
               streamStatus: props.streamStatus,
               error: props.error,
             }),
             h(ChatStatusContent, {
               conversationId: "fixture-conversation", streamStatus: props.streamStatus,
-              error: props.error, agentWorking: props.agentWorking, interrupted: false,
+              error: props.error, agentWorking: props.agentWorking, interrupted: props.interrupted,
               resumingInterrupted: false, cancelling: false, selectedCwd: "/fixture",
               contextWindowSize: 0, maxContextTokens: 0, usageEntries: [], otherUsageRows: [],
-              messages: [], hostname: "fixture", models: [{ id: "fixture-model" }],
+              messages: [], hostname: "fixture", models: props.noModels ? [] : [{ id: "fixture-model" }],
               selectedModel: "fixture-model", sending: false, refreshingModels: false,
               thinkingLevel: "default", toolOverrides: {}, toolOverrideList: [],
               toolOverrideCount: 0, cwdError: null, onUnarchive: noOp, onClearError: noOp,
@@ -113,8 +117,10 @@ new Function("require", "module", "exports", pairOutput.text)(require, compiled,
 const vue = require("vue") as typeof import("vue");
 const pairProps = vue.reactive({
   agentWorking: false,
+  interrupted: false,
   streamStatus: "connected",
   error: null as string | null,
+  noModels: false,
 });
 const pairApp = vue.createApp({ render: () => vue.h(compiled.exports.default, pairProps) });
 pairApp.use(compiled.exports.i18nPlugin);
@@ -141,6 +147,42 @@ try {
     pairProps.error = null;
     await flushPair();
   }
+
+  pairProps.noModels = true;
+  pairProps.error = "Fixture model setup error";
+  await flushPair();
+  assert.equal(
+    pairContainer.querySelector(".status-no-models")?.textContent?.trim(),
+    "Fixture model setup error",
+  );
+  assert.equal(
+    pairContainer.querySelector('[data-testid="status-announcer"]')?.textContent?.trim(),
+    "Fixture model setup error",
+  );
+  assert.equal(pairContainer.querySelectorAll('[role="alert"], [aria-live="assertive"]').length, 1);
+  pairProps.error = null;
+  pairProps.noModels = false;
+  pairProps.streamStatus = "connected";
+  await flushPair();
+
+  pairProps.interrupted = true;
+  await flushPair();
+  assert.equal(
+    pairContainer.querySelector('[data-testid="status-announcer"]')?.textContent?.trim(),
+    "Conversation interrupted. Continue is available.",
+  );
+  assert.equal(
+    [...pairContainer.querySelectorAll<HTMLElement>('[role="status"], [aria-live]')].filter(
+      (element) => element.getAttribute("aria-live") !== "off",
+    ).length,
+    1,
+    "the canonical announcer is the only live interruption owner",
+  );
+  const visibleInterrupted = pairContainer.querySelector('[data-testid="conversation-interrupted"]');
+  assert.match(visibleInterrupted?.textContent ?? "", /Conversation Interrupted/);
+  assert.ok(visibleInterrupted?.querySelector("button"), "Continue stays reachable in the visible status");
+  pairProps.interrupted = false;
+  await flushPair();
 
   // The error matrix ends on reconnecting; return to connected first so this
   // checks a real stream transition rather than reusing the final matrix value.

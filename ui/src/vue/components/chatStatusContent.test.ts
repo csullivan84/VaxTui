@@ -74,11 +74,7 @@ try {
   fixture.props.interrupted = true;
   await fixture.flush();
   const interrupted = fixture.container.querySelector('[data-testid="conversation-interrupted"]');
-  assert.equal(
-    interrupted?.getAttribute("role"),
-    "status",
-    "interrupted state has status semantics",
-  );
+  assert.equal(interrupted?.getAttribute("role"), null, "canonical announcer owns interruption live status");
   assert.match(interrupted?.textContent ?? "", /Conversation Interrupted/);
   assert.match(interrupted?.textContent ?? "", /Continue/);
 } finally {
