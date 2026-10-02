@@ -19,6 +19,7 @@ import (
 
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/page"
+	"github.com/chromedp/chromedp"
 
 	"shelley.exe.dev/llm"
 )
@@ -804,5 +805,57 @@ func TestScreencastCloseWaitsForNavigationRearm(t *testing.T) {
 	case <-closed:
 	case <-t.Context().Done():
 		t.Fatal("Close did not finish after re-arm")
+	}
+}
+
+func TestScreencastCapturesDestinationPaint(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
+	defer cancel()
+	b := NewBrowseTools(ctx, 0)
+	t.Cleanup(b.Close)
+	browserCtx, err := b.GetBrowserContext()
+	if err != nil {
+		t.Fatal(err)
+	}
+	painted := make(chan bool, 4)
+	chromedp.ListenTarget(browserCtx, func(ev any) {
+		frame, ok := ev.(*page.EventScreencastFrame)
+		if !ok {
+			return
+		}
+		data, err := base64.StdEncoding.DecodeString(frame.Data)
+		if err != nil {
+			return
+		}
+		img, err := jpeg.Decode(bytes.NewReader(data))
+		if err != nil {
+			return
+		}
+		r, g, b, _ := img.At(img.Bounds().Dx()/2, img.Bounds().Dy()/2).RGBA()
+		select {
+		case painted <- r < 0x3000 && g > 0x7000 && b < 0x4000:
+		default:
+		}
+	})
+	tool := b.CombinedTool()
+	if out := tool.Run(ctx, []byte(`{"action":"resize","width":881,"height":495}`)); out.Error != nil {
+		t.Fatal(out.Error)
+	}
+	if out := tool.Run(ctx, []byte(`{"action":"screencast_start"}`)); out.Error != nil {
+		t.Fatal(out.Error)
+	}
+	defer b.screencastStopInternal()
+	if out := tool.Run(ctx, []byte(`{"action":"navigate","url":"data:text/html,<body style='margin:0;background:rgb(10,190,30)'><div style='width:100vw;height:100vh'></div></body>"}`)); out.Error != nil {
+		t.Fatal(out.Error)
+	}
+	for {
+		select {
+		case matched := <-painted:
+			if matched {
+				return
+			}
+		case <-ctx.Done():
+			t.Fatal("no screencast frame contained the destination paint")
+		}
 	}
 }
