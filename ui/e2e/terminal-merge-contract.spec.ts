@@ -183,7 +183,7 @@ test("pauses capped terminal live output and resumes it with Escape", async ({ p
   // the PTY or outlive this private test terminal.
   await page.keyboard.type("while IFS= read -r line; do printf '%s\n' \"$line\"; done");
   await page.keyboard.press("Enter");
-  const markerPrefix = `TERMINAL_A11Y_LIVE_${crypto.randomUUID()}`;
+  const markerPrefix = `LIVE_${crypto.randomUUID().slice(0, 8)}`;
   for (let elapsed = 0; elapsed < 20_000; elapsed += 900) {
     const marker = `${markerPrefix}_${elapsed}`;
     await page.keyboard.type(marker);
