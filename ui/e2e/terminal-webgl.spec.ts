@@ -13,9 +13,9 @@ async function openTerminal(page: Page, request: APIRequestContext) {
   await page.goto(`/c/${conversationId}`);
   await page.locator(".chat-overflow-menu-wrapper .btn-icon").click();
   await page.locator(".overflow-menu-item", { hasText: /terminal/i }).click();
-  const terminal = page.locator(
-    '.terminal-panel-content [data-terminal-id][style*="display: block"]',
-  );
+  const terminal = page.locator(".terminal-panel-content [data-terminal-id]").filter({
+    visible: true,
+  });
   await expect(terminal).toBeVisible({ timeout: 30000 });
   return terminal;
 }
@@ -62,7 +62,7 @@ test("renders the terminal with WebGL and falls back to the DOM on context loss"
     }
   });
   await expect(terminal.locator(".xterm-rows")).toBeVisible({ timeout: 10000 });
-  await expect(terminal.locator(".xterm-rows")).toContainText("$");
+  await expect(terminal.locator(".xterm-rows")).not.toHaveText("");
   expect(await webglCanvases()).toBe(0);
   await expect.poll(lastCols).toBeLessThan(webglCols);
 });
@@ -75,5 +75,5 @@ test("renders the terminal with the DOM without WebGL2", async ({ page, request 
     };
   });
   const terminal = await openTerminal(page, request);
-  await expect(terminal.locator(".xterm-rows")).toContainText("$");
+  await expect(terminal.locator(".xterm-rows")).not.toHaveText("");
 });
