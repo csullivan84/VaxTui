@@ -74,7 +74,7 @@ type screencastStopResources struct {
 func (b *BrowseTools) handleScreencastFrame(e *page.EventScreencastFrame) {
 	sc := &b.screencast
 	sc.mu.Lock()
-	if !sc.active && !sc.starting {
+	if !sc.active {
 		sc.mu.Unlock()
 		return
 	}

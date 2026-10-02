@@ -293,11 +293,6 @@ func (b *BrowseTools) closeBrowserLocked() {
 	b.mux.Unlock()
 	defer b.mux.Lock()
 
-	// Verify and kill our still-live group before allocator cancellation can reap
-	// its leader and leave a reusable numeric PGID behind.
-	if browserCmd != nil && browserCmd.Process != nil {
-		killBrowserProcessGroup(browserCmd.Process.Pid)
-	}
 	if browserCancel != nil {
 		browserCancel()
 	}
@@ -309,6 +304,9 @@ func (b *BrowseTools) closeBrowserLocked() {
 	// zygote children get reparented to PID 1 and continue running. Since we
 	// launched headless-shell in its own process group (Setpgid), we can
 	// SIGKILL the entire group to guarantee no leaks.
+	if browserCmd != nil && browserCmd.Process != nil {
+		killBrowserProcessGroup(browserCmd.Process.Pid)
+	}
 }
 
 // Close shuts down the browser

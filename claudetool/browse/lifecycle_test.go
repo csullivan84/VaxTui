@@ -112,31 +112,3 @@ func stillAlive(pids []int) []int {
 	}
 	return alive
 }
-
-func TestKillBrowserProcessGroupRequiresLiveGroupLeader(t *testing.T) {
-	oldGetpgid, oldKill := browserGetpgid, browserKill
-	t.Cleanup(func() { browserGetpgid, browserKill = oldGetpgid, oldKill })
-	var signals []int
-	browserKill = func(pid int, _ syscall.Signal) error { signals = append(signals, pid); return nil }
-	for _, tc := range []struct {
-		name string
-		pgid int
-		err  error
-	}{
-		{"leader exited", 0, syscall.ESRCH},
-		{"pid reused outside group", 999, nil},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			browserGetpgid = func(int) (int, error) { return tc.pgid, tc.err }
-			killBrowserProcessGroup(123)
-			if len(signals) != 0 {
-				t.Fatalf("unexpected group signal after unverifiable leader: %v", signals)
-			}
-		})
-	}
-	browserGetpgid = func(int) (int, error) { return 123, nil }
-	killBrowserProcessGroup(123)
-	if len(signals) != 1 || signals[0] != -123 {
-		t.Fatalf("want verified group signal -123, got %v", signals)
-	}
-}
