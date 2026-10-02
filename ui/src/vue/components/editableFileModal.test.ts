@@ -143,3 +143,33 @@ await run("EditableFileModal surfaces a failed ordered save and retains editor f
     check("failed save still issued its ordered write", writeCount() === 1);
   } finally { view.close(); }
 });
+
+await run("EditableFileModal flushes the old path before switching editors", async () => {
+  const { view, control, writeBodies, writeCount } = await mountEditor("/private/first.md", [
+    new Response("", { status: 200 }),
+  ]);
+  try {
+    control.change("first file pending buffer");
+    view.props.path = "/private/second.txt";
+    for (let index = 0; index < 8; index++) await view.flush();
+    check("switch flushes exactly one old-path write", writeCount() === 1);
+    check("flushed write retains the first path", writeBodies()[0]?.includes("\"path\":\"/private/first.md\"") === true);
+    check("flushed write retains the first buffer", writeBodies()[0]?.includes("first file pending buffer") === true);
+    check("second file never receives Markdown preview controls", view.document.querySelector('[aria-label="Preview mode"]') === null);
+  } finally { view.close(); }
+});
+
+await run("EditableFileModal restores a failed first-file buffer after crossing files", async () => {
+  const { view, control, writeBodies } = await mountEditor("/private/first.md", [
+    new Response("failed", { status: 500 }),
+  ]);
+  try {
+    control.change("recover first buffer");
+    view.props.path = "/private/second.txt";
+    for (let index = 0; index < 8; index++) await view.flush();
+    check("failed first write is retained by its original path", writeBodies()[0]?.includes("recover first buffer") === true);
+    view.props.path = "/private/first.md";
+    for (let index = 0; index < 8; index++) await view.flush();
+    check("reopened first path announces retained failed state", view.document.body.textContent?.includes("Error saving") === true);
+  } finally { view.close(); }
+});

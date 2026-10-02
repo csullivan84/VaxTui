@@ -2682,7 +2682,8 @@ test("an unaccepted recording re-enables draft autosave after release", async ({
   await page.getByTestId("voice-button").click();
   await expect(page.getByTestId("recording-panel")).toBeVisible();
   await expect.poll(() => draftId).not.toBe("");
+  const updatesBeforeRelease = updates;
   await page.getByTestId("recording-cancel-button").click();
-  await expect.poll(() => updates).toBeGreaterThan(0);
+  await expect.poll(() => updates).toBeGreaterThan(updatesBeforeRelease);
   await expect(input).toHaveValue("Keep this unaccepted recording draft.");
 });
