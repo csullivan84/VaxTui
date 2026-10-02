@@ -152,11 +152,26 @@ test("pauses capped terminal live output and resumes it with Escape", async ({ p
   // between protocol calls before it is frozen.
   await page.clock.pauseAt(new Date(Date.now() + 60_000));
   await page.evaluate(() => {
+    const state = window as Window & {
+      terminalAnnouncements?: string[];
+      terminalMirrorRefreshes?: number;
+      terminalOriginalSetTimeout?: typeof window.setTimeout;
+    };
     const announcements: string[] = [];
     window.addEventListener("shelley:a11y-announce", (event) => {
       announcements.push((event as CustomEvent<{ text: string }>).detail.text);
     });
-    (window as Window & { terminalAnnouncements?: string[] }).terminalAnnouncements = announcements;
+    state.terminalAnnouncements = announcements;
+    // A CDP websocket observer can see a frame before Chromium dispatches the
+    // page's WebSocket onmessage task. Observe the real mirror debounce being
+    // scheduled before advancing fake time through it; this does not mock the
+    // terminal or its output log.
+    state.terminalMirrorRefreshes = 0;
+    state.terminalOriginalSetTimeout = window.setTimeout;
+    window.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
+      if (timeout === 80) state.terminalMirrorRefreshes!++;
+      return state.terminalOriginalSetTimeout!.call(window, handler, timeout, ...args);
+    }) as typeof window.setTimeout;
   });
   // Reset any native-time output window created while the terminal mounted:
   // log focus blurs xterm (clearing it), then shell focus starts a fake-time one.
@@ -171,11 +186,23 @@ test("pauses capped terminal live output and resumes it with Escape", async ({ p
   await page.keyboard.press("Enter");
   for (let elapsed = 0; elapsed < 20_000; elapsed += 900) {
     const marker = `TERMINAL_A11Y_LIVE_${elapsed}`;
+    const mirrorRefreshesBefore = await page.evaluate(
+      () => (window as Window & { terminalMirrorRefreshes?: number }).terminalMirrorRefreshes ?? 0,
+    );
     await page.keyboard.type(marker);
     await page.keyboard.press("Enter");
     await expect.poll(() => receivedOutputContains(receivedFrames, marker)).toBeTruthy();
-    // Flush the xterm write/mirror first: a websocket observer only proves the
-    // frame reached Chromium, not that TerminalInstance recorded its timestamp.
+    // A CDP websocket observer can precede the page's onmessage callback. Wait
+    // for TerminalInstance's actual debounced output-mirror update to be
+    // scheduled, then advance exactly that bounded debounce interval.
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            (window as Window & { terminalMirrorRefreshes?: number }).terminalMirrorRefreshes ?? 0,
+        ),
+      )
+      .toBeGreaterThan(mirrorRefreshesBefore);
     await page.clock.fastForward(80);
     await expect(log).toContainText(marker);
     await page.clock.fastForward(820);
