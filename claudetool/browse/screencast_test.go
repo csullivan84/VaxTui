@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chromedp/cdproto/page"
 	"shelley.exe.dev/llm"
 )
 
@@ -421,4 +422,22 @@ func contentText(t *testing.T, out llm.ToolOut) string {
 		}
 	}
 	return strings.Join(parts, "\n")
+}
+
+func TestScreencastStartingAcceptsAndAcknowledgesFirstFrame(t *testing.T) {
+	tools := NewBrowseTools(t.Context(), 0)
+	tools.screencast.starting = true
+	tools.screencast.ackCh = make(chan int64, 1)
+	tools.handleScreencastFrame(&page.EventScreencastFrame{SessionID: 42, Data: base64.StdEncoding.EncodeToString([]byte("frame"))})
+	if tools.screencast.frameCount != 1 {
+		t.Fatalf("first starting frame dropped: got %d", tools.screencast.frameCount)
+	}
+	select {
+	case got := <-tools.screencast.ackCh:
+		if got != 42 {
+			t.Fatalf("ack=%d", got)
+		}
+	default:
+		t.Fatal("first starting frame was not acknowledged")
+	}
 }
