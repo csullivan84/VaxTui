@@ -51,11 +51,16 @@ try {
   for (const streamStatus of ["connected", "disconnected", "reconnecting"]) {
     fixture.props.streamStatus = streamStatus;
     await fixture.flush();
-    const alert = fixture.container.querySelector('[role="alert"]');
+    const alert = fixture.container.querySelector('.status-error, .status-no-models');
     assert.equal(
       alert?.textContent?.trim(),
       "Fixture send failed",
       `${streamStatus} error stays visible`,
+    );
+    assert.equal(
+      fixture.container.querySelectorAll('[role="alert"], [aria-live="assertive"]').length,
+      0,
+      "the visible error is not a second assertive live region; StatusAnnouncer owns the announcement",
     );
     const dismiss = fixture.container.querySelector<HTMLButtonElement>(
       'button[aria-label="Dismiss error"]',

@@ -25,8 +25,6 @@
     </span>
     <span
       :class="['status-message', models.length === 0 ? 'status-no-models' : 'status-error']"
-      role="alert"
-      aria-live="assertive"
       >{{ error }}</span
     >
     <button
