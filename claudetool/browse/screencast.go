@@ -40,11 +40,11 @@ type screencastState struct {
 	startTime  time.Time
 	stopTimer  *time.Timer
 
-	// ffmpeg process — frames are piped directly to stdin.
-	ffmpegCmd *exec.Cmd
-	ffmpegIn  io.WriteCloser // ffmpeg's stdin pipe
-	writers   sync.WaitGroup // frame writes already in progress when stopping
-	stop      *screencastStopResult
+	// encoder receives frames on stdin and produces the recording.
+	encoder  screencastEncoder
+	ffmpegIn io.WriteCloser
+	writers  sync.WaitGroup // frame writes already in progress when stopping
+	stop     *screencastStopResult
 
 	// ackCh sends frame session IDs to the ack goroutine.
 	ackCh chan int64
@@ -52,7 +52,44 @@ type screencastState struct {
 	stopCh chan struct{}
 	// stopped is closed by the ack goroutine when it exits.
 	stopped chan struct{}
+
+	newEncoder screencastEncoderFactory
+	startCDP   screencastStartCDP
+	ackCDP     screencastAckCDP
+	stopCDP    screencastStopCDP
 }
+
+type screencastEncoder interface {
+	Stdin() io.WriteCloser
+	Wait() error
+	Stop() error
+	Stderr() string
+}
+
+type ffmpegEncoder struct {
+	cmd *exec.Cmd
+	in  io.WriteCloser
+}
+
+func (e *ffmpegEncoder) Stdin() io.WriteCloser { return e.in }
+func (e *ffmpegEncoder) Wait() error           { return e.cmd.Wait() }
+func (e *ffmpegEncoder) Stop() error {
+	if e.cmd.Process == nil {
+		return nil
+	}
+	return e.cmd.Process.Kill()
+}
+func (e *ffmpegEncoder) Stderr() string {
+	if lb, ok := e.cmd.Stderr.(*limitedBuffer); ok {
+		return lb.String()
+	}
+	return ""
+}
+
+type screencastStartCDP func(context.Context, page.ScreencastFormat, int64, int64, int64, int64) error
+type screencastAckCDP func(context.Context, int64) error
+type screencastStopCDP func(context.Context) error
+type screencastEncoderFactory func(string, string) (screencastEncoder, error)
 
 type screencastStopResult struct {
 	done chan struct{}
@@ -64,7 +101,7 @@ type screencastStopResources struct {
 	stopCh     chan struct{}
 	stopped    chan struct{}
 	ffmpegIn   io.WriteCloser
-	ffmpegCmd  *exec.Cmd
+	encoder    screencastEncoder
 	outputPath string
 	timeout    time.Duration
 }
@@ -123,7 +160,7 @@ func (b *BrowseTools) screencastAckLoop(browserCtx context.Context, ackCh chan i
 	for {
 		select {
 		case sessionID := <-ackCh:
-			if err := chromedp.Run(browserCtx, page.ScreencastFrameAck(sessionID)); err != nil {
+			if err := b.screencastAck(browserCtx, sessionID); err != nil {
 				log.Printf("screencast: failed to ack frame: %v", err)
 			}
 		case <-stopCh:
@@ -131,7 +168,7 @@ func (b *BrowseTools) screencastAckLoop(browserCtx context.Context, ackCh chan i
 			for {
 				select {
 				case sessionID := <-ackCh:
-					if err := chromedp.Run(browserCtx, page.ScreencastFrameAck(sessionID)); err != nil {
+					if err := b.screencastAck(browserCtx, sessionID); err != nil {
 						log.Printf("screencast: failed to ack frame during drain: %v", err)
 					}
 				default:
@@ -141,53 +178,58 @@ func (b *BrowseTools) screencastAckLoop(browserCtx context.Context, ackCh chan i
 		}
 	}
 done:
-	if err := chromedp.Run(browserCtx, page.StopScreencast()); err != nil {
+	if err := b.screencastStopCDP(browserCtx); err != nil {
 		log.Printf("screencast: failed to stop CDP screencast: %v", err)
 	}
 }
 
 // screencastStart begins a screencast recording, piping frames into ffmpeg.
 func (b *BrowseTools) screencastStart(format string, quality, maxWidth, maxHeight, everyNthFrame int64) (string, error) {
+	if err := b.beginScreencastStart(); err != nil {
+		return "", err
+	}
+	browserCtx, err := b.GetBrowserContext()
+	if err != nil {
+		b.clearScreencastStart()
+		return "", err
+	}
+	return b.screencastStartWithContext(browserCtx, format, quality, maxWidth, maxHeight, everyNthFrame)
+}
+
+func (b *BrowseTools) beginScreencastStart() error {
 	sc := &b.screencast
 	sc.mu.Lock()
+	defer sc.mu.Unlock()
 	if sc.active || sc.starting {
-		sid := sc.sessionID
-		fc := sc.frameCount
-		sc.mu.Unlock()
-		return "", fmt.Errorf("screencast is already active (session %s, %d frames so far) — stop it first", sid, fc)
+		return fmt.Errorf("screencast is already active (session %s, %d frames so far) — stop it first", sc.sessionID, sc.frameCount)
 	}
 	if sc.stop != nil {
 		select {
 		case <-sc.stop.done:
 			sc.stop = nil
 		default:
-			sc.mu.Unlock()
-			return "", fmt.Errorf("previous screencast is still stopping")
+			return fmt.Errorf("previous screencast is still stopping")
 		}
 	}
 	sc.starting = true
-	sc.mu.Unlock()
+	return nil
+}
 
-	var started bool
+func (b *BrowseTools) screencastStartWithContext(browserCtx context.Context, format string, quality, maxWidth, maxHeight, everyNthFrame int64) (string, error) {
+	sc := &b.screencast
 	defer func() {
-		if !started {
-			sc.mu.Lock()
+		sc.mu.Lock()
+		if sc.starting {
 			sc.starting = false
-			sc.mu.Unlock()
 		}
+		sc.mu.Unlock()
 	}()
 
-	browserCtx, err := b.GetBrowserContext()
-	if err != nil {
-		return "", err
-	}
-
-	// Defaults.
 	scFormat := page.ScreencastFormatJpeg
 	inputFormat := "mjpeg"
 	if format == "png" {
 		scFormat = page.ScreencastFormatPng
-		inputFormat = "image2pipe" // for piped PNG frames
+		inputFormat = "image2pipe"
 	}
 	if quality <= 0 {
 		quality = 60
@@ -207,43 +249,14 @@ func (b *BrowseTools) screencastStart(format string, quality, maxWidth, maxHeigh
 		return "", fmt.Errorf("failed to create screencast dir: %w", err)
 	}
 	outputPath := filepath.Join(ScreencastDir, sessionID+".mp4")
-
-	ffmpegCmd := screencastFFmpegCommand(inputFormat, outputPath)
-	ffmpegIn, err := ffmpegCmd.StdinPipe()
+	encoder, err := b.newScreencastEncoder(inputFormat, outputPath)
 	if err != nil {
-		return "", fmt.Errorf("failed to create ffmpeg stdin pipe: %w", err)
-	}
-	// Capture stderr for diagnostics on failure.
-	ffmpegCmd.Stderr = &limitedBuffer{max: 4096}
-
-	if err := ffmpegCmd.Start(); err != nil {
-		ffmpegIn.Close()
-		return "", fmt.Errorf("failed to start ffmpeg (is it installed?): %w", err)
-	}
-
-	// Start CDP screencast.
-	err = chromedp.Run(
-		browserCtx,
-		page.StartScreencast().
-			WithFormat(scFormat).
-			WithQuality(quality).
-			WithMaxWidth(maxWidth).
-			WithMaxHeight(maxHeight).
-			WithEveryNthFrame(everyNthFrame),
-	)
-	if err != nil {
-		ffmpegIn.Close()
-		ffmpegCmd.Wait()
-		os.Remove(outputPath)
-		return "", fmt.Errorf("failed to start screencast: %w", err)
+		return "", err
 	}
 
 	ackCh := make(chan int64, 4)
 	stopCh := make(chan struct{})
 	stoppedCh := make(chan struct{})
-	go b.screencastAckLoop(browserCtx, ackCh, stopCh, stoppedCh)
-
-	started = true
 	sc.mu.Lock()
 	sc.active = true
 	sc.starting = false
@@ -251,8 +264,8 @@ func (b *BrowseTools) screencastStart(format string, quality, maxWidth, maxHeigh
 	sc.outputPath = outputPath
 	sc.frameCount = 0
 	sc.startTime = time.Now()
-	sc.ffmpegCmd = ffmpegCmd
-	sc.ffmpegIn = ffmpegIn
+	sc.encoder = encoder
+	sc.ffmpegIn = encoder.Stdin()
 	sc.ackCh = ackCh
 	sc.stopCh = stopCh
 	sc.stopped = stoppedCh
@@ -263,8 +276,99 @@ func (b *BrowseTools) screencastStart(format string, quality, maxWidth, maxHeigh
 		}
 	})
 	sc.mu.Unlock()
+	go b.screencastAckLoop(browserCtx, ackCh, stopCh, stoppedCh)
 
+	if err := b.screencastStartCDP(browserCtx, scFormat, quality, maxWidth, maxHeight, everyNthFrame); err != nil {
+		b.rollbackScreencastStart()
+		return "", fmt.Errorf("failed to start screencast: %w", err)
+	}
 	return sessionID, nil
+}
+
+func (b *BrowseTools) rollbackScreencastStart() {
+	sc := &b.screencast
+	sc.mu.Lock()
+	resources := &screencastStopResources{
+		stopCh: sc.stopCh, stopped: sc.stopped, ffmpegIn: sc.ffmpegIn,
+		encoder: sc.encoder, outputPath: sc.outputPath,
+	}
+	if sc.stopTimer != nil {
+		sc.stopTimer.Stop()
+	}
+	sc.active = false
+	sc.starting = false
+	sc.sessionID = ""
+	sc.outputPath = ""
+	sc.frameCount = 0
+	sc.startTime = time.Time{}
+	sc.stopTimer = nil
+	sc.encoder = nil
+	sc.ffmpegIn = nil
+	sc.ackCh = nil
+	sc.stopCh = nil
+	sc.stopped = nil
+	sc.mu.Unlock()
+
+	if resources.stopCh != nil {
+		close(resources.stopCh)
+	}
+	if resources.stopped != nil {
+		<-resources.stopped
+	}
+	sc.writers.Wait()
+	if resources.ffmpegIn != nil {
+		_ = resources.ffmpegIn.Close()
+	}
+	if resources.encoder != nil {
+		_ = resources.encoder.Stop()
+		_ = resources.encoder.Wait()
+	}
+	if resources.outputPath != "" {
+		_ = os.Remove(resources.outputPath)
+	}
+}
+
+func (b *BrowseTools) clearScreencastStart() {
+	sc := &b.screencast
+	sc.mu.Lock()
+	sc.starting = false
+	sc.mu.Unlock()
+}
+
+func (b *BrowseTools) newScreencastEncoder(inputFormat, outputPath string) (screencastEncoder, error) {
+	if factory := b.screencast.newEncoder; factory != nil {
+		return factory(inputFormat, outputPath)
+	}
+	cmd := screencastFFmpegCommand(inputFormat, outputPath)
+	in, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create ffmpeg stdin pipe: %w", err)
+	}
+	cmd.Stderr = &limitedBuffer{max: 4096}
+	if err := cmd.Start(); err != nil {
+		_ = in.Close()
+		return nil, fmt.Errorf("failed to start ffmpeg (is it installed?): %w", err)
+	}
+	return &ffmpegEncoder{cmd: cmd, in: in}, nil
+}
+
+func (b *BrowseTools) screencastStartCDP(ctx context.Context, format page.ScreencastFormat, quality, maxWidth, maxHeight, everyNthFrame int64) error {
+	if start := b.screencast.startCDP; start != nil {
+		return start(ctx, format, quality, maxWidth, maxHeight, everyNthFrame)
+	}
+	return chromedp.Run(ctx, page.StartScreencast().WithFormat(format).WithQuality(quality).WithMaxWidth(maxWidth).WithMaxHeight(maxHeight).WithEveryNthFrame(everyNthFrame))
+}
+func (b *BrowseTools) screencastAck(ctx context.Context, sessionID int64) error {
+	if ack := b.screencast.ackCDP; ack != nil {
+		return ack(ctx, sessionID)
+	}
+	return chromedp.Run(ctx, page.ScreencastFrameAck(sessionID))
+}
+func (b *BrowseTools) screencastStopCDP(ctx context.Context) error {
+	if stop := b.screencast.stopCDP; stop != nil {
+		return stop(ctx)
+	}
+	return chromedp.Run(ctx, page.StopScreencast())
 }
 
 // screencastFFmpegCommand encodes CDP's JPEG or PNG frames as H.264 MP4.
@@ -302,11 +406,12 @@ func (sc *screencastState) claimStopLocked() *screencastStopResources {
 	}
 	resources := &screencastStopResources{
 		result: result, stopCh: sc.stopCh, stopped: sc.stopped,
-		ffmpegIn: sc.ffmpegIn, ffmpegCmd: sc.ffmpegCmd, outputPath: sc.outputPath,
+		ffmpegIn: sc.ffmpegIn, encoder: sc.encoder, outputPath: sc.outputPath,
 		timeout: screencastStopTimeout,
 	}
 	sc.stopCh = nil
 	sc.ffmpegIn = nil
+	sc.encoder = nil
 	return resources
 }
 
@@ -340,8 +445,8 @@ func (b *BrowseTools) finishScreencastStop(resources *screencastStopResources) (
 	// recording's ffmpeg process closes the pipe and makes stop report an
 	// error instead of hanging the tool (or browser shutdown).
 	timer := time.AfterFunc(resources.timeout, func() {
-		if resources.ffmpegCmd != nil && resources.ffmpegCmd.Process != nil {
-			if err := resources.ffmpegCmd.Process.Kill(); err == nil {
+		if resources.encoder != nil {
+			if err := resources.encoder.Stop(); err == nil {
 				log.Printf("screencast: ffmpeg did not finish within %v; killed encoder", resources.timeout)
 			}
 		}
@@ -362,12 +467,9 @@ func (b *BrowseTools) finishScreencastStop(resources *screencastStopResources) (
 	if resources.ffmpegIn != nil {
 		resources.ffmpegIn.Close()
 	}
-	if resources.ffmpegCmd != nil {
-		if err := resources.ffmpegCmd.Wait(); err != nil {
-			if lb, ok := resources.ffmpegCmd.Stderr.(*limitedBuffer); ok {
-				return fmt.Errorf("ffmpeg failed: %w: %s", err, lb.String())
-			}
-			return fmt.Errorf("ffmpeg failed: %w", err)
+	if resources.encoder != nil {
+		if err := resources.encoder.Wait(); err != nil {
+			return fmt.Errorf("ffmpeg failed: %w: %s", err, resources.encoder.Stderr())
 		}
 	}
 	info, err := os.Stat(resources.outputPath)

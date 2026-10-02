@@ -3,17 +3,21 @@ package browse
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"image"
 	"image/jpeg"
 	"image/png"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/chromedp/cdproto/page"
 
 	"shelley.exe.dev/llm"
 )
@@ -198,7 +202,7 @@ func TestScreencastStopReportsEncoderFailure(t *testing.T) {
 	}
 	b := &BrowseTools{screencast: screencastState{
 		active: true, sessionID: "test", outputPath: path,
-		ffmpegCmd: cmd, startTime: time.Now(),
+		encoder: &ffmpegEncoder{cmd: cmd}, startTime: time.Now(),
 	}}
 	_, _, _, _, err := b.screencastStop()
 	if err == nil || !strings.Contains(err.Error(), "encoder failed") || !strings.Contains(err.Error(), path) {
@@ -224,7 +228,7 @@ func TestScreencastKilledEncoderFailsStopTool(t *testing.T) {
 		t.Fatal(out.Error)
 	}
 	b.screencast.mu.Lock()
-	process := b.screencast.ffmpegCmd.Process
+	process := b.screencast.encoder.(*ffmpegEncoder).cmd.Process
 	b.screencast.mu.Unlock()
 	if err := process.Kill(); err != nil {
 		t.Fatal(err)
@@ -244,7 +248,7 @@ func TestScreencastConcurrentStopSharesFailure(t *testing.T) {
 	}
 	b := &BrowseTools{screencast: screencastState{
 		active: true, sessionID: "test", outputPath: path,
-		ffmpegCmd: cmd, startTime: time.Now(),
+		encoder: &ffmpegEncoder{cmd: cmd}, startTime: time.Now(),
 	}}
 	b.screencast.mu.Lock()
 	resources := b.screencast.claimStopLocked()
@@ -279,7 +283,7 @@ func TestScreencastStalledWriterTimesOut(t *testing.T) {
 		_ = cmd.Wait()
 	})
 	b := &BrowseTools{screencast: screencastState{
-		active: true, sessionID: "test", ffmpegCmd: cmd,
+		active: true, sessionID: "test", encoder: &ffmpegEncoder{cmd: cmd, in: in},
 		ffmpegIn: in, outputPath: filepath.Join(t.TempDir(), "recording.mp4"),
 	}}
 	b.screencast.mu.Lock()
@@ -318,7 +322,7 @@ func TestScreencastStopReportsMissingOutput(t *testing.T) {
 			}
 			b := &BrowseTools{screencast: screencastState{
 				active: true, sessionID: "test", outputPath: path,
-				ffmpegCmd: cmd, startTime: time.Now(),
+				encoder: &ffmpegEncoder{cmd: cmd}, startTime: time.Now(),
 			}}
 			_, _, _, _, err := b.screencastStop()
 			if err == nil || !strings.Contains(err.Error(), path) {
@@ -421,4 +425,101 @@ func contentText(t *testing.T, out llm.ToolOut) string {
 		}
 	}
 	return strings.Join(parts, "\n")
+}
+
+type fakeScreencastWriter struct {
+	bytes.Buffer
+	closed int
+}
+
+func (w *fakeScreencastWriter) Close() error {
+	w.closed++
+	return nil
+}
+
+type fakeScreencastEncoder struct {
+	writer *fakeScreencastWriter
+	waits  int
+	stops  int
+}
+
+func (e *fakeScreencastEncoder) Stdin() io.WriteCloser { return e.writer }
+func (e *fakeScreencastEncoder) Wait() error {
+	e.waits++
+	return nil
+}
+func (e *fakeScreencastEncoder) Stop() error {
+	e.stops++
+	return nil
+}
+func (e *fakeScreencastEncoder) Stderr() string { return "" }
+
+func TestScreencastStartPublishesBeforeSynchronousFirstFrame(t *testing.T) {
+	encoder := &fakeScreencastEncoder{writer: &fakeScreencastWriter{}}
+	acks := make(chan int64, 1)
+	var b *BrowseTools
+	b = &BrowseTools{screencast: screencastState{
+		newEncoder: func(_, _ string) (screencastEncoder, error) { return encoder, nil },
+		startCDP: func(_ context.Context, _ page.ScreencastFormat, _, _, _, _ int64) error {
+			b.handleScreencastFrame(&page.EventScreencastFrame{
+				Data:      base64.StdEncoding.EncodeToString([]byte("frame")),
+				SessionID: 17,
+			})
+			return nil
+		},
+		ackCDP:  func(_ context.Context, sessionID int64) error { acks <- sessionID; return nil },
+		stopCDP: func(context.Context) error { return nil },
+	}}
+	if err := b.beginScreencastStart(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.screencastStartWithContext(t.Context(), "jpeg", 60, 1280, 720, 1); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = b.screencastStopInternal() })
+
+	b.screencast.mu.Lock()
+	frames := b.screencast.frameCount
+	b.screencast.mu.Unlock()
+	if frames != 1 || encoder.writer.String() != "frame" {
+		t.Fatalf("synchronous first frame was not recorded: frames=%d data=%q", frames, encoder.writer.String())
+	}
+	if got := <-acks; got != 17 {
+		t.Fatalf("ack = %d, want 17", got)
+	}
+}
+
+func TestScreencastStartFailureRollsBackPublishedResources(t *testing.T) {
+	encoder := &fakeScreencastEncoder{writer: &fakeScreencastWriter{}}
+	var outputPath string
+	b := &BrowseTools{screencast: screencastState{
+		newEncoder: func(_, path string) (screencastEncoder, error) {
+			outputPath = path
+			if err := os.WriteFile(path, []byte("partial"), 0o644); err != nil {
+				return nil, err
+			}
+			return encoder, nil
+		},
+		startCDP: func(context.Context, page.ScreencastFormat, int64, int64, int64, int64) error {
+			return fmt.Errorf("CDP refused start")
+		},
+		stopCDP: func(context.Context) error { return nil },
+	}}
+	if err := b.beginScreencastStart(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.screencastStartWithContext(t.Context(), "jpeg", 60, 1280, 720, 1); err == nil || !strings.Contains(err.Error(), "CDP refused start") {
+		t.Fatalf("start error = %v", err)
+	}
+	if encoder.writer.closed != 1 || encoder.stops != 1 || encoder.waits != 1 {
+		t.Fatalf("rollback close/stop/wait = %d/%d/%d, want 1/1/1", encoder.writer.closed, encoder.stops, encoder.waits)
+	}
+	if _, err := os.Stat(outputPath); !os.IsNotExist(err) {
+		t.Fatalf("rollback left output %q: %v", outputPath, err)
+	}
+	b.screencast.mu.Lock()
+	defer b.screencast.mu.Unlock()
+	if b.screencast.active || b.screencast.starting || b.screencast.sessionID != "" || b.screencast.outputPath != "" || b.screencast.frameCount != 0 || !b.screencast.startTime.IsZero() || b.screencast.encoder != nil || b.screencast.ffmpegIn != nil || b.screencast.ackCh != nil || b.screencast.stopCh != nil || b.screencast.stopped != nil {
+		t.Fatalf("rollback left published state: %+v", b.screencast)
+	}
 }
