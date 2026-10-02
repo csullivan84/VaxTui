@@ -23,17 +23,18 @@
     >
       Reconnecting<span class="reconnecting-dots">...</span>
     </span>
-  </template>
-
-  <!-- Error -->
-  <template v-else-if="error">
     <span
       :class="['status-message', models.length === 0 ? 'status-no-models' : 'status-error']"
       role="alert"
       aria-live="assertive"
       >{{ error }}</span
     >
-    <button class="status-button status-button-text" @click="onClearError">
+    <button
+      type="button"
+      class="status-button status-button-text"
+      aria-label="Dismiss error"
+      @click="onClearError"
+    >
       <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path
           stroke-linecap="round"
@@ -91,6 +92,7 @@
     v-else-if="interrupted && conversationId"
     class="status-bar-active"
     data-testid="conversation-interrupted"
+    role="status"
   >
     <div class="status-interrupted-group">
       <span class="status-message">Conversation Interrupted</span>

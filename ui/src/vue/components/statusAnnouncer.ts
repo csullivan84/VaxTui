@@ -92,6 +92,14 @@ export function streamAnnouncement(
   return null;
 }
 
+export function interruptedAnnouncement(
+  interrupted: boolean,
+  previous: boolean | undefined,
+): Announcement | null {
+  if (!interrupted || previous === true) return null;
+  return { text: "Conversation interrupted. Continue is available.", politeness: "polite" };
+}
+
 export function errorAnnouncement(
   error: string | null,
   previous: string | null | undefined,

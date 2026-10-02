@@ -25,6 +25,7 @@ import { A11Y_ANNOUNCE_EVENT, type A11yAnnouncementDetail } from "../../services
 import {
   agentAnnouncement,
   errorAnnouncement,
+  interruptedAnnouncement,
   streamAnnouncement,
   type Announcement,
   type Politeness,
@@ -35,6 +36,7 @@ import {
 const props = withDefaults(
   defineProps<{
     agentWorking: boolean;
+    interrupted?: boolean;
     streamStatus?: StreamStatus;
     error?: string | null;
     /** Tool cards that finished during the turn that just ended. */
@@ -50,6 +52,7 @@ const props = withDefaults(
   }>(),
   {
     streamStatus: "connected",
+    interrupted: false,
     error: null,
     toolsCompleted: 0,
     assistantPreview: "",
@@ -114,6 +117,9 @@ function apply(next: Announcement | null) {
 watch(
   () => props.agentWorking,
   (working, wasWorking) => {
+    // An interrupted turn did not finish successfully. Its dedicated watcher
+    // speaks the recovery action, including when interruption and idle arrive together.
+    if (!working && props.interrupted) return;
     // On finish, wait a tick so the parent can set tool stats before we speak.
     if (!working && wasWorking) {
       void nextTick(() => {
@@ -143,6 +149,12 @@ watch(
       ),
     );
   },
+);
+
+watch(
+  () => props.interrupted,
+  (interrupted, previous) => apply(interruptedAnnouncement(interrupted, previous)),
+  { immediate: true },
 );
 
 watch(
