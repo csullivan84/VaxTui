@@ -53,8 +53,20 @@
           :disabled="!!recordingSubmission?.destinationError"
           @click="returnToRecording"
         >
-          <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m9 10-5-5 5-5M4 5h10a6 6 0 0 1 0 12h-3" />
+          <svg
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+            width="16"
+            height="16"
+            aria-hidden="true"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="m9 10-5-5 5-5M4 5h10a6 6 0 0 1 0 12h-3"
+            />
           </svg>
           {{ t("recordingReturn") }}
         </button>
@@ -71,7 +83,11 @@
         />
       </div>
     </Teleport>
-    <form v-if="!recordingActive || recordingFloating" class="message-input-form" @submit="handleSubmit">
+    <form
+      v-if="!recordingActive || recordingFloating"
+      class="message-input-form"
+      @submit="handleSubmit"
+    >
       <input
         ref="fileInputRef"
         type="file"
@@ -274,6 +290,9 @@
             <line x1="12" y1="19" x2="20" y2="19" />
           </svg>
         </div>
+        <div class="sr-only" role="status" aria-live="polite" aria-atomic="true">
+          {{ fileAnnouncement }}
+        </div>
         <textarea
           ref="textareaRef"
           :value="message"
@@ -281,6 +300,7 @@
           class="message-textarea"
           :disabled="isDisabled"
           :rows="initialRows ?? 1"
+          id="shelley-message-input"
           aria-label="Message input"
           data-testid="message-input"
           :aria-autocomplete="showFileMenu ? 'list' : undefined"
@@ -475,7 +495,17 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, shallowReactive, shallowRef, useId, watch } from "vue";
+import {
+  computed,
+  nextTick,
+  onMounted,
+  onUnmounted,
+  ref,
+  shallowReactive,
+  shallowRef,
+  useId,
+  watch,
+} from "vue";
 import { useFileCompletion } from "../composables/fileCompletion";
 import { useI18n } from "../composables/i18n";
 import { pickPlaceholderHint } from "../../utils/placeholderHints";
@@ -489,9 +519,14 @@ import {
   type ComposerSubmissionIntent,
 } from "./composerDispatch";
 import { isImeComposing } from "../../utils/imeComposing";
+import { getSendKeystroke, type SendKeystroke } from "../../services/a11yPreferences";
 import RecordButton from "./RecordButton.vue";
 import RecordingPanel from "./RecordingPanel.vue";
-import type { RecordingDestination, RecordingMode, RecordingPreparation } from "./recordingDestination";
+import type {
+  RecordingDestination,
+  RecordingMode,
+  RecordingPreparation,
+} from "./recordingDestination";
 import { focusMessageInputIfUnfocused } from "../../utils/focusMessageInput";
 import {
   CONCRETE_THINKING_LEVELS,
@@ -597,6 +632,7 @@ const canCompact = computed(() => props.onCompact !== undefined && !props.autoQu
 const sendSelectedLevel = ref<ContextUsageLevel>("");
 
 const message = ref(props.draftSeed?.value ?? "");
+const sendKeystroke = ref<SendKeystroke>(getSendKeystroke());
 type RecordingSubmission = {
   mode: RecordingMode;
   microphone?: Promise<MediaStream>;
@@ -693,8 +729,13 @@ function handleResize() {
 }
 
 const canRecordAudio = computed(
-  () => mediaRecordingAvailable && props.recordingInlineAvailable && !isDisabled.value &&
-    !submitting.value && uploadsInProgress.value === 0 && !recordingSubmission.value,
+  () =>
+    mediaRecordingAvailable &&
+    props.recordingInlineAvailable &&
+    !isDisabled.value &&
+    !submitting.value &&
+    uploadsInProgress.value === 0 &&
+    !recordingSubmission.value,
 );
 const canRecordScreen = computed(() => canRecordAudio.value && screenRecordingAvailable);
 
@@ -711,9 +752,7 @@ function beginRecording(mode: RecordingMode) {
   // Acquire media in the initiating key/click handler, before draft I/O.
   // The panel owns the stream and presents acquisition failures.
   const microphone =
-    mode === "microphone"
-      ? navigator.mediaDevices.getUserMedia({ audio: true })
-      : undefined;
+    mode === "microphone" ? navigator.mediaDevices.getUserMedia({ audio: true }) : undefined;
   const screen =
     mode === "screen"
       ? navigator.mediaDevices.getDisplayMedia({ video: true, audio: true })
@@ -779,7 +818,11 @@ function completionFor(submission: RecordingSubmission) {
   return (path: string, retry: boolean) => handleRecordingComplete(submission, path, retry);
 }
 
-async function handleRecordingComplete(submission: RecordingSubmission, path: string, retry: boolean) {
+async function handleRecordingComplete(
+  submission: RecordingSubmission,
+  path: string,
+  retry: boolean,
+) {
   if (retry && submission.destinationError) {
     submission.destinationError = undefined;
     submission.destination = submission.preparation.resolve();
@@ -1078,6 +1121,15 @@ const {
   enabled: () => !isDisabled.value && !isShellMode.value,
 });
 
+const fileAnnouncement = computed(() => {
+  if (!showFileMenu.value) return "";
+  if (fileError.value) return fileError.value;
+  const count = fileMatches.value.length;
+  if (count)
+    return `${count} file suggestion${count === 1 ? "" : "s"}. Up and Down to choose, Enter or Tab to insert, Escape to dismiss.`;
+  return fileLoading.value ? "Searching files and folders…" : "No matching files or folders";
+});
+
 function syncFileSelection() {
   const textarea = textareaRef.value;
   if (textarea) updateFileSelection(textarea.selectionStart, textarea.selectionEnd);
@@ -1339,6 +1391,7 @@ async function handleSubmit(e: Event) {
       guardComposerClear(origin, composerOrigin, () => {
         setMessage("");
         emit("draft-cleared");
+        if (!("ontouchstart" in window)) requestAnimationFrame(() => textareaRef.value?.focus());
       });
     } catch {
       // Keep the message on error so user can retry.
@@ -1547,13 +1600,20 @@ function handleKeyDown(e: KeyboardEvent) {
     return;
   }
   if (e.key === "Enter" && !e.shiftKey) {
-    // On mobile, let Enter create newlines since there's a send button.
-    const isMobile = "ontouchstart" in window;
-    if (isMobile && !(e.ctrlKey || e.metaKey)) return;
+    if (!(e.ctrlKey || e.metaKey) && sendKeystroke.value === "modifier-enter") return;
     e.preventDefault();
     void handleSubmit(e);
   }
 }
+
+function onSendKeystrokeChange(event: Event) {
+  sendKeystroke.value = (event as CustomEvent<SendKeystroke>).detail;
+}
+
+watch(submitting, (now) => {
+  if (!now && !("ontouchstart" in window) && document.activeElement === document.body)
+    textareaRef.value?.focus();
+});
 
 // autoFocus — re-attempt focus when the textarea becomes enabled. Skips when
 // focus is inside an open modal (e.g. the file finder opened right after page
@@ -1579,6 +1639,7 @@ function handleViewportResize() {
 
 onMounted(() => {
   window.addEventListener("resize", handleResize);
+  window.addEventListener("shelley:send-keystroke-change", onSendKeystrokeChange);
   if (typeof window !== "undefined" && window.visualViewport) {
     window.visualViewport.addEventListener("resize", handleViewportResize);
   }
@@ -1591,6 +1652,7 @@ onUnmounted(() => {
   recordingSubmission.value?.preparation.release();
   recordingSubmission.value = null;
   window.removeEventListener("resize", handleResize);
+  window.removeEventListener("shelley:send-keystroke-change", onSendKeystrokeChange);
   if (typeof window !== "undefined" && window.visualViewport) {
     window.visualViewport.removeEventListener("resize", handleViewportResize);
   }

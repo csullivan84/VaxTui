@@ -188,6 +188,15 @@ func (s *Server) handleWriteFile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "absolute path required", http.StatusBadRequest)
 		return
 	}
+	// The user AGENTS.md editor can be the first feature to create Shelley’s
+	// private config directory in a fresh HOME. Create only that known parent;
+	// arbitrary file paths retain their existing no-parent-creation behavior.
+	if isUserAgentsMdFile(clean) {
+		if err := os.MkdirAll(filepath.Dir(clean), 0o755); err != nil {
+			http.Error(w, fmt.Sprintf("failed to create AGENTS.md directory: %v", err), s.errorStatus(err))
+			return
+		}
+	}
 
 	// Write the file
 	if err := os.WriteFile(clean, []byte(req.Content), 0o644); err != nil {

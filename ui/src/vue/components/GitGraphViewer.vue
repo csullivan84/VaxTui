@@ -219,7 +219,8 @@
                 :tabindex="canOpenDiff ? undefined : -1"
                 @click="onOpenCommitClick($event, selectedCommit.hash)"
               >
-                {{ selectedCommit.hasTour ? "Open tour →" : "Open diff →" }}
+                {{ selectedCommit.hasTour ? "Open tour" : "Open diff" }}
+                <span aria-hidden="true">→</span>
               </a>
               <CommitTourAction
                 v-if="isOpen && cwd"
@@ -324,6 +325,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref, watch } from "vue";
 import { api } from "../../services/api";
+import { announceA11y } from "../../services/a11yAnnouncer";
 import type { GitGraphResponse, GitCommitDetail } from "../../types";
 import CommitTourAction from "./CommitTourAction.vue";
 import GitRepoPicker from "./GitRepoPicker.vue";
@@ -349,6 +351,7 @@ import {
   DOT_R,
   INITIAL_LIMIT,
   DETAIL_MIN_PX,
+  DETAIL_MAX_PX,
   DETAIL_DEFAULT_PX,
   type Scope,
 } from "./gitGraphLayout";
@@ -431,7 +434,7 @@ function onDividerMouseDown(e: MouseEvent) {
     // Dragging right shrinks detail; dragging left grows it.
     const next = Math.max(
       DETAIL_MIN_PX,
-      Math.min(rect.width - DETAIL_MIN_PX, rect.right - ev.clientX),
+      Math.min(DETAIL_MAX_PX, Math.min(rect.width - DETAIL_MIN_PX, rect.right - ev.clientX)),
     );
     detailWidth.value = next;
   };
@@ -576,6 +579,11 @@ function rowWidth(i: number): number {
 function selectCommit(hash: string) {
   selected.value = hash;
   sheetOpen.value = true;
+  const commit = commits.value.find((item) => item.hash === hash);
+  if (commit) {
+    const subject = commit.subject.replace(/\s+/g, " ").trim();
+    announceA11y(`Commit ${commit.shortHash || hash.slice(0, 7)}${subject ? `: ${subject}` : ""}`);
+  }
 }
 
 // Esc handling (React effect on [isOpen, covered, onClose, sheetOpen]).

@@ -182,6 +182,32 @@ func TestHandleWriteFileAutoCommits(t *testing.T) {
 	}
 }
 
+func TestHandleWriteFileCreatesFreshUserAgentsMdDirectory(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	h := NewTestHarness(t)
+
+	agentsPath, err := userAgentsMdPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Dir(agentsPath)); !os.IsNotExist(err) {
+		t.Fatalf("fresh AGENTS.md parent should not exist: %v", err)
+	}
+	body, _ := json.Marshal(map[string]string{"path": agentsPath, "content": "first save\n"})
+	req := httptest.NewRequest(http.MethodPost, "/api/write-file", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.server.handleWriteFile(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", w.Code, w.Body.String())
+	}
+	got, err := os.ReadFile(agentsPath)
+	if err != nil || string(got) != "first save\n" {
+		t.Fatalf("saved AGENTS.md = %q, err=%v", got, err)
+	}
+}
+
 // TestHandleUserAgentsMdEndpoint checks the GET endpoint returns the file at
 // the historical path.
 func TestHandleUserAgentsMdEndpoint(t *testing.T) {

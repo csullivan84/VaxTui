@@ -627,6 +627,8 @@ test.describe("media recording composer", () => {
       await expect(page.locator(".recording-status")).toHaveAttribute("data-state", "recording");
       await draftStarted.promise;
       expect(await page.evaluate(() => window.__recordingMock.recorderStarts)).toBe(1);
+      // This isolated fixture intentionally starts at /new before selecting a
+      // workspace. Starting recording must not navigate the pending composer.
       await expect(page).toHaveURL(/\/new$/);
 
       await page.getByTestId("recording-cancel-button").click();
@@ -1100,7 +1102,11 @@ test.describe("media recording composer", () => {
       expect(uploads).toBe(1);
       expect(await page.evaluate(() => window.__recordingMock.recorderStarts)).toBe(1);
       expect(await page.evaluate(() => window.__recordingMock.microphoneRequests)).toBe(1);
-      await expect(page).toHaveURL(/\/new$/);
+      const workspaceSlug = await page.evaluate(() =>
+        window.localStorage.getItem("shelley_selected_workspace"),
+      );
+      expect(workspaceSlug).toBeTruthy();
+      await expect(page).toHaveURL(new RegExp(`/${workspaceSlug}$`));
       await expect(input).toHaveValue("A newer new-conversation composer.");
     } finally {
       releaseFirstDraft.resolve();

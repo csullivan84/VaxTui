@@ -17,6 +17,7 @@
       :tools-completed="toolsCompletedThisTurn"
       :assistant-preview="assistantTurnPreview"
       :turn-cancelled="turnCancelled"
+      :interrupted="conversationInterrupted"
       :tool-stats="toolStatsThisTurn"
       :cancelled-subagents="cancelledSubagentsThisTurn"
     />
@@ -441,6 +442,9 @@
         @draft-change="handleDraftChange"
         @draft-send-started="handleDraftSendStarted"
         @draft-cleared="handleDraftCleared"
+        @recording-unsent="handleRecordingUnsent"
+        @recording-unavailable="error = t('recordingUnavailable')"
+        @open-terminal="openInAppTerminal"
       >
         <template v-if="statusSlotInline" #status>
           <ChatStatusContent v-bind="statusContentProps" />
@@ -3136,7 +3140,7 @@ function prepareRecording(text: string): RecordingPreparation {
       }
     },
     release() {
-      if (!origin && sessionVersion === draftSessionVersion) {
+      if (!origin && !accepted && sessionVersion === draftSessionVersion) {
         draftAutosave.schedule(draftText);
       }
     },
@@ -4820,6 +4824,9 @@ function setupScrollObservers() {
       if (entry.target === container) containerHeight = entry.contentRect.height;
       else listHeight = entry.contentRect.height;
     }
+    // Fork workspace chrome can leave less than 70svh for the transcript.
+    // Keep images within that actual reading viewport without changing ratio.
+    container.style.setProperty("--image-max-height", `min(70svh, ${Math.floor(containerHeight)}px)`);
     if (listHeight < lastListHeight) {
       // A list shrink means the imminent — or just-landed — scroll event is a
       // clamp, not a gesture. Same two orderings as container growth below,
