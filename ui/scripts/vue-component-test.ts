@@ -120,8 +120,8 @@ export async function mountVueComponent(
   );
   const vue = require("vue") as typeof import("vue");
   const props = vue.reactive({ ...initialProps });
-  let app: App;
-  let container: HTMLElement;
+  let app!: App;
+  let container!: HTMLElement;
   const mount = () => {
     container = dom.window.document.createElement("main");
     dom.window.document.body.append(container);
