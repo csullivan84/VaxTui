@@ -150,6 +150,7 @@ import { computed, nextTick, ref, watch, useId } from "vue";
 import type { LLMContent } from "../../../types";
 import HighlightedCode from "../HighlightedCode.vue";
 import AnsiText from "./AnsiText.vue";
+import { stripAnsi } from "../../../utils/ansi";
 import { useToolExpanded } from "../../composables/toolDetail";
 import { useScreenReaderMode } from "../../composables/screenReaderMode";
 import { announceToolA11y } from "../../../services/a11yAnnouncer";
@@ -286,7 +287,7 @@ const background = computed(() => displayData.value?.background ?? null);
 const output = computed(() =>
   background.value ? backgroundOutput(rawOutput.value, background.value) : rawOutput.value,
 );
-const accessibleOutput = computed(() => output.value || "(no output)");
+const accessibleOutput = computed(() => stripAnsi(output.value) || "(no output)");
 
 const isCancelled = computed(() => props.hasError && isCancelledToolResult(output.value));
 

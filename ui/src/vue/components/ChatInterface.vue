@@ -627,6 +627,7 @@ import { useVersionChecker } from "../composables/versionChecker";
 import { provideToolProgress } from "../composables/toolProgress";
 import { closeImageComment, useImageCommentTarget } from "../composables/imageComment";
 import { isImeComposing } from "../../utils/imeComposing";
+import { focusInPlace } from "../../utils/focusInPlace";
 import { focusMessageInputIfUnfocused } from "../../utils/focusMessageInput";
 import { buildMessageQuote } from "../../utils/messageQuote";
 import { hasMultipleUsers } from "../../utils/messageAuthors";
@@ -5269,7 +5270,7 @@ function resumeFromUnread() {
   ) as HTMLElement | null;
   if (el) {
     el.scrollIntoView({ block: "center" });
-    el.focus?.();
+    focusInPlace(el);
     announceA11y("Jumped to first unread message.");
   } else {
     // Fallback: scroll container and announce.
