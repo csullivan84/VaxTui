@@ -240,6 +240,12 @@
             commandPaletteOpen = false;
           }
         "
+        @open-favicon-emoji-picker="
+          () => {
+            faviconEmojiPickerOpen = true;
+            commandPaletteOpen = false;
+          }
+        "
         @next-conversation="navigateToNextConversation"
         @previous-conversation="navigateToPreviousConversation"
         @next-user-message="navigateToNextUserMessage"
@@ -294,6 +300,16 @@
         "
       />
 
+      <FaviconEmojiPicker
+        :is-open="faviconEmojiPickerOpen"
+        @close="
+          () => {
+            faviconEmojiPickerOpen = false;
+            focusMessageInputIfUnfocused();
+          }
+        "
+      />
+
       <FileFinderModal
         :is-open="fileFinderOpen"
         :initial-dir="finderDir"
@@ -322,6 +338,7 @@ import ModelsModal from "./components/ModelsModal.vue";
 import IntegrationsModal from "./components/IntegrationsModal.vue";
 import NotificationsModal from "./components/NotificationsModal.vue";
 import FeatureFlagsModal from "./components/FeatureFlagsModal.vue";
+import FaviconEmojiPicker from "./components/FaviconEmojiPicker.vue";
 import FileFinderModal from "./components/FileFinderModal.vue";
 import OnboardingPage from "./components/OnboardingPage.vue";
 import WorkspaceShell from "./components/WorkspaceShell.vue";
@@ -335,6 +352,7 @@ import {
   type ConversationWithState,
   type ConversationListPatchEvent,
   type DiskSpaceStatus,
+  type ChatRequest,
 } from "../types";
 import { api, ApiError, type OnboardingStatus, type Workspace } from "../services/api";
 import { btwStore } from "../services/btwStore";
@@ -496,6 +514,7 @@ const modelsModalOpen = ref(false);
 const integrationsModalOpen = ref(false);
 const notificationsModalOpen = ref(false);
 const featureFlagsModalOpen = ref(false);
+const faviconEmojiPickerOpen = ref(false);
 // Fuzzy file finder (Cmd/Ctrl+P) + the generic editor it opens.
 const fileFinderOpen = ref(false);
 const workspaceOpenRequest = ref<{ path: string; nonce: number } | null>(null);
@@ -598,6 +617,7 @@ const currentConversation = computed<ConversationWithState | undefined>(() => {
       ...viewedConversation.value,
       working: false,
       subagent_count: 0,
+      running_background_jobs: 0,
       max_sequence_id: 0,
     } as ConversationWithState;
   }
@@ -1007,24 +1027,14 @@ async function handleFirstMessage(
   message: string,
   model: string,
   cwd?: string,
-  toolOverrides?: Record<string, "on" | "off">,
-  thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max",
+  conversationOptions?: ChatRequest["conversation_options"],
 ) {
   try {
-    const hasOverrides = toolOverrides && Object.keys(toolOverrides).length > 0;
-    const hasThinking = !!thinkingLevel;
-    const convOpts =
-      hasOverrides || hasThinking
-        ? {
-            ...(hasOverrides ? { tool_overrides: toolOverrides } : {}),
-            ...(hasThinking ? { thinking_level: thinkingLevel } : {}),
-          }
-        : undefined;
     const response = await api.sendMessageWithNewConversation({
       message,
       model,
       cwd,
-      conversation_options: convOpts,
+      conversation_options: conversationOptions,
     });
     const newConversationId = response.conversation_id;
     messageStore.setAgentWorking(newConversationId, true);

@@ -413,9 +413,7 @@
         :on-start-recording="prepareRecording"
         :recording-inline-available="!currentConversation?.archived"
         :on-queue="queueMessage"
-        :on-compact="
-          conversationId && onDistillNewGeneration ? handleDistillCompactNewGeneration : undefined
-        "
+        :on-compact-and-queue="conversationId && onDistillNewGeneration ? compactAndQueue : undefined"
         :show-queue-option="!!conversationId"
         :can-queue="canQueue"
         :auto-queue="autoQueue"
@@ -585,6 +583,11 @@ import {
   queuedTranscriptionPath,
   queuedTranscriptionTaskState,
 } from "../../types";
+import {
+  COMPACT_IN_PLACE_REQUEST,
+  COMPACT_IN_PLACE_TOOL,
+  DEFAULT_COMPACT_NUDGE_TOKENS,
+} from "./autoCompaction";
 import { api, ApiError } from "../../services/api";
 import { announceA11y } from "../../services/a11yAnnouncer";
 import { btwStore } from "../../services/btwStore";
@@ -603,6 +606,8 @@ import {
   loadCachedDraft,
   saveCachedDraft,
   clearCachedDraft,
+  rebaseCachedDraft,
+  markCachedDraftPending,
   reconcileComposerDraft,
 } from "../../services/draftCache";
 import { setFaviconStatus } from "../../services/favicon";
@@ -727,8 +732,7 @@ const props = withDefaults(
       message: string,
       model: string,
       cwd?: string,
-      toolOverrides?: Record<string, "on" | "off">,
-      thinkingLevel?: Exclude<ThinkingLevel, "default">,
+      conversationOptions?: ChatRequest["conversation_options"],
     ) => Promise<void>;
     onDistillNewGeneration?: (
       sourceConversationId: string,
@@ -966,10 +970,7 @@ function putDraftModel(draftId: string, model: string) {
       if (draftConvId === draftId && conv.updated_at > draftSyncedAt) {
         draftSyncedAt = conv.updated_at;
       }
-      const cur = loadCachedDraft(draftId);
-      if (cur && conv.updated_at > cur.basedOn) {
-        saveCachedDraft(draftId, cur.value, conv.updated_at);
-      }
+      rebaseCachedDraft(draftId, conv.updated_at);
     })
     .catch(() => {})
     .finally(() => {
@@ -1609,6 +1610,20 @@ function resetToolOverrides() {
 }
 const toolOverrideCount = computed(() => Object.keys(toolOverrides.value).length);
 
+// ---- auto compaction nudge threshold (persisted) ----
+const COMPACT_NUDGE_KEY = "shelley.compactNudgeTokens";
+const compactNudgeTokens = ref<number>(
+  Number(localStorage.getItem(COMPACT_NUDGE_KEY)) || DEFAULT_COMPACT_NUDGE_TOKENS,
+);
+function setCompactNudgeTokens(tokens: number) {
+  compactNudgeTokens.value = tokens;
+  try {
+    localStorage.setItem(COMPACT_NUDGE_KEY, String(tokens));
+  } catch {
+    /* ignore */
+  }
+}
+
 const toolOverrideList = computed(() => availableTools.value);
 
 // ---- per-conversation localStorage helpers ----
@@ -1730,7 +1745,7 @@ function messageSnippet(m: Message): string {
       if (!snippet) {
         for (const c of content) {
           if (c.Type === LLM_TYPE_TOOL_USE && c.ToolName) {
-            snippet = `→ ${c.ToolName}`;
+            snippet = c.ToolName;
             break;
           }
         }
@@ -1885,6 +1900,17 @@ const conversationThinkingLevel = computed<string | null>(() => {
     return opts?.thinking_level || null;
   } catch {
     return null;
+  }
+});
+
+// Whether this conversation was started with the compact_in_place tool on.
+const compactInPlaceEnabled = computed(() => {
+  const raw = props.currentConversation?.conversation_options;
+  if (!raw) return false;
+  try {
+    return JSON.parse(raw)?.tool_overrides?.[COMPACT_IN_PLACE_TOOL] === "on";
+  } catch {
+    return false;
   }
 });
 
@@ -2871,27 +2897,32 @@ const pendingQueuedMessages: {
 }[] = [];
 
 async function queueMessage(message: string) {
-  if (!message.trim() || !props.conversationId) return;
+  if (!props.conversationId) return;
+  await queueMessageTo(props.conversationId, selectedModel.value, message);
+}
+
+async function queueMessageTo(conversationId: string, model: string, message: string) {
+  if (!message.trim()) return;
   // Same guard as sendMessage: a queued turn runs the LLM later, so an
   // unavailable model just defers the confusing "Unsupported model" error.
   // Throws (not returns) so MessageInput's catch restores the composer text.
-  if (!canSendWithModel(selectedModel.value, readyModelIds.value)) {
+  if (!canSendWithModel(model, readyModelIds.value)) {
     const err = new Error(noModelErrorMessage());
     error.value = err.message;
     throw err;
   }
   const pending = {
-    conversationId: props.conversationId,
+    conversationId,
     text: message,
     controller: new AbortController(),
   };
   pendingQueuedMessages.push(pending);
   try {
     await api.sendMessage(
-      props.conversationId,
+      conversationId,
       {
         message: message.trim(),
-        model: selectedModel.value,
+        model,
         queue: true,
       },
       pending.controller.signal,
@@ -2974,9 +3005,11 @@ function buildConversationOptions(): ChatRequest["conversation_options"] | undef
   const explicitThinking = thinkingLevel.value === "default" ? undefined : thinkingLevel.value;
   const hasThinking = explicitThinking !== undefined;
   if (!hasOverrides && !hasThinking) return undefined;
+  const autoCompaction = toolOverrides.value[COMPACT_IN_PLACE_TOOL] === "on";
   return {
     ...(hasOverrides ? { tool_overrides: { ...toolOverrides.value } } : {}),
     ...(explicitThinking ? { thinking_level: explicitThinking } : {}),
+    ...(autoCompaction ? { compact_nudge_tokens: compactNudgeTokens.value } : {}),
   };
 }
 
@@ -3046,8 +3079,7 @@ async function sendFirstMessage(prompt: string) {
     prompt,
     selectedModel.value,
     selectedCwd.value || undefined,
-    Object.keys(toolOverrides.value).length > 0 ? { ...toolOverrides.value } : undefined,
-    thinkingLevel.value === "default" ? undefined : thinkingLevel.value,
+    buildConversationOptions(),
   );
 }
 
@@ -3121,12 +3153,13 @@ function prepareRecording(text: string): RecordingPreparation {
             error.value = null;
             const suffix = context.trim();
             try {
-              await api.sendMessage(conversationId, {
-                message: `${SLASH_COMMANDS.TRANSCRIPTION.command} ${path}${suffix ? `\n${suffix}` : ""}`,
-                ...options,
-              });
+              await postSubmittedDraft(conversationId, text, () =>
+                api.sendMessage(conversationId, {
+                  message: `${SLASH_COMMANDS.TRANSCRIPTION.command} ${path}${suffix ? `\n${suffix}` : ""}`,
+                  ...options,
+                }),
+              );
               accepted = true;
-              clearSubmittedDraft(conversationId, text);
             } catch (err) {
               const detail = err instanceof Error ? err.message : String(err);
               error.value = `Failed to submit recording to ${conversationId}: ${detail}. Retry in that conversation with /transcription ${path}`;
@@ -3150,6 +3183,31 @@ function prepareRecording(text: string): RecordingPreparation {
 function handleRecordingUnsent(path: string, cause: unknown) {
   const detail = cause instanceof Error ? cause.message : String(cause);
   error.value = `${detail}. Retry with /transcription ${path}`;
+}
+
+// Conversation ids with a send from THIS tab in flight. Their pending mirror
+// entries are ours: the reconcile watch must keep treating them as the
+// composer's own text (see CachedDraft.pending), so an echo cannot clear a
+// composer whose send may yet fail.
+const ownSends = new Set<string>();
+
+// postSubmittedDraft runs the chat POST for a composer's text with its mirror
+// entry flagged pending, then clears the accepted text, or unflags it if the
+// POST fails.
+async function postSubmittedDraft<T>(conversationId: string, text: string, post: () => Promise<T>): Promise<T> {
+  const restore = markCachedDraftPending(conversationId, text);
+  ownSends.add(conversationId);
+  let result: T;
+  try {
+    result = await post();
+  } catch (err) {
+    restore();
+    throw err;
+  } finally {
+    ownSends.delete(conversationId);
+  }
+  clearSubmittedDraft(conversationId, text);
+  return result;
 }
 
 function clearSubmittedDraft(conversationId: string, text: string) {
@@ -3302,14 +3360,14 @@ async function sendMessage(message: string) {
     }
     return;
   }
-  // /model is handled server-side synchronously (it switches the model and
-  // returns immediately without starting a turn), so it must NOT flip the
-  // agent-working state — otherwise "Agent working..." would stick on. Send it
-  // like a normal message but skip the working indicator.
-  if (
-    (trimmedMessage === "/model" || trimmedMessage.startsWith("/model ")) &&
-    props.conversationId
-  ) {
+  // /model and /compact-debug are handled server-side synchronously (they
+  // return immediately without starting a turn), so they must NOT flip the
+  // agent-working state — otherwise "Agent working..." would stick on. Send
+  // them like a normal message but skip the working indicator.
+  const syncCommand = ["/model", "/compact-debug"].find(
+    (c) => trimmedMessage === c || trimmedMessage.startsWith(`${c} `),
+  );
+  if (syncCommand && props.conversationId) {
     try {
       sending.value = true;
       error.value = null;
@@ -3318,7 +3376,7 @@ async function sendMessage(message: string) {
         model: selectedModel.value,
       });
     } catch (err) {
-      console.error("Failed to run /model:", err);
+      console.error(`Failed to run ${syncCommand}:`, err);
       error.value = err instanceof Error ? err.message : "Unknown error";
     } finally {
       sending.value = false;
@@ -3443,11 +3501,13 @@ async function sendMessage(message: string) {
       await sendFirstMessage(message.trim());
     } else if (effectiveId) {
       beginModelHealthRequest();
-      const accepted = await api.sendMessage(effectiveId, request);
-      clearSubmittedDraft(effectiveId, submittedDraft);
+      const id = effectiveId;
+      const accepted = await postSubmittedDraft(id, submittedDraft, () =>
+        api.sendMessage(id, request),
+      );
       // A queued message starts no turn (e.g. it waits behind a failed
       // recording), so drop the optimistic indicator for the server's state.
-      if (accepted.status === "queued") syncTransientFromStore(effectiveId);
+      if (accepted.status === "queued") syncTransientFromStore(id);
     }
   } catch (err) {
     console.error("Failed to send message:", err);
@@ -3517,6 +3577,19 @@ async function handleDistillCompactNewGeneration(instructions?: string) {
     "compact",
     instructions,
   );
+}
+
+/** Compact, then queue `message` behind the compaction (queued messages drain
+ * once distillation ends). The user may switch conversations while the
+ * compaction request is in flight, so pin the queue to the conversation and
+ * model that were active when they clicked. */
+async function compactAndQueue(message: string) {
+  const conversationId = props.conversationId;
+  if (!conversationId || !props.onDistillNewGeneration) return;
+  const model = selectedModel.value;
+  const cwd = props.currentConversation?.cwd || selectedCwd.value || undefined;
+  await props.onDistillNewGeneration(conversationId, model, cwd, "compact");
+  await queueMessageTo(conversationId, model, message);
 }
 
 async function handleStartNewGeneration() {
@@ -3818,10 +3891,7 @@ async function saveDraft(value: string) {
       if (draftConvId === id && conv.updated_at > draftSyncedAt) {
         draftSyncedAt = conv.updated_at;
       }
-      const cur = loadCachedDraft(id);
-      if (cur && conv.updated_at > cur.basedOn) {
-        saveCachedDraft(id, cur.value, conv.updated_at);
-      }
+      rebaseCachedDraft(id, conv.updated_at);
     }
     return;
   }
@@ -3987,6 +4057,9 @@ const statusContentProps = computed(() => {
     onResumeInterrupted: handleResumeInterrupted,
     onDistillNewGeneration: contextBarDistill.value,
     onStartNewGeneration: handleStartNewGeneration,
+    onCompactInPlace: compactInPlaceEnabled.value
+      ? () => sendMessage(COMPACT_IN_PLACE_REQUEST)
+      : undefined,
     onSelectModel: setSelectedModel,
     onSelectCombination: setSelectedCombination,
     // The status readout's inline picker only renders for a conversation that
@@ -4001,6 +4074,8 @@ const statusContentProps = computed(() => {
     onThinkingChange: setThinkingLevel,
     onSetToolOverride: setToolOverride,
     onResetToolOverrides: resetToolOverrides,
+    compactNudgeTokens: compactNudgeTokens.value,
+    onSetCompactNudgeTokens: setCompactNudgeTokens,
     onOpenDirectoryPicker: () => (showDirectoryPicker.value = true),
     onUsageNeeded: () => (usageWanted.value = true),
   };
@@ -4489,20 +4564,35 @@ watch(
     () => props.currentConversation?.updated_at,
     lazyDraftId,
   ],
-  () => {
+  ([id, isDraft], prev) => {
     perfCount("chat.draftReconcileWatch");
+    const sessionId = props.conversationId ?? null;
+    const cached = loadCachedDraft(sessionId);
+    // The row flipping is_draft true->false in place is the draft being sent.
+    const [prevId, prevIsDraft, prevDraft] = prev ?? [];
+    const promotedFrom =
+      prev && id === prevId && prevIsDraft === true && isDraft === false ? prevDraft || "" : null;
     const result = reconcileComposerDraft({
-      conversationId: props.conversationId ?? null,
+      conversationId: sessionId,
       lazyDraftId: lazyDraftId.value,
-      isDraft: !!props.currentConversation?.is_draft,
+      isDraft: !!isDraft,
       serverDraft: props.currentConversation?.draft || "",
       serverUpdatedAt: props.currentConversation?.updated_at || "",
-      cached: loadCachedDraft(props.conversationId ?? null),
+      cached,
+      ownsPending: sessionId !== null && ownSends.has(sessionId),
+      promotedFrom,
       composerValue: draftText,
       lastSeededSession,
       lastSeededValue,
     });
     if (result === null) return;
+    // Entering a session restores even a pending entry (reload mid-send). Unless
+    // the send is this tab's own (still in flight while we navigated away and
+    // back), it died with its page: the text is a plain draft again, or later
+    // echoes would treat it as departing and clear the composer.
+    if (lastSeededSession !== sessionId && cached?.pending && !ownSends.has(sessionId ?? "")) {
+      saveCachedDraft(sessionId, cached.value, cached.basedOn);
+    }
     draftSyncedAt = result.draftSyncedAt;
     seedComposer(result.value);
     lastSeededValue = result.value;

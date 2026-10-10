@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -141,5 +142,39 @@ func TestTerminalListPrunesDeadSessions(t *testing.T) {
 	ts.sessions[session.ID] = session
 	if got := ts.List(); len(got) != 0 {
 		t.Fatalf("dead terminal remained in list: %+v", got)
+	}
+}
+
+// A server that never opens a terminal must not leave a sessions directory
+// behind: tests construct hundreds of servers with throwaway dirs and nothing
+// removes them, which once exhausted /tmp inodes on CI.
+func TestTerminalSessionsDirCreatedOnFirstSpawn(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "terminals")
+	ts, err := NewTerminalSessions(dir, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("NewTerminalSessions created %s before any terminal was spawned (stat err=%v)", dir, err)
+	}
+	ts.SetSpawner(func(socket, logFile, cwd, command string, cols, rows uint16, env []string) (int, error) {
+		return 0, errSpawnerCalled
+	})
+	if _, _, err := ts.Spawn("true", t.TempDir(), "", "", 80, 24, nil); !errors.Is(err, errSpawnerCalled) {
+		t.Fatalf("Spawn err = %v, want %v", err, errSpawnerCalled)
+	}
+	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
+		t.Fatalf("Spawn did not create sessions dir %s: %v", dir, err)
+	}
+}
+
+var errSpawnerCalled = errors.New("spawner called")
+
+func TestNewServerCreatesNoTerminalsDir(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	newTestServer(t)
+	if leaked, _ := filepath.Glob(filepath.Join(tmp, "shelley-terminals-*")); len(leaked) > 0 {
+		t.Fatalf("NewServer created %v without spawning a terminal", leaked)
 	}
 }

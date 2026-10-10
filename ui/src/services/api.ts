@@ -38,6 +38,14 @@ async function responseError(response: Response, prefix: string): Promise<ApiErr
   return new ApiError(`${prefix}: ${detail}`, response.status);
 }
 
+// A backgrounded bash command that has not exited (server BackgroundJobInfo).
+export interface BackgroundJob {
+  job_id: string;
+  command: string;
+  tail: string;
+  started_at: string;
+}
+
 export interface AvailableModel {
   id: string;
   display_name?: string;
@@ -1069,6 +1077,26 @@ class ApiService {
     return response.json();
   }
 
+  async getBackgroundJobs(conversationId: string): Promise<BackgroundJob[]> {
+    const response = await fetch(
+      `${this.baseUrl}/conversation/${encodeURIComponent(conversationId)}/background-jobs`,
+    );
+    if (!response.ok) {
+      throw await responseError(response, "Failed to get background jobs");
+    }
+    return response.json();
+  }
+
+  async killBackgroundJob(conversationId: string, jobId: string): Promise<void> {
+    const response = await fetch(
+      `${this.baseUrl}/conversation/${encodeURIComponent(conversationId)}/background-jobs/${encodeURIComponent(jobId)}/kill`,
+      { method: "POST" },
+    );
+    if (!response.ok) {
+      throw await responseError(response, "Failed to kill background job");
+    }
+  }
+
   async getSubagents(conversationId: string): Promise<Conversation[]> {
     const response = await fetch(`${this.baseUrl}/conversation/${conversationId}/subagents`);
     if (!response.ok) {
@@ -1205,6 +1233,31 @@ export const featureFlagsApi = {
       body: JSON.stringify({ name }),
     });
     if (!r.ok) throw new Error((await r.text()) || r.statusText);
+  },
+};
+
+// The favicon emoji comes from exe.dev when the VM has one; otherwise it is
+// Shelley's own stored emoji, which set() changes. href is the favicon data URI.
+export interface FaviconEmoji {
+  emoji: string;
+  source: "exe.dev" | "shelley";
+  href: string;
+}
+
+export const faviconEmojiApi = {
+  async get(): Promise<FaviconEmoji> {
+    const r = await fetch("/api/favicon-emoji");
+    if (!r.ok) throw await responseError(r, "Failed to load favicon emoji");
+    return r.json();
+  },
+  async set(emoji: string): Promise<FaviconEmoji> {
+    const r = await fetch("/api/favicon-emoji", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "X-Shelley-Request": "1" },
+      body: JSON.stringify({ emoji }),
+    });
+    if (!r.ok) throw await responseError(r, "Failed to save favicon emoji");
+    return r.json();
   },
 };
 

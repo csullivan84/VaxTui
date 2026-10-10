@@ -18,46 +18,29 @@
       @show="onPopupShow"
       @hide="popupOpen = false"
     >
-      {{ formatTokenCount(contextWindowSize) }} tokens
-      <div v-if="popupOpen" class="usage-graph-panel">
-        <div
-          :class="{ 'usage-graph-panel-item-inactive': usageGraph !== 'cost' }"
-          class="usage-graph-panel-item"
-          :aria-hidden="usageGraph !== 'cost'"
-          :inert="usageGraph !== 'cost'"
-        >
-          <TokenCostGraph
-            :entries="usageEntries || []"
-            :models="models"
-            :other-usage-rows="otherUsageRows || []"
-            :conversation-id="conversationId"
-            :active="usageGraph === 'cost'"
-          >
-            <template #mode-controls>
-              <UsageGraphSwitch v-model="usageGraph" />
-            </template>
-          </TokenCostGraph>
-        </div>
-        <div
-          :class="{ 'usage-graph-panel-item-inactive': usageGraph !== 'context' }"
-          class="usage-graph-panel-item"
-          :aria-hidden="usageGraph !== 'context'"
-          :inert="usageGraph !== 'context'"
-        >
-          <ContextCompositionGraph :messages="messages || []">
-            <template #mode-controls>
-              <UsageGraphSwitch v-model="usageGraph" />
-            </template>
-          </ContextCompositionGraph>
-        </div>
+      <div class="usage-popup-header">
+        <div class="usage-popup-title">{{ popupTitle }}</div>
+        <UsageGraphSwitch v-if="usageEntries && usageEntries.length > 0" v-model="panes" />
       </div>
+      <TokenCostGraph
+        v-if="popupOpen"
+        :entries="usageEntries || []"
+        :messages="messages || []"
+        :models="models"
+        :other-usage-rows="otherUsageRows || []"
+        :conversation-id="conversationId"
+        :panes="panes"
+        active
+      />
       <div v-if="showLongConversationWarning" class="chat-popup-warning">
         This conversation is getting long.
         <br />
         Compact it or start a new conversation.
       </div>
       <div
-        v-if="conversationId && (onDistillNewGeneration || onStartNewGeneration)"
+        v-if="
+          conversationId && (onDistillNewGeneration || onStartNewGeneration || onCompactInPlace)
+        "
         class="chat-distill-container"
       >
         <button
@@ -67,6 +50,14 @@
           @click="handleDistillNewGeneration"
         >
           {{ distilling ? "Compacting..." : "Compact Conversation" }}
+        </button>
+        <button
+          v-if="onCompactInPlace"
+          :disabled="distilling"
+          class="chat-distill-button chat-distill-generation-button"
+          @click="handleCompactInPlace"
+        >
+          Compact in Place
         </button>
         <button
           v-if="onStartNewGeneration"
@@ -104,7 +95,7 @@ import type { Message, Model } from "../../types";
 import { contextUsageLevel, contextUsageLevelLabel } from "../../utils/contextUsage";
 import { formatTokenCount } from "../../utils/tokenCostGraph";
 import type { OtherUsageRow, UsageEntry } from "../../utils/tokenCostGraph";
-import ContextCompositionGraph from "./ContextCompositionGraph.vue";
+import { useUsagePanesPreference } from "../composables/usagePanesPreference";
 import TokenCostGraph from "./TokenCostGraph.vue";
 import UsageGraphSwitch from "./UsageGraphSwitch.vue";
 
@@ -120,6 +111,8 @@ const props = defineProps<{
   messages?: Message[];
   onDistillNewGeneration?: () => Promise<void> | void;
   onStartNewGeneration?: () => Promise<void> | void;
+  /** Asks the agent to use compact_in_place; set when the tool is on. */
+  onCompactInPlace?: () => Promise<void> | void;
   /** Called just before the popup opens. The parent computes usageEntries /
    *  otherUsageRows lazily (walking every message and parsing its usage data),
    *  so it needs a beat's warning; the graph renders empty for one tick and
@@ -129,7 +122,8 @@ const props = defineProps<{
 }>();
 
 const distilling = ref(false);
-const usageGraph = ref<"cost" | "context">("cost");
+// Which graphs the popup stacks; remembered across page loads.
+const { panes } = useUsagePanesPreference();
 const popupOpen = ref(false);
 const popupAvailableHeight = ref<string>();
 const popupId = useId();
@@ -156,6 +150,9 @@ const usageTitle = computed(() => {
   const suffix = level ? ` — conversation ${level}` : "";
   return `Context usage: ${formatTokenCount(props.contextWindowSize)} tokens${suffix}`;
 });
+const popupTitle = computed(
+  () => `Current context: ${formatTokenCount(props.contextWindowSize)} tokens`,
+);
 const usageTooltip = computed(() => `${usageTitle.value}. Click for details.`);
 
 // Warn the parent as early as we can — hover/focus, which precede the click —
@@ -223,6 +220,17 @@ async function handleDistillNewGeneration() {
   distilling.value = true;
   try {
     await props.onDistillNewGeneration();
+    popoverRef.value?.hide();
+  } finally {
+    distilling.value = false;
+  }
+}
+
+async function handleCompactInPlace() {
+  if (distilling.value || !props.onCompactInPlace) return;
+  distilling.value = true;
+  try {
+    await props.onCompactInPlace();
     popoverRef.value?.hide();
   } finally {
     distilling.value = false;

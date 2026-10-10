@@ -39,5 +39,11 @@ check(
 check("kind success", completionKind(false, false), "success");
 check("kind error", completionKind(true, false), "error");
 check("kind cancelled", completionKind(true, true), "cancelled");
+check("kind background", completionKind(false, false, true), "background");
+check(
+  "background announce",
+  bashCompletionAnnouncement("make serve", "background"),
+  "Command moved to the background: `make serve`",
+);
 
 console.log("bashToolA11y tests passed");

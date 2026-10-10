@@ -386,7 +386,7 @@ func (s *Server) requestCommitTour(ctx context.Context, parentID string, target 
 			s.commitTourMu.Unlock()
 			return status, false, nil
 		}
-		conversation, settleErr := s.db.UpdateCommitTourWorker(ctx, job.childID, func(request *db.CommitTourRequest) {
+		_, settleErr := s.db.UpdateCommitTourWorker(ctx, job.childID, func(request *db.CommitTourRequest) {
 			request.State = commitTourStatusFailed
 			if request.Error == "" {
 				request.Error = job.error
@@ -397,9 +397,6 @@ func (s *Server) requestCommitTour(ctx context.Context, parentID string, target 
 			return CommitTourStatus{}, false, settleErr
 		}
 		delete(s.commitTourJobs, key)
-		if conversation != nil {
-			go s.publishConversationListUpdate(ConversationListUpdate{Type: "update", Conversation: conversation})
-		}
 	}
 	worker, request, found, err := s.matchingCommitTourWorker(ctx, target)
 	if err != nil {
@@ -456,7 +453,6 @@ func (s *Server) requestCommitTour(ctx context.Context, parentID string, target 
 	s.commitTourJobs[key] = job
 	s.commitTourMu.Unlock()
 
-	go s.publishConversationListUpdate(ConversationListUpdate{Type: "update", Conversation: child})
 	go s.runCommitTourJob(workerCtx, job, false)
 	return CommitTourStatus{
 		Status:               commitTourStatusBuilding,
@@ -483,7 +479,7 @@ func (s *Server) runCommitTourJob(ctx context.Context, job *commitTourJob, resum
 			if s.commitTourRun != nil {
 				err = s.commitTourRun(ctx, job.childID, job.target, prompt, job.model, job.reasoning)
 			} else {
-				_, err = NewSubagentRunner(s).RunSubagent(ctx, job.childID, prompt, true, commitTourTimeout, job.model, job.reasoning)
+				err = s.runCommitTourSubagent(ctx, job, prompt)
 			}
 		}
 	}
@@ -503,30 +499,41 @@ func (s *Server) runCommitTourJob(ctx context.Context, job *commitTourJob, resum
 	s.finishCommitTourJob(job, err)
 }
 
+func (s *Server) runCommitTourSubagent(ctx context.Context, job *commitTourJob, prompt string) error {
+	if _, err := NewSubagentRunner(s).RunSubagent(ctx, job.childID, prompt, job.model, job.reasoning); err != nil {
+		return err
+	}
+	manager, err := s.getOrCreateConversationManager(ctx, job.childID, "")
+	if err != nil {
+		return err
+	}
+	return awaitCommitTourWorker(ctx, manager)
+}
+
 func (s *Server) resumeCommitTourSubagent(ctx context.Context, job *commitTourJob) error {
 	service, err := s.llmManager.GetService(job.model)
 	if err != nil {
 		return fmt.Errorf("load commit tour model: %w", err)
 	}
-	manager, err := s.getOrCreateSubagentConversationManager(ctx, job.childID)
+	manager, err := s.getOrCreateConversationManager(ctx, job.childID, "")
 	if err != nil {
 		return fmt.Errorf("restore commit tour worker: %w", err)
 	}
-	runner := NewSubagentRunner(s)
-	manager.registerSubagentWaiter()
 	if err := manager.ResumeInterruptedTurn(ctx, service, job.model); err != nil {
-		runner.endWait(manager, job.childID, true)
 		return fmt.Errorf("resume commit tour worker: %w", err)
 	}
-	done, err := runner.waitForIdle(ctx, manager, job.childID, time.Now().Add(commitTourTimeout))
-	runner.endWait(manager, job.childID, true)
-	if err != nil {
-		return err
+	return awaitCommitTourWorker(ctx, manager)
+}
+
+// awaitCommitTourWorker waits for the worker's current turn to end. The job
+// context carries the commit tour deadline.
+func awaitCommitTourWorker(ctx context.Context, manager *ConversationManager) error {
+	select {
+	case <-manager.idle():
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
-	if !done {
-		return errors.New("commit tour worker timed out")
-	}
-	return nil
 }
 
 func (s *Server) finishCommitTourJob(job *commitTourJob, runErr error) {
@@ -539,7 +546,7 @@ func (s *Server) finishCommitTourJob(job *commitTourJob, runErr error) {
 			errorText = commitTourError(err)
 		}
 	}
-	conversation, err := s.db.UpdateCommitTourWorker(context.Background(), job.childID, func(request *db.CommitTourRequest) {
+	_, err := s.db.UpdateCommitTourWorker(context.Background(), job.childID, func(request *db.CommitTourRequest) {
 		request.State = state
 		request.Error = errorText
 	})
@@ -569,7 +576,6 @@ func (s *Server) finishCommitTourJob(job *commitTourJob, runErr error) {
 		delete(s.commitTourJobs, job.key)
 	}
 	s.commitTourMu.Unlock()
-	go s.publishConversationListUpdate(ConversationListUpdate{Type: "update", Conversation: conversation})
 }
 
 func (s *Server) cancelCommitTourJobs(conversationIDs ...string) {
@@ -602,7 +608,7 @@ func (s *Server) stopCommitTourChild(childID string) {
 }
 
 func (s *Server) updateCommitTourWorkerState(ctx context.Context, childID, state, errorText string) {
-	conversation, err := s.db.UpdateCommitTourWorker(ctx, childID, func(request *db.CommitTourRequest) {
+	_, err := s.db.UpdateCommitTourWorker(ctx, childID, func(request *db.CommitTourRequest) {
 		request.State = state
 		request.Error = errorText
 	})
@@ -610,7 +616,6 @@ func (s *Server) updateCommitTourWorkerState(ctx context.Context, childID, state
 		s.logger.Error("Failed to update commit tour worker", "child", childID, "state", state, "error", err)
 		return
 	}
-	go s.publishConversationListUpdate(ConversationListUpdate{Type: "update", Conversation: conversation})
 }
 
 func (s *Server) settleInactiveCommitTourWorker(ctx context.Context, childID string, target commitTourTarget, state, errorText string) (bool, error) {
@@ -638,14 +643,13 @@ func (s *Server) settleInactiveCommitTourWorker(ctx context.Context, childID str
 			errorText = ""
 		}
 	}
-	conversation, err := s.db.UpdateCommitTourWorker(ctx, childID, func(request *db.CommitTourRequest) {
+	_, err = s.db.UpdateCommitTourWorker(ctx, childID, func(request *db.CommitTourRequest) {
 		request.State = state
 		request.Error = errorText
 	})
 	if err != nil {
 		return false, err
 	}
-	go s.publishConversationListUpdate(ConversationListUpdate{Type: "update", Conversation: conversation})
 	return true, nil
 }
 
@@ -813,10 +817,6 @@ func (s *Server) recoverCommitTourWorkersOnce(ctx context.Context) {
 }
 
 func (s *Server) handleCommitTourStatus(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	target, err := resolveCommitTourTarget(r.URL.Query().Get("cwd"), r.URL.Query().Get("hash"))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -884,7 +884,7 @@ func (s *Server) handleCommitTourCommand(ctx context.Context, w http.ResponseWri
 			http.Error(w, "failed to record commit tour request", http.StatusInternalServerError)
 			return true
 		}
-		go s.notifySubscribersNewMessage(context.WithoutCancel(ctx), conversation.ConversationID, marker)
+		go s.notifySubscribers(context.WithoutCancel(ctx), conversation.ConversationID, *marker)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	if started {

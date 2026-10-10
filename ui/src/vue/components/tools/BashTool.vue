@@ -23,24 +23,34 @@
       <div class="bash-tool-summary">
         <span class="bash-tool-emoji" :class="{ running: isRunning }" aria-hidden="true">🛠️</span>
         <HighlightedCode
+          v-if="command"
           class="bash-tool-command"
           :source="displayCommand"
           language="shellscript"
           :title="command"
         />
-        <span v-if="displayData?.workingDir" class="bash-tool-cwd" :title="displayData.workingDir">
+        <span v-else class="bash-tool-command">Output</span>
+        <span
+          v-if="displayData?.workingDir && !background"
+          class="bash-tool-cwd"
+          :title="displayData.workingDir"
+        >
           in {{ displayData.workingDir }}
+        </span>
+        <span v-if="background" class="bash-tool-background" data-testid="bash-tool-background">
+          Backgrounded
+        </span>
+        <span v-if="returnState" class="bash-tool-background" data-testid="bash-tool-finished-job">
+          {{ returnLabels[returnState] }}
         </span>
         <span v-if="isComplete && isCancelled" class="bash-tool-cancelled">
           <span aria-hidden="true">✗</span>
           cancelled
         </span>
-        <ToolStatusIcon
-          v-if="isComplete && hasError && !isCancelled"
-          state="error"
-          class="bash-tool-error"
-        />
-        <ToolStatusIcon v-if="isComplete && !hasError" state="ok" class="bash-tool-success" />
+        <template v-else-if="isComplete && !background && !returnState">
+          <ToolStatusIcon v-if="hasError" state="error" class="bash-tool-error" />
+          <ToolStatusIcon v-else state="ok" class="bash-tool-success" />
+        </template>
       </div>
       <button
         type="button"
@@ -97,7 +107,7 @@
           displayData.workingDir
         }}</pre>
       </div>
-      <div class="bash-tool-section">
+      <div v-if="command" class="bash-tool-section">
         <div class="bash-tool-label" :id="commandLabelId">Command:</div>
         <HighlightedCode
           tag="pre"
@@ -118,10 +128,12 @@
         />
       </div>
 
-      <div v-if="isComplete" class="bash-tool-section">
+      <div v-if="isComplete && (!background || output)" class="bash-tool-section">
         <div class="bash-tool-label" :id="outputLabelId">
           {{ outputLabel }}:
-          <span v-if="executionTime" class="bash-tool-time">{{ executionTime }}</span>
+          <span v-if="executionTime && !background" class="bash-tool-time">
+            {{ executionTime }}
+          </span>
         </div>
         <AnsiText
           :class-name="`bash-tool-code ${hasError ? 'error' : ''}`"
@@ -151,11 +163,21 @@ import ToolChevron from "./ToolChevron.vue";
 import RunningToolTime from "./RunningToolTime.vue";
 import ToolStatusIcon from "./ToolStatusIcon.vue";
 import { isCancelledToolResult, toolOutcomeSuffix } from "../../utils/toolStatus";
+import { backgroundOutput, type BackgroundJobDisplay } from "../../../utils/backgroundOutput";
 
 interface BashDisplayData {
   workingDir: string;
   exitCode?: number;
+  background?: BackgroundJobDisplay;
 }
+
+type ReturnState = "finished" | "failed" | "lost" | "unknown";
+const returnLabels: Record<ReturnState, string> = {
+  finished: "Finished",
+  failed: "Failed",
+  lost: "Lost",
+  unknown: "Background update",
+};
 
 const props = defineProps<{
   toolInput?: unknown;
@@ -166,6 +188,8 @@ const props = defineProps<{
   executionTime?: string;
   display?: unknown;
   streamingOutput?: string;
+  // A completion notice is a separate card from the original tool call.
+  returnState?: ReturnState;
 }>();
 
 /** Max lines shown in the streaming preview before "Show more" is needed. */
@@ -209,7 +233,7 @@ watch(
   ([running, result], prev) => {
     const wasRunning = prev?.[0];
     if (wasRunning && !running && result !== undefined) {
-      const kind = completionKind(props.hasError, isCancelled.value);
+      const kind = completionKind(props.hasError, isCancelled.value, !!background.value);
       void announceToolA11y("bash", bashCompletionAnnouncement(command.value, kind));
     }
   },
@@ -252,18 +276,24 @@ const command = computed(() => {
   return typeof ti === "string" ? ti : "";
 });
 
-const output = computed(() =>
+const rawOutput = computed(() =>
   props.toolResult && props.toolResult.length > 0 && props.toolResult[0].Text
     ? props.toolResult[0].Text
     : "",
 );
 
+const background = computed(() => displayData.value?.background ?? null);
+const output = computed(() =>
+  background.value ? backgroundOutput(rawOutput.value, background.value) : rawOutput.value,
+);
 const accessibleOutput = computed(() => output.value || "(no output)");
 
 const isCancelled = computed(() => props.hasError && isCancelledToolResult(output.value));
 
 const outputLabel = computed(() => {
   if (isCancelled.value) return "Output (cancelled)";
+  if (props.returnState) return "Output";
+  if (background.value) return "Output so far";
   const exitCode = displayData.value?.exitCode;
   if (typeof exitCode === "number") return `Output (exit code ${exitCode})`;
   return props.hasError ? "Output (Error)" : "Output";
@@ -281,6 +311,8 @@ const regionLabel = computed(() => terminalOutputLabel(command.value));
 const toggleLabel = computed(() => {
   const label = terminalToggleLabel(isExpanded.value, command.value);
   if (isComplete.value && isCancelled.value) return `${label}, cancelled`;
+  if (background.value) return `${label}, backgrounded`;
+  if (props.returnState) return `${label}, ${returnLabels[props.returnState].toLowerCase()}`;
   const exitCode = displayData.value?.exitCode;
   const exit = props.hasError && typeof exitCode === "number" ? `, exit code ${exitCode}` : "";
   return `${label}${toolOutcomeSuffix(isComplete.value, props.hasError)}${exit}`;

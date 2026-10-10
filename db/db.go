@@ -303,6 +303,10 @@ type ConversationOptions struct {
 	// discord, ntfy) for this conversation. Useful for cron-style or
 	// self-invoked conversations that shouldn't ping the user.
 	DisableNotifications bool `json:"disable_notifications,omitempty"`
+	// CompactNudgeTokens is the context size at which the agent is first told
+	// the size of its context while the compact_in_place tool is enabled.
+	// Zero means the default (160k).
+	CompactNudgeTokens int `json:"compact_nudge_tokens,omitempty"`
 }
 
 // ParseConversationOptions parses a JSON string into ConversationOptions.
@@ -590,6 +594,9 @@ type QueuedMessage struct {
 	// UserData is message provenance and other presentation metadata captured at
 	// queue time. It is copied to messages.user_data when the item drains.
 	UserData json.RawMessage `json:"user_data,omitempty"`
+	// Inject lets a running turn take the message at its next LLM round
+	// instead of waiting for the turn to end.
+	Inject bool `json:"inject,omitempty"`
 	// ID, CreatedAt, Model, UserEmail, and UserData are shared queue metadata.
 	// Kind, State, Transcription, Error, and the optional ready Llm payload form
 	// the specialized-work variant.
@@ -1434,6 +1441,17 @@ func LatestTurnEndedWithAgent(messages []generated.Message, currentGeneration in
 	return false
 }
 
+// upgradeResumable reports whether an upgrade restart resumes the
+// conversation's interrupted turn: top-level conversations and delegated
+// subagents. Other children are owned by their parent (BTW readers) or by
+// their own recovery (transcription and commit-tour workers).
+func upgradeResumable(conversation generated.Conversation) bool {
+	if conversation.ParentConversationID == nil {
+		return true
+	}
+	return !conversation.UserInitiated && ParseConversationOptions(conversation.ConversationOptions).Kind == ""
+}
+
 // ConsumeResumeAfterUpgrade decides, in a single transaction, what startup does
 // with the agent_working flags left behind by the previous process:
 //
@@ -1441,9 +1459,10 @@ func LatestTurnEndedWithAgent(messages []generated.Message, currentGeneration in
 //     turn_interrupted on every eligible top-level conversation still marked
 //     working, then clear all stale agent_working flags.
 //   - Row present: the previous process exited to install an upgrade. Delete the
-//     row, capture a durable version token for each eligible top-level stale
-//     turn while leaving agent_working true, and return those tokens. Ineligible
-//     stale rows are cleared before listeners open.
+//     row, capture a durable version token for each eligible top-level or
+//     delegated-subagent stale turn (see upgradeResumable) while leaving
+//     agent_working true, and return those tokens. Ineligible stale rows are
+//     cleared before listeners open.
 //
 // The interrupted/working updates share this transaction, so a crash can
 // neither lose the interruption nor expose an interrupted conversation as
@@ -1468,7 +1487,7 @@ func (db *DB) ConsumeResumeAfterUpgrade(ctx context.Context) ([]UpgradeResume, e
 				if err != nil {
 					return err
 				}
-				resumable := conversation.ParentConversationID == nil
+				resumable := upgradeResumable(conversation)
 				var messages []generated.Message
 				if resumable {
 					messages, err = q.ListMessages(ctx, conversationID)
@@ -1523,7 +1542,14 @@ func (db *DB) ConsumeResumeAfterUpgrade(ctx context.Context) ([]UpgradeResume, e
 			}
 			// Managed children already project an idle unfinished turn as
 			// interrupted in the BTW UI. Their parent owns their lifecycle.
+			// Clear a hidden upgrade-resume claim a crashed process left.
 			if conversation.ParentConversationID != nil {
+				if err := q.SetConversationTurnInterrupted(ctx, generated.SetConversationTurnInterruptedParams{
+					TurnInterrupted: false,
+					ConversationID:  conversationID,
+				}); err != nil {
+					return err
+				}
 				continue
 			}
 			messages, err := q.ListMessages(ctx, conversationID)
@@ -1622,6 +1648,13 @@ const (
 	// It is an appended message rather than a mutable column because of the
 	// append-only invariant described on MessageType above.
 	MessageTypeSlug MessageType = "slug"
+	// MessageTypeInPlaceCompaction rewrites how EARLIER messages of the same
+	// generation are presented to the LLM: it squishes sequence-id ranges into
+	// summaries and/or trims tool results. user_data holds the operations
+	// (server.InPlaceCompaction); llm_data is NULL, so it is never itself sent.
+	// It is a record rather than an edit because of the append-only invariant
+	// described on MessageType above: the original rows stay intact for the UI.
+	MessageTypeInPlaceCompaction MessageType = "inplacecompaction"
 )
 
 // CreateMessageParams contains parameters for creating a message
@@ -2688,6 +2721,24 @@ func (db *DB) SetSetting(ctx context.Context, key, value string) error {
 			Value: value,
 		})
 	})
+}
+
+// InitSetting returns the value stored for key, first storing value if the
+// key is unset. Concurrent callers all see the same winning value.
+func (db *DB) InitSetting(ctx context.Context, key, value string) (string, error) {
+	err := db.pool.Tx(ctx, func(ctx context.Context, tx *Tx) error {
+		q := generated.New(tx.Conn())
+		stored, err := q.GetSetting(ctx, key)
+		if err == nil {
+			value = stored
+			return nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		return q.SetSetting(ctx, generated.SetSettingParams{Key: key, Value: value})
+	})
+	return value, err
 }
 
 // GetAllSettings retrieves all settings

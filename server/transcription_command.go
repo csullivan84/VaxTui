@@ -300,7 +300,7 @@ func (s *Server) updateCurrentQueuedTranscription(ctx context.Context, parentID,
 		s.transcriptionMu.Unlock()
 		return db.QueuedMessage{}, errQueuedTranscriptionSuperseded
 	}
-	conv, queued, err := s.db.UpdateQueuedMessage(ctx, parentID, queuedID, func(current *db.QueuedMessage) error {
+	_, queued, err := s.db.UpdateQueuedMessage(ctx, parentID, queuedID, func(current *db.QueuedMessage) error {
 		if err := validateCurrentQueuedTranscription(current); err != nil {
 			return err
 		}
@@ -312,9 +312,6 @@ func (s *Server) updateCurrentQueuedTranscription(ctx context.Context, parentID,
 		return db.QueuedMessage{}, err
 	}
 	go s.notifySubscribers(context.Background(), parentID)
-	if conv != nil {
-		go s.publishConversationListUpdate(ConversationListUpdate{Type: "update", Conversation: conv})
-	}
 	return queued, nil
 }
 
@@ -571,15 +568,10 @@ func (s *Server) finalizeQueuedTranscription(parentID string, queued db.QueuedMe
 	}
 	manager, err := s.getOrCreateConversationManager(context.Background(), parentID, "")
 	if err != nil {
-		s.logger.Error("Failed to resume parent queue after transcription", "parent", parentID, "queued_id", queued.ID, "error", err)
+		s.logger.Error("Failed to resume parent queue after transcription", "parent", parentID, "queued_id", ready.ID, "error", err)
 		return
 	}
-	messages, err := readyTranscriptionMessages(ready)
-	if err != nil {
-		s.logger.Error("Failed to decode finalized transcription", "parent", parentID, "queued_id", queued.ID, "error", err)
-		return
-	}
-	manager.ResolveQueuedTranscription(s, ready.ID, messages, ready.Model, ready.UserEmail, ready.UserData)
+	manager.drainQueueIfIdle(s)
 }
 
 func readyTranscriptionMessages(queued db.QueuedMessage) ([]llm.Message, error) {
@@ -661,7 +653,7 @@ func (s *Server) handleRetryQueued(w http.ResponseWriter, r *http.Request, paren
 	}
 
 	s.transcriptionMu.Lock()
-	updatedParent, queued, err := s.db.RetryQueuedTranscription(r.Context(), parentID, queuedID)
+	_, queued, err := s.db.RetryQueuedTranscription(r.Context(), parentID, queuedID)
 	if err != nil {
 		s.transcriptionMu.Unlock()
 		switch {
@@ -683,7 +675,6 @@ func (s *Server) handleRetryQueued(w http.ResponseWriter, r *http.Request, paren
 	// The failed in-memory blocker remains in the same FIFO position; only its
 	// durable state changed.
 	go s.notifySubscribers(context.Background(), parentID)
-	go s.publishConversationListUpdate(ConversationListUpdate{Type: "update", Conversation: updatedParent})
 	s.launchQueuedTranscription(parentID, queued)
 	writeQueuedTranscription(w)
 }
@@ -706,17 +697,12 @@ func (s *Server) recoverQueuedTranscriptions(ctx context.Context) {
 			}
 			switch queued.State {
 			case db.QueuedMessageStateReady:
-				messages, err := readyTranscriptionMessages(queued)
-				if err != nil {
-					s.logger.Error("Failed to restore ready transcription", "conversationID", conversation.ConversationID, "queued_id", queued.ID, "error", err)
-					continue
-				}
 				manager, err := s.getOrCreateConversationManager(ctx, conversation.ConversationID, "")
 				if err != nil {
 					s.logger.Error("Failed to restore transcription parent", "conversationID", conversation.ConversationID, "error", err)
 					continue
 				}
-				manager.ResolveQueuedTranscription(s, queued.ID, messages, queued.Model, queued.UserEmail, queued.UserData)
+				manager.drainQueueIfIdle(s)
 			case db.QueuedMessageStateWorking:
 				s.launchQueuedTranscription(conversation.ConversationID, queued)
 			}

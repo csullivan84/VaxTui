@@ -190,7 +190,9 @@ test.describe("Context usage popup", () => {
     await label.click();
     const popup = page.locator(".chat-context-popup");
     await expect(popup).toBeVisible();
-    await expect(popup).toContainText("LLM call number");
+    await expect(popup).toContainText("LLM call");
+    // The current context size heads the popup, labeled.
+    await expect(popup.locator(".usage-popup-title")).toHaveText(/^Current context: .+ tokens$/);
     await expect(label).toHaveAttribute("aria-expanded", "true");
     // The panel is teleported out of the button's subtree, so aria-controls is
     // the only thing tying the two together. It must resolve to the dialog.
@@ -231,6 +233,8 @@ test.describe("Context usage popup", () => {
     request,
   }) => {
     test.setTimeout(60000);
+    // Desktop width, where sub-agents widen the popup.
+    await page.setViewportSize({ width: 1280, height: 900 });
     await page.route("**/api/model-costs", async (route) => {
       const body = route.request().postDataJSON() as { models: { model: string }[] };
       const costs = Object.fromEntries(
@@ -291,7 +295,30 @@ test.describe("Context usage popup", () => {
     const total = page.getByTestId("token-cost-total");
     await expect(total).toBeVisible();
     await expect(total).toContainText("Total");
-    await expect(total).toHaveCSS("border-top-style", "solid");
+    await expect(total.locator("th")).toHaveCSS("border-top-style", "solid");
+    // The total heads the receipt, above the subtotals, which in turn sit above
+    // the per-model breakdown, rather than trailing it where a scrolling popup
+    // cuts them off.
+    const subtotalBox = (await page.getByTestId("conversation-cost-subtotal").boundingBox())!;
+    const totalRowBox = (await total.boundingBox())!;
+    const firstModelBox = (await page
+      .locator(".token-cost-model-breakdown")
+      .first()
+      .boundingBox())!;
+    expect(totalRowBox.y).toBeLessThan(subtotalBox.y);
+    expect(subtotalBox.y + subtotalBox.height).toBeLessThanOrEqual(firstModelBox.y + 1);
+    // The graphs cover the main conversation only, and say so.
+    await expect(
+      page.locator(".token-cost-graph-note", { hasText: "main conversation only" }),
+    ).toBeVisible();
+    // The graphs stretch across the popup, as wide as the receipt below them,
+    // and the context size lines up with their left edge.
+    const titleBox = (await page.locator(".usage-popup-title").boundingBox())!;
+    const graphBox = (await page.locator(".token-cost-graph-svg").boundingBox())!;
+    const tableBox = (await page.locator(".token-cost-table").boundingBox())!;
+    expect(graphBox.width).toBeGreaterThan(500);
+    expect(Math.abs(graphBox.width - tableBox.width)).toBeLessThan(1);
+    expect(Math.abs(titleBox.x - graphBox.x)).toBeLessThan(1);
     const subagentCostBox = await subagentRow.locator(".token-cost-legend-cost").boundingBox();
     const totalCostBox = await total.locator(".token-cost-legend-cost").boundingBox();
     expect(subagentCostBox).not.toBeNull();
@@ -329,6 +356,153 @@ test.describe("Context usage popup", () => {
     await page.locator(".context-usage-label").click();
     await expect(total).toBeVisible();
     await expect.poll(() => subagentRequests).toBeGreaterThan(requestsBeforeReopen);
+  });
+
+  test("graphs stack, and each can be switched off", async ({ page, request }) => {
+    test.setTimeout(60000);
+    // Wide enough for the checkboxes to share a line with the context size.
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.route("**/api/model-costs", async (route) => {
+      const body = route.request().postDataJSON() as { models: { model: string }[] };
+      const costs = Object.fromEntries(
+        body.models.map(({ model }) => [
+          model,
+          { input: 10, output: 10, cache_read: 10, cache_write: 10 },
+        ]),
+      );
+      await route.fulfill({ json: { costs } });
+    });
+    const slug = await createConversationViaAPI(request, "echo delta cost");
+    await page.goto(`/c/${slug}`);
+    await page.locator(".context-usage-label").click();
+
+    const popup = page.locator(".chat-context-popup");
+    const graph = popup.locator(".token-cost-graph");
+    const svg = graph.locator(".token-cost-graph-svg");
+    await expect(svg).toBeVisible({ timeout: 30000 });
+    // One toggle per graph, all on: they stack rather than replace each other.
+    const switchGroup = popup.getByRole("group", { name: "Graphs", exact: true });
+    await expect(switchGroup.locator("label")).toHaveText(["context", "cumulative", "incremental"]);
+    const toggles = switchGroup.getByRole("checkbox");
+    for (const toggle of await toggles.all()) await expect(toggle).toBeChecked();
+    // They share a line with the context size, and are not pills like calls/time.
+    const titleLine = (await popup.locator(".usage-popup-title").boundingBox())!;
+    const switchLine = (await switchGroup.boundingBox())!;
+    expect(
+      Math.abs(titleLine.y + titleLine.height / 2 - (switchLine.y + switchLine.height / 2)),
+    ).toBeLessThan(6);
+    expect(switchLine.x).toBeGreaterThan(titleLine.x + titleLine.width);
+    await expect(popup.getByRole("button", { name: "calls" })).toBeVisible();
+    await expect(switchGroup.getByRole("button")).toHaveCount(0);
+    await expect(svg).toContainText("LLM call");
+    await expect(svg).not.toContainText("LLM call number");
+    // Each pane is labeled down its side, rotated.
+    const labels = svg.locator(".token-cost-pane-title");
+    await expect(labels).toHaveCount(3);
+    expect(
+      await labels.evaluateAll((els) => els.map((el) => el.getAttribute("aria-label"))),
+    ).toEqual(["Context tokens", "Cumulative cost", "Incremental cost"]);
+    const rotated = await labels
+      .first()
+      .locator("text")
+      .first()
+      .evaluate((el) => el.getAttribute("transform"));
+    expect(rotated).toContain("rotate(-90)");
+
+    // Context and cumulative cost get equal room; incremental a third of it.
+    const height = async (pane: string) =>
+      (await svg.locator(`g[data-pane="${pane}"] .token-cost-axis`).first().boundingBox())!.height;
+    const [context, cumulative, incremental] = [
+      await height("context"),
+      await height("cumulative"),
+      await height("incremental"),
+    ];
+    expect(Math.abs(context - cumulative)).toBeLessThan(1);
+    expect(Math.abs(cumulative / 3 - incremental)).toBeLessThan(1);
+
+    // The cumulative total is an area; the strip below it has a bar per call.
+    const cumulativeFills = await svg
+      .locator('g[data-pane="cumulative"] path[fill]')
+      .evaluateAll((els) => els.map((el) => el.getAttribute("d") || ""));
+    expect(cumulativeFills.some((d) => /^M[\d.]+,[\d.]+L/.test(d))).toBe(true);
+    const incrementalFills = await svg
+      .locator('g[data-pane="incremental"] path[fill]')
+      .evaluateAll((els) => els.map((el) => el.getAttribute("d") || ""));
+    expect(incrementalFills.some((d) => /^M[\d.]+,[\d.]+V[\d.]+H[\d.]+V[\d.]+Z/.test(d))).toBe(
+      true,
+    );
+
+    // One readout follows the pointer, whichever pane it is over. The popup is
+    // anchored above the status bar, so anything that changes its height (a
+    // pane switched off, the sub-agent lookup landing) moves the graph: point
+    // at it afresh on every attempt rather than at where it was measured.
+    const readout = graph.locator(".token-cost-hover-readout");
+    const hoverGraph = async (y: (height: number) => number, text: RegExp) => {
+      await expect(async () => {
+        const { width, height } = (await svg.boundingBox())!;
+        await svg.hover({ position: { x: width / 2, y: y(height) } });
+        await expect(readout).toHaveText(text, { timeout: 1000 });
+      }).toPass({ timeout: 15000 });
+    };
+    await hoverGraph(
+      (height) => height / 2,
+      /^call 1, \$[\d.]+, cumulative \$[\d.]+, context [\d.]+k?( \(.+\))?$/,
+    );
+
+    // Switching a graph off removes its pane and its part of the readout.
+    await popup.getByRole("checkbox", { name: "Context length" }).click();
+    await expect(svg.locator("g[data-pane]")).toHaveCount(2);
+    await expect(svg.locator('g[data-pane="context"]')).toHaveCount(0);
+    await expect(graph.locator(".context-legend")).toHaveCount(0);
+    await popup.getByRole("checkbox", { name: "Incremental cost" }).click();
+    await expect(svg.locator("g[data-pane]")).toHaveCount(1);
+    await hoverGraph(() => 40, /^call 1, cumulative \$[\d.]+( \(.+\))?$/);
+
+    // With the cost graph off and context back on, only context is left.
+    await popup.getByRole("checkbox", { name: "Context length" }).click();
+    await popup.getByRole("checkbox", { name: "Cumulative cost" }).click();
+    await expect(svg.locator("g[data-pane]")).toHaveCount(1);
+    await expect(svg.locator('g[data-pane="context"]')).toHaveCount(1);
+    await expect(graph.locator(".context-legend")).toBeVisible();
+
+    // Nothing on: no graph, but the checkboxes remain to bring one back.
+    await popup.getByRole("checkbox", { name: "Context length" }).click();
+    await expect(svg).toHaveCount(0);
+    await expect(toggles).toHaveCount(3);
+  });
+
+  test("remembers which graphs are on across page loads", async ({ page, request }) => {
+    test.setTimeout(60000);
+    const slug = await createConversationViaAPI(request, "echo remember graphs");
+    await page.goto(`/c/${slug}`);
+    await page.locator(".context-usage-label").click();
+    const popup = page.locator(".chat-context-popup");
+    const svg = popup.locator(".token-cost-graph-svg");
+    await expect(svg).toBeVisible({ timeout: 30000 });
+    await expect(svg.locator("g[data-pane]")).toHaveCount(3);
+
+    await popup.getByRole("checkbox", { name: "Cumulative cost" }).click();
+    await expect(svg.locator("g[data-pane]")).toHaveCount(2);
+
+    await page.reload();
+    await page.locator(".context-usage-label").click();
+    await expect(svg).toBeVisible({ timeout: 30000 });
+    await expect(svg.locator("g[data-pane]")).toHaveCount(2);
+    await expect(svg.locator('g[data-pane="cumulative"]')).toHaveCount(0);
+    await expect(popup.getByRole("checkbox", { name: "Context length" })).toBeChecked();
+    await expect(popup.getByRole("checkbox", { name: "Cumulative cost" })).not.toBeChecked();
+    await expect(popup.getByRole("checkbox", { name: "Incremental cost" })).toBeChecked();
+
+    // Switching everything off is remembered too, rather than reverting to all.
+    await popup.getByRole("checkbox", { name: "Context length" }).click();
+    await popup.getByRole("checkbox", { name: "Incremental cost" }).click();
+    await expect(svg).toHaveCount(0);
+    await page.reload();
+    await page.locator(".context-usage-label").click();
+    await expect(popup.getByRole("checkbox", { name: "Context length" })).not.toBeChecked({
+      timeout: 30000,
+    });
+    await expect(svg).toHaveCount(0);
   });
 
   // The token count is the only way into this popup, and it is styled to read as
@@ -718,7 +892,7 @@ test.describe("Status readout controls", () => {
     // Token count -> cost popup, and NOT the picker.
     await tokens.click();
     await expect(costPopup).toBeVisible();
-    await expect(costPopup).toContainText("LLM call number");
+    await expect(costPopup).toContainText("LLM call");
     await expect(pickerPanel).toHaveCount(0);
     await page.keyboard.press("Escape");
     await expect(costPopup).toBeHidden();
@@ -821,6 +995,40 @@ test.describe("Status readout controls", () => {
     await page.waitForTimeout(1000);
     expect(sent, "re-selecting the current level should send nothing").toEqual([]);
     expect(await page.locator('[data-testid="message-modelchange"]').count()).toBe(markersBefore);
+  });
+
+  // The same guard when the picker is already open as a turn starts (a
+  // background job exiting starts one unprompted): the status bar keeps the
+  // picker mounted across the turn, so it has to close itself.
+  test("an open model picker closes when a turn starts", async ({ page, request }) => {
+    test.setTimeout(60000);
+    await page.setViewportSize({ width: 1280, height: 800 });
+    const { conversationId, slug } = await createConversationViaAPIWithDetails(
+      request,
+      "echo open picker",
+      { cwd: testWorkingDirectory() },
+    );
+    await page.goto(`/c/${slug}`);
+    await expect(page.getByTestId("message-input")).toBeVisible({ timeout: 30000 });
+
+    await page.locator(".model-picker-inline .p-select-label").click();
+    const panel = page.locator(".model-picker-panel");
+    await expect(panel).toBeVisible();
+    const sent: string[] = [];
+    page.on("request", (r) => {
+      if (r.url().includes("/chat")) sent.push(r.postData() || "");
+    });
+    expect(
+      (
+        await request.post(`/api/conversation/${conversationId}/chat`, {
+          data: { message: "bash: sleep 8", model: "predictable" },
+        })
+      ).ok(),
+    ).toBe(true);
+    await expect(page.getByTestId("agent-thinking")).toBeVisible({ timeout: 20000 });
+    await expect(panel).toHaveCount(0);
+    expect(sent).toEqual([]);
+    await request.post(`/api/conversation/${conversationId}/cancel`);
   });
 
   // Switching model rebuilds the conversation's loop, and ApplyModelSettings

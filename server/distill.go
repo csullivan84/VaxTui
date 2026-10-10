@@ -169,17 +169,23 @@ func (s *Server) broadcastEstimatedContextSize(ctx context.Context, conversation
 	}
 	latestGen := conv.CurrentGeneration
 
+	var contextRows []generated.Message
+	for _, m := range messages {
+		if m.Generation == latestGen && !m.ExcludedFromContext {
+			contextRows = append(contextRows, m)
+		}
+	}
+	items, system, err := manager.contextItems(contextRows)
+	if err != nil {
+		s.logger.Error("Failed to build context for estimate", "conversationID", conversationID, "error", err)
+		return
+	}
 	var estimate int64
-	for i := range messages {
-		m := messages[i]
-		if m.Generation != latestGen || m.ExcludedFromContext {
-			continue
-		}
-		llmMsg, cerr := convertToLLMMessage(m)
-		if cerr != nil {
-			continue
-		}
-		estimate += int64(estimatePiMessageTokens(llmMsg))
+	for _, sc := range system {
+		estimate += int64(estimatePiMessageTokens(llm.Message{Content: []llm.Content{{Type: llm.ContentTypeText, Text: sc.Text}}}))
+	}
+	for _, it := range items {
+		estimate += int64(estimatePiMessageTokens(it.message))
 	}
 	if estimate <= 0 {
 		return
@@ -219,11 +225,6 @@ type DistillNewGenerationRequest struct {
 // It keeps the visible conversation, marks old messages as previous generation,
 // and inserts the distillation into the next generation.
 func (s *Server) handleDistillNewGeneration(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
 	ctx := r.Context()
 
 	var req DistillNewGenerationRequest
@@ -344,7 +345,7 @@ func (s *Server) handleDistillNewGeneration(w http.ResponseWriter, r *http.Reque
 		s.internalError(w, "Failed to create status message", err, "conversationID", req.SourceConversationID)
 		return
 	}
-	go s.notifySubscribersNewMessage(context.WithoutCancel(ctx), req.SourceConversationID, statusMsg)
+	go s.notifySubscribers(context.WithoutCancel(ctx), req.SourceConversationID, *statusMsg)
 
 	if err := manager.Hydrate(ctx); err != nil {
 		// WithoutCancel: a client disconnect mid-setup must not strand the
@@ -360,7 +361,7 @@ func (s *Server) handleDistillNewGeneration(w http.ResponseWriter, r *http.Reque
 		for i := range currentMessages {
 			msg := &currentMessages[i]
 			if msg.Generation == conversation.CurrentGeneration && msg.Type == string(db.MessageTypeSystem) && msg.UserData == nil {
-				go s.notifySubscribersNewMessage(context.WithoutCancel(ctx), req.SourceConversationID, msg)
+				go s.notifySubscribers(context.WithoutCancel(ctx), req.SourceConversationID, *msg)
 			}
 		}
 	}

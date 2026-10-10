@@ -56,43 +56,36 @@
     </span>
   </template>
 
-  <!-- Agent working -->
+  <!-- Open conversation: working, interrupted, or ready. One container, so
+       the running-work counts and readout stay mounted (an open popover
+       included) as the turn starts and ends; a job exiting starts one. -->
   <div
-    v-else-if="agentWorking && conversationId"
+    v-else-if="conversationId && (agentWorking || interrupted || !currentConversation?.is_draft)"
     class="status-bar-active"
-    data-testid="agent-thinking"
     role="status"
     aria-live="off"
     aria-label="Agent status"
   >
-    <AnimatedWorkingStatus />
-    <button
-      :disabled="cancelling"
-      class="status-stop-button"
-      v-tooltip.top="'Stop'"
-      :aria-label="cancelling ? 'Cancelling...' : 'Stop'"
-      @click="onCancel"
+    <template v-if="agentWorking">
+      <AnimatedWorkingStatus data-testid="agent-thinking" />
+      <button
+        :disabled="cancelling"
+        class="status-stop-button"
+        v-tooltip.top="'Stop'"
+        :aria-label="cancelling ? 'Cancelling...' : 'Stop'"
+        @click="onCancel"
+      >
+        <svg viewBox="0 0 24 24" fill="currentColor">
+          <rect x="6" y="6" width="12" height="12" rx="1" />
+        </svg>
+        <span class="status-stop-label">{{ cancelling ? "Cancelling..." : "Stop" }}</span>
+      </button>
+    </template>
+    <div
+      v-else-if="interrupted"
+      class="status-interrupted-group"
+      data-testid="conversation-interrupted"
     >
-      <svg viewBox="0 0 24 24" fill="currentColor">
-        <rect x="6" y="6" width="12" height="12" rx="1" />
-      </svg>
-      <span class="status-stop-label">{{ cancelling ? "Cancelling..." : "Stop" }}</span>
-    </button>
-    <StatusReadout
-      v-bind="readoutProps"
-      :cwd="cwd"
-      :conversation-id="conversationId"
-      :agent-working="agentWorking"
-    />
-  </div>
-
-  <!-- Interrupted turn awaiting confirmation -->
-  <div
-    v-else-if="interrupted && conversationId"
-    class="status-bar-active"
-    data-testid="conversation-interrupted"
-  >
-    <div class="status-interrupted-group">
       <span class="status-message">Conversation Interrupted</span>
       <button
         type="button"
@@ -105,6 +98,10 @@
         {{ resumingInterrupted ? "Continuing…" : "Continue" }}
       </button>
     </div>
+    <span v-else class="status-message status-ready">
+      <span class="hide-on-mobile">Ready on </span>{{ hostname }}
+    </span>
+    <StatusActivity :conversation-id="conversationId" />
     <StatusReadout
       v-bind="readoutProps"
       :cwd="cwd"
@@ -114,10 +111,7 @@
   </div>
 
   <!-- New conversation or draft -->
-  <div
-    v-else-if="!conversationId || currentConversation?.is_draft"
-    class="status-bar-new-conversation"
-  >
+  <div v-else class="status-bar-new-conversation">
     <div class="status-field status-field-model">
       <ModelPicker
         :models="models"
@@ -161,6 +155,40 @@
           class="advanced-settings-popover"
           :style="popoverStyle"
         >
+          <div class="auto-compaction-row" data-testid="auto-compaction">
+            <span class="auto-compaction-name">Auto compaction</span>
+            <div class="tool-override-choices" role="radiogroup" aria-label="Auto compaction">
+              <button
+                v-for="choice in [
+                  { on: true, label: 'On' },
+                  { on: false, label: 'Off' },
+                ]"
+                :key="choice.label"
+                type="button"
+                role="radio"
+                :aria-checked="autoCompaction === choice.on"
+                :class="`tool-override-choice${autoCompaction === choice.on ? ' active' : ''}`"
+                :disabled="sending"
+                @click="onSetToolOverride(COMPACT_IN_PLACE_TOOL, choice.on ? 'on' : 'default')"
+              >
+                {{ choice.label }}
+              </button>
+            </div>
+            <label class="auto-compaction-nudge">
+              nudge at
+              <select
+                :value="compactNudgeTokens"
+                :disabled="sending || !autoCompaction"
+                @change="
+                  onSetCompactNudgeTokens(Number(($event.target as HTMLSelectElement).value))
+                "
+              >
+                <option v-for="n in COMPACT_NUDGE_CHOICES" :key="n" :value="n">
+                  {{ n / 1000 }}k
+                </option>
+              </select>
+            </label>
+          </div>
           <div class="advanced-settings-header">
             <span>Tools</span>
             <button
@@ -174,7 +202,7 @@
             </button>
           </div>
           <div class="tool-override-list">
-            <template v-for="tool in toolOverrideList" :key="tool.name">
+            <template v-for="tool in listedTools" :key="tool.name">
               <div class="tool-override-row">
                 <div class="tool-override-info">
                   <span class="tool-override-name">{{ tool.name }}</span>
@@ -216,19 +244,6 @@
       </button>
     </div>
   </div>
-
-  <!-- Active conversation -->
-  <div v-else class="status-bar-active">
-    <span class="status-message status-ready">
-      <span class="hide-on-mobile">Ready on </span>{{ hostname }}
-    </span>
-    <StatusReadout
-      v-bind="readoutProps"
-      :cwd="cwd"
-      :conversation-id="conversationId"
-      :agent-working="agentWorking"
-    />
-  </div>
 </template>
 
 <script setup lang="ts">
@@ -240,7 +255,9 @@ import { useI18n } from "../composables/i18n";
 import type { ThinkingLevel } from "./thinkingLevel";
 import AnimatedWorkingStatus from "./AnimatedWorkingStatus.vue";
 import ModelPicker from "./ModelPicker.vue";
+import StatusActivity from "./StatusActivity.vue";
 import StatusReadout from "./StatusReadout.vue";
+import { COMPACT_IN_PLACE_TOOL, COMPACT_NUDGE_CHOICES } from "./autoCompaction";
 
 type ToolInfo = { name: string; summary: string; default_on: boolean };
 
@@ -276,6 +293,7 @@ const props = defineProps<{
   onResumeInterrupted: () => void;
   onDistillNewGeneration?: () => Promise<void> | void;
   onStartNewGeneration: () => Promise<void> | void;
+  onCompactInPlace?: () => Promise<void> | void;
   onSelectModel: (model: string) => void;
   onSelectCombination: (model: string, level: Exclude<ThinkingLevel, "default"> | null) => void;
   /** Model / reasoning-level picks from the status readout, which only renders
@@ -293,6 +311,8 @@ const props = defineProps<{
   onThinkingChange: (level: ThinkingLevel) => void;
   onSetToolOverride: (name: string, value: "default" | "on" | "off") => void;
   onResetToolOverrides: () => void;
+  compactNudgeTokens: number;
+  onSetCompactNudgeTokens: (tokens: number) => void;
   onOpenDirectoryPicker: () => void;
   /** Told before the context usage popup opens, so ChatInterface can start
    *  computing the cost graph's usage entries (see usageWanted there). */
@@ -319,6 +339,7 @@ const readoutProps = computed(() => ({
   refreshingModels: props.refreshingModels,
   onDistillNewGeneration: props.onDistillNewGeneration,
   onStartNewGeneration: props.onStartNewGeneration,
+  onCompactInPlace: props.onCompactInPlace,
   onUsageNeeded: props.onUsageNeeded,
   // The readout's cwd segment. Same picker as the composer's cwd chip, but for
   // a conversation that already exists, where the pick has to go through the
@@ -448,6 +469,12 @@ onUnmounted(() => {
   document.removeEventListener("mousedown", onOutside);
   stopObservingGeometry();
 });
+
+// Auto compaction has its own row; the tool list skips it.
+const autoCompaction = computed(() => props.toolOverrides[COMPACT_IN_PLACE_TOOL] === "on");
+const listedTools = computed(() =>
+  props.toolOverrideList.filter((tool) => tool.name !== COMPACT_IN_PLACE_TOOL),
+);
 
 function currentOverride(name: string): "default" | "on" | "off" {
   return props.toolOverrides[name] || "default";

@@ -19,11 +19,12 @@ export function terminalToggleLabel(expanded: boolean, command: string): string 
     : `Expand terminal output for \`${cmd}\``;
 }
 
-export type BashCompletionKind = "success" | "error" | "cancelled";
+export type BashCompletionKind = "success" | "error" | "cancelled" | "background";
 
 export function bashCompletionAnnouncement(command: string, kind: BashCompletionKind): string {
   const cmd = shortCommand(command) || "command";
   if (kind === "cancelled") return `Command cancelled: \`${cmd}\``;
+  if (kind === "background") return `Command moved to the background: \`${cmd}\``;
   if (kind === "error") return `Command failed: \`${cmd}\``;
   return `Command finished: \`${cmd}\``;
 }
@@ -31,8 +32,10 @@ export function bashCompletionAnnouncement(command: string, kind: BashCompletion
 export function completionKind(
   hasError: boolean | undefined,
   cancelled: boolean,
+  background = false,
 ): BashCompletionKind {
   if (cancelled) return "cancelled";
+  if (background) return "background";
   if (hasError) return "error";
   return "success";
 }

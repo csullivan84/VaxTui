@@ -35,6 +35,24 @@ export interface Usage {
   end_time?: string | null;
 }
 
+export interface CompactionSquish {
+  from_sequence_id: number;
+  to_sequence_id: number;
+  summary: string;
+}
+
+export interface CompactionTrim {
+  sequence_id: number;
+  tool_use_id: string;
+}
+
+export interface InPlaceCompaction {
+  squishes?: CompactionSquish[] | null;
+  trims?: CompactionTrim[] | null;
+  hidden_sequence_ids?: number[] | null;
+  hidden_tool_use_ids?: string[] | null;
+}
+
 export interface ApiMessageForTS {
   message_id: string;
   conversation_id: string;
@@ -117,6 +135,7 @@ export interface ConversationWithStateForTS {
   git_commit?: string;
   git_subject?: string;
   subagent_count: number;
+  running_background_jobs: number;
   preview?: string;
   preview_updated_at?: string;
   search_snippet?: string;
@@ -133,6 +152,7 @@ export type MessageType =
   | "gitinfo"
   | "warning"
   | "modelchange"
-  | "slug";
+  | "slug"
+  | "inplacecompaction";
 
 export type EventType = string;

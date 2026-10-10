@@ -253,11 +253,6 @@ func gitLogDiffs(ctx context.Context, gitRoot string, limit int, mergeBase, star
 
 // handleGitDiffs returns available diffs (working changes + recent commits)
 func (s *Server) handleGitDiffs(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
 	cwd := r.URL.Query().Get("cwd")
 	if cwd == "" {
 		http.Error(w, "cwd parameter required", http.StatusBadRequest)
@@ -377,10 +372,6 @@ type GitTourResponse struct {
 
 // handleGitTour returns a commit's verified guided tour.
 func (s *Server) handleGitTour(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	cwd := r.URL.Query().Get("cwd")
 	hash := r.URL.Query().Get("hash")
 	if cwd == "" || hash == "" {
@@ -412,10 +403,6 @@ func (s *Server) handleGitTour(w http.ResponseWriter, r *http.Request) {
 // handleGitTourMedia serves an image or recording embedded in a tour. Blobs
 // are content-addressed, so responses are immutable.
 func (s *Server) handleGitTourMedia(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	cwd := r.URL.Query().Get("cwd")
 	blob := r.URL.Query().Get("blob")
 	if cwd == "" || blob == "" {
@@ -515,11 +502,6 @@ func parseNumstatZ(s string) (additions, deletions int) {
 
 // handleGitDiffFiles returns the files changed in a specific diff
 func (s *Server) handleGitDiffFiles(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
 	// Extract diff ID from path: /api/git/diffs/{id}/files
 	path := strings.TrimPrefix(r.URL.Path, "/api/git/diffs/")
 	parts := strings.SplitN(path, "/", 2)
@@ -675,11 +657,6 @@ func (s *Server) handleGitDiffFiles(w http.ResponseWriter, r *http.Request) {
 
 // handleGitFileDiff returns the old and new content for a file
 func (s *Server) handleGitFileDiff(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
 	// Extract diff ID and file path from: /api/git/file-diff/{id}/*filepath
 	path := strings.TrimPrefix(r.URL.Path, "/api/git/file-diff/")
 	slashIdx := strings.Index(path, "/")
@@ -812,11 +789,6 @@ type CommitMessage struct {
 //	"self":      only the `from` commit
 //	<hash>:      from `from` through <hash>
 func (s *Server) handleGitCommitMessages(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
 	cwd := r.URL.Query().Get("cwd")
 	if cwd == "" {
 		http.Error(w, "cwd parameter required", http.StatusBadRequest)
@@ -928,11 +900,6 @@ func (s *Server) handleGitCommitMessages(w http.ResponseWriter, r *http.Request)
 
 // handleGitAmendMessage amends the most recent commit's message.
 func (s *Server) handleGitAmendMessage(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
 	var req struct {
 		Cwd     string `json:"cwd"`
 		Message string `json:"message"`
@@ -967,11 +934,6 @@ func (s *Server) handleGitAmendMessage(w http.ResponseWriter, r *http.Request) {
 // handleGitCreateWorktree creates a new git worktree.
 // The worktree is created as a sibling of the repo directory with name repo-YYYY-MM-DD-N.
 func (s *Server) handleGitCreateWorktree(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
 	var req struct {
 		Cwd string `json:"cwd"` // current working directory (must be in a git repo)
 	}
@@ -1081,10 +1043,6 @@ type GitGraphCommit struct {
 
 // handleGitGraph returns the commit DAG for the graph viewer.
 func (s *Server) handleGitGraph(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	cwd := r.URL.Query().Get("cwd")
 	if cwd == "" {
 		http.Error(w, "cwd parameter required", http.StatusBadRequest)
@@ -1272,10 +1230,6 @@ type GitCommitDetail struct {
 // handleGitCommitDetail returns commit body + numstat for a single commit.
 // Query: cwd, hash.
 func (s *Server) handleGitCommitDetail(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	cwd := r.URL.Query().Get("cwd")
 	hash := r.URL.Query().Get("hash")
 	if cwd == "" || hash == "" {

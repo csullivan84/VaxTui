@@ -472,17 +472,6 @@ func recentTerminalOutput(logFile string) string {
 
 // --- Handlers ---
 
-func (s *Server) handleHerds(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		s.handleListHerds(w, r)
-	case http.MethodPost:
-		s.handleCreateHerd(w, r)
-	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-	}
-}
-
 func (s *Server) handleListHerds(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	includeArchived := r.URL.Query().Get("archived") == "1" || r.URL.Query().Get("archived") == "true"
@@ -946,23 +935,6 @@ func (s *Server) addLiveTerminalMember(w http.ResponseWriter, r *http.Request, h
 	writeJSON(w, http.StatusCreated, s.memberToAPI(ctx, member))
 }
 
-func (s *Server) handleHerdMember(w http.ResponseWriter, r *http.Request) {
-	herdID := r.PathValue("herd_id")
-	memberID := r.PathValue("member_id")
-	if herdID == "" || memberID == "" {
-		writeAPIError(w, http.StatusBadRequest, "missing_id", "herd_id and member_id required", nil)
-		return
-	}
-	switch r.Method {
-	case http.MethodPatch:
-		s.handlePatchMember(w, r, herdID, memberID)
-	case http.MethodDelete:
-		s.handleDeleteMember(w, r, herdID, memberID)
-	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-	}
-}
-
 func (s *Server) loadMember(ctx context.Context, herdID, memberID string) (generated.HerdMember, error) {
 	var m generated.HerdMember
 	err := s.db.WithTx(ctx, func(q *generated.Queries) error {
@@ -1122,10 +1094,6 @@ func (s *Server) handleDeleteMember(w http.ResponseWriter, r *http.Request, herd
 }
 
 func (s *Server) handleMemberDetach(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	ctx := r.Context()
 	herdID := r.PathValue("herd_id")
 	memberID := r.PathValue("member_id")
@@ -1170,10 +1138,6 @@ func (s *Server) handleMemberDetach(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleMemberOpen(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	ctx := r.Context()
 	herdID := r.PathValue("herd_id")
 	memberID := r.PathValue("member_id")
@@ -1304,10 +1268,6 @@ func (s *Server) setMemberDesired(ctx context.Context, m generated.HerdMember, t
 }
 
 func (s *Server) handleMemberClose(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	ctx := r.Context()
 	herdID := r.PathValue("herd_id")
 	memberID := r.PathValue("member_id")
@@ -1403,10 +1363,6 @@ func (s *Server) closeMember(ctx context.Context, m generated.HerdMember, force 
 }
 
 func (s *Server) handleHerdOpenAll(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	ctx := r.Context()
 	herdID := r.PathValue("herd_id")
 	h, err := s.loadHerd(ctx, herdID)
@@ -1439,10 +1395,6 @@ func (s *Server) handleHerdOpenAll(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleHerdCloseAll(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	ctx := r.Context()
 	herdID := r.PathValue("herd_id")
 	h, err := s.loadHerd(ctx, herdID)
@@ -1507,10 +1459,6 @@ func runBounded[T any](items []T, concurrency int, fn func(T) bulkItemAPI) []bul
 // handleWorkspaceTerminals lists every live terminal not currently assigned
 // to a herd. These sessions can be moved into a herd explicitly.
 func (s *Server) handleWorkspaceTerminals(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	ctx := r.Context()
 	owners, err := s.terminalOwners(ctx)
 	if err != nil {
@@ -1529,10 +1477,6 @@ func (s *Server) handleWorkspaceTerminals(w http.ResponseWriter, r *http.Request
 
 // handleHerdAttention returns working/needs_user conversation warnings for close-all UI.
 func (s *Server) handleHerdClosePreview(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	ctx := r.Context()
 	herdID := r.PathValue("herd_id")
 	if _, err := s.loadHerd(ctx, herdID); err != nil {

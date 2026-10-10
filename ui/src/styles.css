@@ -305,7 +305,8 @@ body {
   color: white;
 }
 
-.text-error {
+.text-error,
+.favicon-emoji-status.error {
   color: var(--error-text);
 }
 
@@ -862,7 +863,8 @@ body {
   display: contents;
 }
 
-.conversation-participant-badge {
+.conversation-participant-badge,
+.conversation-background-jobs-badge {
   display: inline-flex;
   flex: 0 0 auto;
   align-items: center;
@@ -878,6 +880,103 @@ body {
   font-variant-numeric: tabular-nums;
   line-height: 1.4;
   cursor: pointer;
+}
+
+.conversation-background-jobs-icon {
+  width: 0.75rem;
+  height: 0.75rem;
+}
+
+.drawer-background-jobs-list,
+.drawer-subagent-list {
+  margin-left: 1.5rem;
+}
+
+.drawer-background-jobs-nested {
+  margin-left: 0.5rem;
+  max-width: calc(100% - 0.5rem);
+}
+
+.drawer-background-job {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.125rem 0.25rem;
+  padding: 0.5rem;
+  border-left: 2px solid var(--border-color);
+  min-width: 0;
+}
+
+.background-jobs-command {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-12);
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.background-jobs-meta {
+  grid-column: 1;
+  font-size: var(--font-size-12);
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.background-jobs-tail {
+  grid-column: 1 / -1;
+  max-height: 7rem;
+  min-width: 0;
+  margin: 0.25rem 0 0;
+  padding: 0.25rem 0.375rem;
+  overflow: auto;
+  border-radius: 0.25rem;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-12);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.background-jobs-stop {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: start;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  padding: 0;
+  border: none;
+  border-radius: 0.25rem;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.background-jobs-stop:hover {
+  background: color-mix(in srgb, var(--error-text) 10%, transparent);
+  color: var(--error-text);
+}
+
+.background-jobs-stop:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+
+.background-jobs-empty,
+.background-jobs-error {
+  font-size: var(--font-size-12);
+  color: var(--text-secondary);
+  padding: 0.5rem;
+  border-left: 2px solid var(--border-color);
+}
+
+.background-jobs-error {
+  color: var(--error-text);
+  margin-bottom: 0.375rem;
+  overflow-wrap: anywhere;
 }
 
 .conversation-participant-badge-icon {
@@ -937,20 +1036,26 @@ body {
 }
 
 .conversation-terminal-count + .conversation-participant-badge,
-.conversation-participant-badge + .subagent-count-badge {
+.conversation-participant-badge + .subagent-count-badge,
+.conversation-terminal-count + .conversation-background-jobs-badge,
+.conversation-background-jobs-badge + .conversation-participant-badge,
+.conversation-background-jobs-badge + .subagent-count-badge {
   margin-left: 0;
 }
 
-.conversation-participant-badge:hover {
+.conversation-participant-badge:hover,
+.conversation-background-jobs-badge:hover {
   background: var(--gray-200);
   color: var(--text-primary);
 }
 
-.dark .conversation-participant-badge:hover {
+.dark .conversation-participant-badge:hover,
+.dark .conversation-background-jobs-badge:hover {
   background: var(--gray-600);
 }
 
-.conversation-item.active .conversation-participant-badge {
+.conversation-item.active .conversation-participant-badge,
+.conversation-item.active .conversation-background-jobs-badge {
   background: rgba(255, 255, 255, 0.15);
   color: rgba(255, 255, 255, 0.8);
 }
@@ -1522,8 +1627,8 @@ body {
 }
 
 .message-author-conversation {
-  font-family: var(--font-mono);
-  font-size: var(--font-size-14);
+  font-size: var(--font-size-12);
+  color: var(--text-secondary);
   margin-bottom: 0.5rem;
   overflow-wrap: anywhere;
 }
@@ -1532,7 +1637,8 @@ body {
   color: var(--link-color);
 }
 
-.message-conversation > .message-content {
+.message-conversation > .message-content,
+.message-queued.message-tool-card > .message-content {
   width: 100%;
 }
 
@@ -1657,6 +1763,7 @@ body {
 }
 
 .message-warning .message-content {
+  white-space: pre-wrap;
   margin-right: auto;
   max-width: 100%;
   background: var(--warning-bg);
@@ -2015,6 +2122,15 @@ body {
   white-space: nowrap;
 }
 
+/* Muted qualifier after a tool card's command, e.g. a subagent's model. */
+.tool-tag {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-12);
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
 .tool-running {
   font-size: var(--font-size-12);
   color: var(--text-secondary);
@@ -2328,6 +2444,34 @@ body {
   text-overflow: ellipsis;
   flex-shrink: 0;
   max-width: 30%;
+}
+
+.bash-tool-background {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-12);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* On narrow screens the job status gets its own line rather than squeezing
+   a long command down to a few unreadable characters. */
+@media (max-width: 640px) {
+  .bash-tool-summary:has(.bash-tool-background) {
+    flex-wrap: wrap;
+    row-gap: 0.25rem;
+  }
+
+  .bash-tool-summary:has(.bash-tool-background) .bash-tool-command {
+    flex-basis: calc(100% - 2rem);
+  }
+
+  .bash-tool-summary:has(.bash-tool-background) .bash-tool-background {
+    margin-left: 2rem;
+    max-width: calc(100% - 2rem);
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
 }
 
 .bash-tool-running {
@@ -3562,8 +3706,13 @@ diffs-container {
 }
 
 /* Ghost queued messages render with a dashed border to read as "pending". */
-.message-queued .message-content {
+.message-queued:not(.message-tool-card) .message-content,
+.message-queued.message-tool-card .bash-tool {
   border: 1px dashed rgba(249, 115, 22, 0.5);
+}
+
+.message-queued.message-tool-card .queued-message-badge {
+  margin: 0 1rem 0.75rem;
 }
 
 .queued-cancel-all-row {
@@ -4328,8 +4477,12 @@ diffs-container {
   max-height: none;
 }
 
-/* List state: drop wrapper padding so the table spans the modal fully. */
-.modal-xwide .modal-body:has(.models-modal-list) {
+/* List state: drop wrapper padding so the table spans the modal fully.
+   Background job notices and messages from other conversations are bare
+   tool cards, flush like tool calls. */
+.modal-xwide .modal-body:has(.models-modal-list),
+.message-tool-card .message-content,
+.message-tool-card [data-content-entity] {
   padding: 0;
 }
 
@@ -4572,6 +4725,9 @@ select:disabled {
    thing. The other .status-message variants (error, disconnected, no-models)
    are sentences and stay in the default sans. */
 .status-message.status-ready {
+  /* Sized to its text, not flex: 1, so the running-work counts
+     (.status-activity-button) sit right beside it, not across the bar. */
+  flex: 0 1 auto;
   font-family: var(--font-mono);
   font-size: var(--font-size-12);
   line-height: 1.2;
@@ -5674,6 +5830,40 @@ svg {
   cursor: not-allowed;
 }
 
+.auto-compaction-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--border);
+  font-size: var(--font-size-12);
+  color: var(--text-secondary);
+}
+
+.auto-compaction-name {
+  flex: 1;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.auto-compaction-nudge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  white-space: nowrap;
+}
+
+.auto-compaction-nudge select {
+  background: var(--bg-base);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 0.25rem;
+  font-size: var(--font-size-12);
+  padding: 0.15rem 0.3rem;
+}
+
 .advanced-settings-header {
   display: flex;
   align-items: center;
@@ -6162,10 +6352,12 @@ svg {
   min-width: 0;
 }
 
+/* Sized to content like .status-ready, so the running-work counts after it
+   sit beside Continue; .status-readout's auto margin takes the slack. */
 .status-interrupted-group {
   display: flex;
   align-items: center;
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   gap: 0.625rem;
   min-width: 0;
   overflow: hidden;
@@ -6239,11 +6431,13 @@ svg {
   text-align: left;
 }
 
-.status-readout-cwd:hover:not(:disabled) {
+.status-readout-cwd:hover:not(:disabled),
+.status-activity-button:hover {
   color: var(--text-primary);
 }
 
-.status-readout-cwd:focus-visible {
+.status-readout-cwd:focus-visible,
+.status-activity-button:focus-visible {
   outline: 2px solid var(--blue-text);
   outline-offset: 1px;
   border-radius: 3px;
@@ -6288,6 +6482,52 @@ svg {
   min-width: 0;
 }
 
+/* Running-work counts ("⚙ 2  ○ 1": icon + number, the words are in the
+   tooltip) beside the status message. Same readout type and dotted-underline
+   affordance as .status-readout; never shrinks, since a clipped count reads as
+   a different number. Hover and focus are shared with .status-readout-cwd, the
+   icon size with the stop button's. */
+.status-activity-button {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 5px 0;
+  margin: -5px 0;
+  border: none;
+  background: none;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-12);
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.status-activity-segment {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+/* The popover's surface is .chat-context-popup's; this only stacks the
+   jobs and subagents sections. */
+.status-activity-popup-content {
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+}
+
+/* Focus lands here on open (it carries [autofocus]) only so Tab moves into
+   the popup; it is not a control, so no ring. */
+.status-activity-heading {
+  margin-bottom: 0.25rem;
+  outline: none;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
 .status-stop-button {
   flex-shrink: 0;
   display: flex;
@@ -6314,7 +6554,8 @@ svg {
   cursor: not-allowed;
 }
 
-.status-stop-button svg {
+.status-stop-button svg,
+.status-activity-icon {
   width: 0.75rem;
   height: 0.75rem;
   flex-shrink: 0;
@@ -6473,6 +6714,12 @@ svg {
   /* Compact the status bar active layout when inline */
   .message-controls-status-slot .status-bar-active {
     gap: 0.375rem;
+  }
+
+  /* "⚙ 1" then "6k" at the compact gap reads as "16k";
+     keep the desktop gap (0.75rem) between the counts and the readout. */
+  .message-controls-status-slot .status-activity-button {
+    margin-right: 0.375rem;
   }
 
   /* Let new-conversation fields share a row when they fit and wrap naturally
@@ -9304,7 +9551,7 @@ button.tour-visibility-control:focus-visible,
   color: var(--text-secondary);
 }
 
-/* Right-aligned keyboard hint on overflow-menu action rows. */
+/* Right-aligned keyboard hint on menu action rows (overflow menu, send menu). */
 .overflow-menu-shortcut {
   flex-shrink: 0;
   margin-left: auto;
@@ -11980,6 +12227,7 @@ kbd {
 .chat-context-popup.p-popover:after {
   display: none;
 }
+
 /* Same flip caveat as .toc-popover: Popover defaults to "below the target",
    which for the status-bar usage bar means covering the message input. Shift
    it above the 6px bar (+4px gap) unless PrimeVue already flipped it. */
@@ -12005,41 +12253,50 @@ kbd {
 }
 
 /* Cost and context graphs in the context usage popup */
-.usage-graph-switch {
+.usage-popup-header {
   display: flex;
-  gap: 4px;
-  margin-left: auto;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 12px;
+  margin: 0 0 4px;
 }
 
-.usage-graph-switch-button {
-  padding: 1px 8px;
-  border: 1px solid var(--border-color);
-  border-radius: 10px;
-  background: transparent;
+.usage-popup-title {
+  color: var(--text-primary);
+}
+
+.usage-graph-switch {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
   color: var(--text-secondary);
-  font-size: 0.65rem;
+}
+
+.usage-graph-switch-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: var(--font-size-12);
   line-height: 1.4;
   cursor: pointer;
 }
 
-.usage-graph-switch-button-active {
-  background: var(--bg-tertiary);
+.usage-graph-switch-item:has(:checked) {
   color: var(--text-primary);
-  border-color: var(--text-secondary);
 }
 
-.usage-graph-panel {
-  display: grid;
+.usage-graph-switch-box {
+  flex: none;
+  width: 11px;
+  height: 11px;
+  margin: 0;
+  accent-color: var(--blue-text);
+  cursor: inherit;
 }
 
-.usage-graph-panel-item {
-  grid-area: 1 / 1;
-  min-width: 0;
-}
-
-.usage-graph-panel-item-inactive {
-  visibility: hidden;
-  pointer-events: none;
+.usage-graph-switch-box:focus-visible {
+  outline: 2px solid var(--blue-text);
+  outline-offset: 2px;
 }
 
 .token-cost-graph {
@@ -12048,24 +12305,14 @@ kbd {
   max-width: 100%;
 }
 
-.context-composition-graph {
-  width: 100%;
-  max-width: 100%;
+.context-legend {
+  margin-top: 4px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 1px 12px;
 }
 
-.context-composition-graph-header {
-  color: var(--text-secondary);
-  font-size: 0.68rem;
-  font-variant-numeric: tabular-nums;
-}
-
-.context-composition-graph-header > span:first-child {
-  align-self: center;
-  font-size: 0.65rem;
-  line-height: 1.4;
-}
-
-.context-composition-legend-label {
+.context-legend-label {
   min-width: 0;
   flex: 1;
   overflow: hidden;
@@ -12073,16 +12320,16 @@ kbd {
   white-space: nowrap;
 }
 
-.context-composition-legend-tokens {
+.context-legend-tokens {
   min-width: 42px;
   text-align: right;
 }
 
-.context-composition-legend-item {
+.context-legend-item {
   min-width: 0;
 }
 
-.context-composition-legend-row {
+.context-legend-row {
   box-sizing: border-box;
   width: 100%;
   padding: 0;
@@ -12095,26 +12342,17 @@ kbd {
   cursor: pointer;
 }
 
-.context-composition-legend-row:focus-visible {
+.context-legend-row:focus-visible {
   outline: 2px solid var(--blue-text);
   outline-offset: 2px;
   border-radius: 2px;
 }
 
-.context-composition-compaction-note {
-  margin-top: 2px;
-  color: var(--text-secondary);
-  font-size: 0.65rem;
-}
-
 .token-cost-controls {
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
   margin-bottom: 4px;
-}
-
-.token-cost-controls-spacer {
-  flex: 1;
 }
 
 .token-cost-toggle {
@@ -12134,8 +12372,7 @@ kbd {
   border-color: var(--text-secondary);
 }
 
-.token-cost-graph-svg,
-.context-composition-graph-svg {
+.token-cost-graph-svg {
   display: block;
   width: 100%;
   height: auto;
@@ -12170,8 +12407,12 @@ kbd {
 }
 
 .token-cost-label {
-  font-size: 9px;
+  font-size: 10px;
   fill: var(--text-secondary);
+}
+
+.token-cost-pane-label {
+  fill: var(--text-primary);
 }
 
 .token-cost-hover-readout {
@@ -12182,18 +12423,20 @@ kbd {
   min-height: 2.7em;
 }
 
-.token-cost-hover-snippet {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  font-style: italic;
+/* The amounts always show in full, wrapping if they must; only the message
+   snippet truncates, inline when there's room, else on its own line. */
+.token-cost-hover-text {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: 0.25em;
 }
 
-.token-cost-legend {
-  margin-top: 4px;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
+.token-cost-hover-snippet {
+  flex: 1 1 6em;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .token-cost-model-row {
@@ -12246,11 +12489,6 @@ kbd {
   min-width: 52px;
   text-align: right;
   font-variant-numeric: tabular-nums;
-}
-
-.token-cost-timeline {
-  max-width: 420px;
-  margin-inline: auto;
 }
 
 .token-cost-table {
@@ -12327,24 +12565,23 @@ kbd {
   color: var(--text-tertiary);
 }
 
-.token-cost-table tfoot > tr > * {
+/* Subtotals and the total head the receipt, right under the graph, rather
+   than trailing a long breakdown that a scrolling popup cuts off; a rule
+   sets them off from the per-model rows. */
+.token-cost-table .token-cost-summary > tr > * {
   padding-top: 6px;
   border-top: 1px solid var(--border);
   font-weight: 600;
 }
 
-.token-cost-total-row {
-  border-top: 1px solid var(--border);
+.token-cost-table .token-cost-summary > tr:last-child > * {
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
 }
 
 @media (min-width: 769px) {
   .chat-context-popup.p-popover:has(.token-cost-table-with-subagents) {
     width: min(640px, calc(100vw - 1rem));
-  }
-
-  .chat-context-popup:has(.token-cost-table-with-subagents) .context-composition-graph {
-    max-width: 420px;
-    margin-inline: auto;
   }
 }
 
@@ -13213,10 +13450,6 @@ kbd {
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
-}
-
-.drawer-subagent-list {
-  margin-left: 1.5rem;
 }
 
 .drawer-subagent-item-style {
@@ -14808,6 +15041,42 @@ kbd {
 
 .citation-source-link:hover {
   text-decoration: underline;
+}
+
+/* Favicon emoji picker: emoji-picker-element themed with Shelley's colors,
+   which .dark already flips. */
+.favicon-emoji-popover {
+  width: 352px;
+  max-width: 100%;
+  align-self: flex-start;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+  overflow: hidden;
+}
+.favicon-emoji-picker {
+  width: 100%;
+  height: min(400px, 70svh);
+  --background: var(--bg-base);
+  --border-color: var(--border);
+  --input-border-color: var(--border);
+  --input-background-color: var(--bg-secondary);
+  --input-font-color: var(--text-primary);
+  --input-placeholder-color: var(--text-tertiary);
+  --button-hover-background: var(--bg-hover);
+  --button-active-background: var(--bg-tertiary);
+  --indicator-color: var(--primary);
+  --category-font-color: var(--text-secondary);
+  --num-columns: 8;
+}
+.favicon-emoji-status {
+  padding: 0.5rem 0.75rem;
+  font-size: var(--font-size-12);
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border);
 }
 
 /* Feature flags modal */
@@ -16495,4 +16764,47 @@ kbd {
 }
 .herds-back-btn {
   font-size: 1.1rem;
+}
+
+/* In-place compaction record (see InPlaceCompactionMessage.vue). */
+.message.msg-compaction-container {
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25em;
+  font-style: normal;
+}
+
+.msg-compaction-op {
+  display: flex;
+  flex-flow: row wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35em;
+}
+
+.msg-compaction-range {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-13);
+  padding: 0.1em 0.4em;
+  border-radius: 4px;
+  background: var(--code-bg);
+  color: var(--text-primary);
+}
+
+.msg-compaction-summary {
+  width: 100%;
+  text-align: center;
+}
+
+.msg-compaction-summary summary {
+  cursor: pointer;
+  color: var(--text-secondary);
+}
+
+.msg-compaction-summary-text {
+  margin-top: 0.25em;
+  text-align: left;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text-primary);
 }

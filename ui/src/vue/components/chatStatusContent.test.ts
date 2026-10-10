@@ -42,6 +42,8 @@ const base = {
   onThinkingChange: noOp,
   onSetToolOverride: noOp,
   onResetToolOverrides: noOp,
+  compactNudgeTokens: 100000,
+  onSetCompactNudgeTokens: noOp,
   onOpenDirectoryPicker: noOp,
   onUsageNeeded: noOp,
 };

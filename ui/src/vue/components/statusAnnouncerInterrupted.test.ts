@@ -78,6 +78,7 @@ const pairBuild = await build({
               onManageModels: noOp, onRefreshModels: noOp, onThinkingChange: noOp,
               onSetToolOverride: noOp, onResetToolOverrides: noOp,
               onOpenDirectoryPicker: noOp, onUsageNeeded: noOp,
+              compactNudgeTokens: 100000, onSetCompactNudgeTokens: noOp,
             }),
           ];
         },
@@ -208,8 +209,12 @@ try {
   pairProps.agentWorking = true;
   await flushPair();
   assert.equal(pairContainer.querySelector('[data-testid="status-announcer"]')?.textContent?.trim(), "Agent working");
-  const visibleWorking = pairContainer.querySelector('[data-testid="agent-thinking"]');
-  assert.match(visibleWorking?.textContent ?? "", /Agent working/);
+  assert.match(
+    pairContainer.querySelector('[data-testid="agent-thinking"]')?.textContent ?? "",
+    /Agent working/,
+  );
+  const visibleWorking = pairContainer.querySelector('[role="status"][aria-label="Agent status"]');
+  assert.equal(visibleWorking?.getAttribute("aria-live"), "off");
   assert.equal(visibleWorking?.querySelector("button")?.getAttribute("aria-label"), "Stop");
   assert.equal(
     [...pairContainer.querySelectorAll<HTMLElement>('[role="status"], [aria-live]')].filter(

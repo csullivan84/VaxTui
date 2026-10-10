@@ -5,7 +5,11 @@
   <div
     :class="[
       'message',
-      source ? 'message-tool message-conversation' : 'message-user',
+      jobNotice
+        ? 'message-tool message-tool-card'
+        : source
+          ? 'message-tool message-conversation'
+          : 'message-user',
       'message-queued',
     ]"
     data-testid="queued-ghost"
@@ -14,8 +18,11 @@
   >
     <h2 class="sr-only">{{ landmarkLabel }}</h2>
     <div class="message-content" data-testid="message-content">
-      <ConversationMessageAuthor v-if="source" :source="source" />
-      <div class="whitespace-pre-wrap break-words">{{ text }}</div>
+      <BackgroundJobNoticeCard v-if="jobNotice" :source="jobNotice" :text="text" />
+      <template v-else>
+        <ConversationMessageAuthor v-if="source" :source="source" />
+        <div class="whitespace-pre-wrap break-words">{{ text }}</div>
+      </template>
       <div class="queued-message-badge" data-testid="queued-badge">
         <span class="queued-message-badge-label">
           <svg
@@ -58,7 +65,8 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { type QueuedMessage, queuedMessageText } from "../../types";
-import { conversationMessageSource } from "../../utils/messageSource";
+import { messageSource } from "../../utils/messageSource";
+import BackgroundJobNoticeCard from "./BackgroundJobNoticeCard.vue";
 import ConversationMessageAuthor from "./ConversationMessageAuthor.vue";
 
 const props = defineProps<{
@@ -69,8 +77,15 @@ const props = defineProps<{
 }>();
 
 const text = computed(() => queuedMessageText(props.queued));
-const source = computed(() => conversationMessageSource(props.queued.user_data));
+const source = computed(() => messageSource(props.queued.user_data));
+const jobNotice = computed(() =>
+  source.value && "backgroundJobId" in source.value ? source.value : null,
+);
 const landmarkLabel = computed(() =>
-  source.value ? "Queued conversation message" : "Queued user message",
+  jobNotice.value
+    ? "Queued background job notice"
+    : source.value
+      ? "Queued conversation message"
+      : "Queued user message",
 );
 </script>
