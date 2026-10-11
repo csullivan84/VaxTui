@@ -20,7 +20,10 @@
         <span class="tool-emoji" :class="{ running: isRunning }" aria-hidden="true">⚙️</span>
         <span class="generic-tool-copy">
           <span class="tool-command">{{ toolName }}</span>
-          <GenericToolWarning v-if="isComplete" :tool-name="toolName" />
+          <GenericToolWarning
+            v-if="isComplete && warnMissingUi"
+            :tool-name="toolName"
+          />
         </span>
         <ToolStatusIcon v-if="isComplete && hasError" state="error" class="tool-error" />
         <ToolStatusIcon v-if="isComplete && !hasError" state="ok" class="tool-success" />
@@ -80,15 +83,19 @@ import RunningToolTime from "./RunningToolTime.vue";
 import ToolStatusIcon from "./ToolStatusIcon.vue";
 import { toolOutcomeSuffix } from "../../utils/toolStatus";
 
-const props = defineProps<{
-  toolName: string;
-  toolInput?: unknown;
-  isRunning?: boolean;
-  toolInvokedAt?: string | null;
-  toolResult?: LLMContent[];
-  hasError?: boolean;
-  executionTime?: string;
-}>();
+const props = withDefaults(
+  defineProps<{
+    toolName: string;
+    warnMissingUi?: boolean;
+    toolInput?: unknown;
+    isRunning?: boolean;
+    toolInvokedAt?: string | null;
+    toolResult?: LLMContent[];
+    hasError?: boolean;
+    executionTime?: string;
+  }>(),
+  { warnMissingUi: true },
+);
 
 const isExpanded = useToolExpanded();
 
