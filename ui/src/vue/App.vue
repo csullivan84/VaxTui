@@ -121,6 +121,7 @@
             :cwd-sync-trigger="cwdSyncTrigger"
             :on-cwd-change="setWorkspaceDirectory"
             :on-open-models-modal="() => (modelsModalOpen = true)"
+            :on-open-mcp-servers-modal="() => (mcpServersModalOpen = true)"
             :on-open-file-finder="openFileFinder"
             :on-open-command-palette="() => (commandPaletteOpen = true)"
             :show-terminal-panel="false"
@@ -222,6 +223,12 @@
             commandPaletteOpen = false;
           }
         "
+        @open-mcp-servers-modal="
+          () => {
+            mcpServersModalOpen = true;
+            commandPaletteOpen = false;
+          }
+        "
         @open-integrations-modal="
           () => {
             integrationsModalOpen = true;
@@ -262,6 +269,18 @@
         "
         @models-changed="modelsRefreshTrigger++"
         @open-providers="openProviderSetup"
+      />
+
+      <McpServersModal
+        :is-open="mcpServersModalOpen"
+        :login-result="mcpLoginResult"
+        @close="
+          () => {
+            mcpServersModalOpen = false;
+            mcpLoginResult = null;
+            focusMessageInputIfUnfocused();
+          }
+        "
       />
 
       <IntegrationsModal
@@ -335,6 +354,7 @@ import ConversationDrawer from "./components/ConversationDrawer.vue";
 import CommandPalette from "./components/CommandPalette.vue";
 import HerdsPage from "./components/HerdsPage.vue";
 import ModelsModal from "./components/ModelsModal.vue";
+import McpServersModal from "./components/McpServersModal.vue";
 import IntegrationsModal from "./components/IntegrationsModal.vue";
 import NotificationsModal from "./components/NotificationsModal.vue";
 import FeatureFlagsModal from "./components/FeatureFlagsModal.vue";
@@ -511,6 +531,20 @@ const diffViewerTrigger = ref(0);
 const gitGraphTrigger = ref(0);
 const terminalTrigger = ref(0);
 const modelsModalOpen = ref(false);
+// The MCP login callback redirects to /?mcp_login=NAME, with &mcp_error=MSG if
+// it failed (or only ?mcp_error=MSG): show that in the MCP Servers dialog.
+const mcpLoginResult = ref(takeMcpLoginResult());
+const mcpServersModalOpen = ref(mcpLoginResult.value !== null);
+function takeMcpLoginResult() {
+  const url = new URL(window.location.href);
+  const name = url.searchParams.get("mcp_login");
+  const error = url.searchParams.get("mcp_error");
+  if (name === null && error === null) return null;
+  url.searchParams.delete("mcp_login");
+  url.searchParams.delete("mcp_error");
+  window.history.replaceState(window.history.state, "", url);
+  return { name, error };
+}
 const integrationsModalOpen = ref(false);
 const notificationsModalOpen = ref(false);
 const featureFlagsModalOpen = ref(false);

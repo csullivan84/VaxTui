@@ -1,7 +1,7 @@
 <!-- Sub-component of Message.vue. Renders a "modelchange" marker recorded when
      the conversation switches models via the /model command (or shows the
-     /model command's informational output). User-visible only; never sent to
-     the LLM.
+     /model command's informational output, or a tool enabled mid-conversation).
+     User-visible only; never sent to the LLM.
 
      A real switch (model and/or reasoning changed) gets a customized pill: the
      old → new model names as chips with an arrow, plus a reasoning chip when
@@ -31,12 +31,15 @@
   <div
     v-else
     class="message message-gitinfo msg-modelchange-container"
+    :class="{ 'msg-modelchange-tool': data.tool_enabled }"
     data-testid="message-modelchange"
     role="status"
     aria-live="polite"
     aria-atomic="true"
   >
-    <span class="msg-modelchange-icon" aria-hidden="true">🤖</span>
+    <span class="msg-modelchange-icon" aria-hidden="true">{{
+      data.tool_enabled ? "🧰" : "🤖"
+    }}</span>
     <span class="msg-modelchange-text">{{ text }}</span>
   </div>
 </template>
@@ -54,6 +57,8 @@ interface ModelChangeData {
   to_display?: string;
   reasoning_from?: string;
   reasoning_to?: string;
+  /** A tool enabled mid-conversation (the Compact in Place button). */
+  tool_enabled?: string;
   text?: string;
 }
 

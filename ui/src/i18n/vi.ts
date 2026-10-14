@@ -27,6 +27,7 @@ export const vi: TranslationKeys = {
   conversationView: "Chế độ xem cuộc trò chuyện",
   seeAllMessages: "Xem tất cả",
   seeEndOfTurnMessagesOnly: "Chỉ xem tin nhắn cuối lượt",
+  seeChatOnly: "Chỉ xem trò chuyện",
   brevity: "Ngắn gọn",
   look: "Giao diện",
 
@@ -242,6 +243,35 @@ export const vi: TranslationKeys = {
   noModelsConfigured: "Chưa có model nào",
   noModelsHint:
     "Đặt biến môi trường ANTHROPIC_API_KEY, hoặc dùng flag -gateway, hoặc thêm model bên dưới.",
+
+  // MCP Servers Modal
+  mcpServers: "Máy chủ MCP",
+  configureMcpServers: "Kết nối máy chủ MCP cho agent sử dụng",
+  addMcpServer: "Thêm máy chủ MCP",
+  editMcpServer: "Sửa máy chủ MCP",
+  loadingMcpServers: "Đang tải máy chủ MCP...",
+  noMcpServers: "Chưa đăng ký máy chủ MCP nào",
+  noMcpServersHint:
+    "Thêm tại đây, hoặc nhờ Shelley thêm. Agent dùng máy chủ MCP qua lệnh shelley mcp.",
+  columnDescription: "Mô tả",
+  mcpTools: "Công cụ",
+  mcpToolsTitle: "Công cụ của {name}",
+  mcpConnecting: "Đang kết nối tới {name}…",
+  mcpNoTools: "Máy chủ này không có công cụ nào.",
+  mcpNameHint:
+    "Chữ cái, chữ số, '_' và '-', bắt đầu bằng chữ cái hoặc chữ số. Dùng trong lệnh shelley mcp; không thể đổi sau này.",
+  mcpDescriptionPlaceholder: "Dùng để làm gì, để agent biết khi nào nên dùng",
+  mcpHeaders: "Header",
+  mcpAddHeader: "Thêm header",
+  mcpValue: "Giá trị",
+  mcpRemoveHeader: "Bỏ header {n}",
+  mcpColumnLogin: "Đăng nhập",
+  mcpLoggedIn: "Đã đăng nhập",
+  mcpLoginRequired: "Cần đăng nhập",
+  mcpLogIn: "Đăng nhập",
+  mcpLogOut: "Đăng xuất",
+  mcpLoggedInTo: "Đã đăng nhập vào {name}.",
+  mcpDebug: "Gỡ lỗi",
 
   // Notifications Modal
   notifications: "Thông báo",

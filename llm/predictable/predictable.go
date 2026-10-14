@@ -3,6 +3,7 @@ package predictable
 import (
 	"context"
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"os"
 	"strconv"
@@ -147,6 +148,18 @@ func (s *Service) Do(ctx context.Context, req *llm.Request) (*llm.Response, erro
 				}
 			}
 		}
+	}
+	// The real LLM sees the sequence marker; for this test fixture, unwrap
+	// the user text so its deterministic commands still work in channel chats.
+	if strings.HasPrefix(inputText, "<external_message ") || strings.HasPrefix(inputText, "<user_message ") {
+		var external struct {
+			SequenceID int64  `xml:"sequence_id,attr"`
+			Text       string `xml:",chardata"`
+		}
+		if err := xml.Unmarshal([]byte(inputText), &external); err != nil {
+			return nil, fmt.Errorf("decode external message: %w", err)
+		}
+		inputText = strings.TrimSpace(external.Text)
 	}
 
 	// If the message is purely a tool result (no text), acknowledge it and end turn.
@@ -311,12 +324,20 @@ func (s *Service) Do(ctx context.Context, req *llm.Request) (*llm.Response, erro
 			return s.makeBashToolResponse(cmd, false, inputTokens), nil
 		}
 
+		if text, ok := strings.CutPrefix(inputText, "message_parent_final: "); ok {
+			return s.makeMessageParentToolResponse(text, true, inputTokens), nil
+		}
+
 		if text, ok := strings.CutPrefix(inputText, "message_parent: "); ok {
-			return s.makeMessageParentToolResponse(text, inputTokens), nil
+			return s.makeMessageParentToolResponse(text, false, inputTokens), nil
 		}
 
 		if input, ok := strings.CutPrefix(inputText, "compact_in_place: "); ok {
 			return s.makeToolResponse("compact_in_place", json.RawMessage(input), inputTokens), nil
+		}
+
+		if input, ok := strings.CutPrefix(inputText, "message_user: "); ok {
+			return s.makeToolResponse("message_user", json.RawMessage(input), inputTokens), nil
 		}
 
 		if path, ok := strings.CutPrefix(inputText, "change_dir: "); ok {
@@ -845,8 +866,8 @@ func (s *Service) makeChangeDirToolResponse(path string, inputTokens uint64) *ll
 	}
 }
 
-func (s *Service) makeMessageParentToolResponse(text string, inputTokens uint64) *llm.Response {
-	toolInput, _ := json.Marshal(map[string]string{"text": text})
+func (s *Service) makeMessageParentToolResponse(text string, endTurn bool, inputTokens uint64) *llm.Response {
+	toolInput, _ := json.Marshal(map[string]any{"text": text, "end_turn": endTurn})
 	return &llm.Response{
 		ID:    fmt.Sprintf("pred-message_parent-%d", time.Now().UnixNano()),
 		Type:  "message",
@@ -1157,6 +1178,14 @@ func (s *Service) makeToolSmorgasbordResponse(inputTokens uint64) *llm.Response 
 		Type:      llm.ContentTypeToolUse,
 		ToolName:  "compact_in_place",
 		ToolInput: json.RawMessage(`{"action":"index"}`),
+	})
+
+	// message_user tool (a reply to the smorgasbord request, with a reaction)
+	content = append(content, llm.Content{
+		ID:        fmt.Sprintf("tool_message_user_%d", (baseNano+20)%1000),
+		Type:      llm.ContentTypeToolUse,
+		ToolName:  "message_user",
+		ToolInput: json.RawMessage(`{"text":"On it.","reply_to":2,"reaction":"👍"}`),
 	})
 
 	// browser: screencast_stop action (tests screencast UI widget)

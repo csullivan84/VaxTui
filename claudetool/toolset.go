@@ -76,6 +76,13 @@ type ToolSetConfig struct {
 	// InPlaceCompactor, if set, provides the compact_in_place tool (off
 	// unless enabled by ToolOverrides).
 	InPlaceCompactor InPlaceCompactor
+	// UserMessageFinder, if set, provides the message_user tool (off unless
+	// enabled by ToolOverrides). The server sets it only for top-level
+	// conversations.
+	UserMessageFinder UserMessageFinder
+	// UserChat, if set, is the external chat message_user's messages also
+	// go to.
+	UserChat UserChat
 	// BackgroundJobs is told about bash commands moved to the background.
 	BackgroundJobs BackgroundJobs
 	// BashBackgroundAfter overrides DefaultBashBackgroundAfter when nonzero.
@@ -254,7 +261,6 @@ func NewToolSet(ctx context.Context, cfg ToolSetConfig) *ToolSet {
 			ParentConversationID: cfg.ParentConversationID,
 			WorkingDir:           wd,
 			Runner:               cfg.SubagentRunner,
-			ModelID:              cfg.ModelID, // Inherit parent's model
 			AvailableModels:      availableModels,
 			ParentReasoning:      cfg.ReasoningLevel,
 			DBPath:               cfg.DBPath,
@@ -268,6 +274,9 @@ func NewToolSet(ctx context.Context, cfg ToolSetConfig) *ToolSet {
 
 	if cfg.InPlaceCompactor != nil {
 		tools = append(tools, CompactInPlaceTool(cfg.InPlaceCompactor))
+	}
+	if cfg.UserMessageFinder != nil {
+		tools = append(tools, MessageUserTool(cfg.UserMessageFinder, cfg.UserChat, wd))
 	}
 
 	// Add LLM one-shot tool if LLM provider is configured

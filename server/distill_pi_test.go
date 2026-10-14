@@ -13,6 +13,7 @@ import (
 	"testing"
 	"testing/synctest"
 
+	"shelley.exe.dev/claudetool"
 	"shelley.exe.dev/db"
 	"shelley.exe.dev/db/generated"
 	"shelley.exe.dev/llm"
@@ -212,6 +213,9 @@ func TestPiDistillCopiesRecentMessagesIntoNewGeneration(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		h := NewTestHarness(t)
 		defer stopActiveConversationLoops(h.server)
+		// Like a channel conversation, which the external message below
+		// stands for, this one offers message_user.
+		h.convOpts = &db.ConversationOptions{ToolOverrides: map[string]string{claudetool.MessageUserName: "on"}}
 
 		h.NewConversation("echo: first thing", "")
 		h.WaitResponse()
@@ -221,6 +225,16 @@ func TestPiDistillCopiesRecentMessagesIntoNewGeneration(t *testing.T) {
 		synctest.Wait()
 		convID := h.convID
 		ctx := t.Context()
+		const externalID = "ext-carried"
+		external, err := h.db.CreateMessage(ctx, db.CreateMessageParams{
+			ConversationID:    convID,
+			Type:              db.MessageTypeUser,
+			LLMData:           llm.UserStringMessage("external tail"),
+			ExternalMessageID: externalID,
+		})
+		if err != nil {
+			t.Fatalf("record external message: %v", err)
+		}
 		const imageData = "small-image-data-that-fits-the-retention-budget"
 		if err := h.server.recordMessage(ctx, convID, llm.Message{
 			Role: llm.MessageRoleUser,
@@ -269,7 +283,7 @@ func TestPiDistillCopiesRecentMessagesIntoNewGeneration(t *testing.T) {
 		}
 		// New generation context should contain the system prompt plus the
 		// verbatim-copied recent messages (the original user/agent turns).
-		var sawUserEcho, sawCarriedFlag, sawCarriedImage bool
+		var sawUserEcho, sawCarriedFlag, sawCarriedImage, sawCarriedExternalID bool
 		for _, m := range ctxMsgs {
 			if m.Generation != after.CurrentGeneration {
 				t.Fatalf("context message from stale generation %d", m.Generation)
@@ -280,6 +294,9 @@ func TestPiDistillCopiesRecentMessagesIntoNewGeneration(t *testing.T) {
 			}
 			if m.LlmData != nil && strings.Contains(*m.LlmData, imageData) {
 				sawCarriedImage = true
+			}
+			if m.ExternalMessageID != nil && *m.ExternalMessageID == externalID {
+				sawCarriedExternalID = true
 			}
 			// Copied messages are stamped compaction_carried=true so the UI can
 			// collapse the replayed tail behind a single band.
@@ -298,6 +315,21 @@ func TestPiDistillCopiesRecentMessagesIntoNewGeneration(t *testing.T) {
 		}
 		if !sawCarriedImage {
 			t.Fatal("expected an image within the retention budget to be copied verbatim")
+		}
+		if !sawCarriedExternalID {
+			t.Fatal("external message ID was lost when carrying the user message forward")
+		}
+		manager, err := h.server.getOrCreateConversationManager(ctx, convID, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		history, _, err := manager.partitionMessages(ctxMsgs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wrapped := fmt.Sprintf("<external_message sequence_id=\"%d\">\nexternal tail\n</external_message>", external.SequenceID)
+		if !strings.Contains(serializePiConversation(history), wrapped) {
+			t.Fatalf("carried external message not wrapped for the LLM: %q", serializePiConversation(history))
 		}
 	})
 }

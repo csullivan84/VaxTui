@@ -186,6 +186,10 @@
             />
           </template>
 
+          <template v-else-if="mcpNotice">
+            <McpServerNoticeCard v-if="entityIndex === 0" :source="mcpNotice" :text="messageText" />
+          </template>
+
           <!-- Distillation box takes precedence over content blocks. -->
           <div
             v-else-if="isDistilledUser"
@@ -239,6 +243,16 @@
           </template>
         </div>
       </div>
+      <div v-if="reactions.length" class="message-reactions" data-testid="message-reactions">
+        <span
+          v-for="r in reactions"
+          :key="r.emoji"
+          class="message-reaction"
+          :title="`Agent reacted ${r.emoji}`"
+          >{{ r.emoji
+          }}<span v-if="r.count > 1" class="message-reaction-count">{{ r.count }}</span></span
+        >
+      </div>
     </div>
     <UsageDetailModal
       v-if="showUsageModal && usage"
@@ -289,14 +303,16 @@ import ContextNudgeMessage from "./ContextNudgeMessage.vue";
 import ErrorRetryButton from "./ErrorRetryButton.vue";
 import RefusalContinueButton from "./RefusalContinueButton.vue";
 import { RefusalContinueKey } from "./refusalContinue";
+import { messageUserContextKey, type MessageReaction } from "./messageUserContext";
 import { prettyModelLabels, prettyModelName } from "../../utils/modelNames";
 import MessageContentBlock from "./MessageContentBlock.vue";
 import CitedText from "./CitedText.vue";
 import { coalesceContent, splitContentEntities } from "../../utils/coalesceContent";
 import { perfCount } from "../../utils/perf";
-import { messageSource } from "../../utils/messageSource";
+import { messageSource, mcpNoticeSource } from "../../utils/messageSource";
 import ConversationMessageCard from "./ConversationMessageCard.vue";
 import BackgroundJobNoticeCard from "./BackgroundJobNoticeCard.vue";
+import McpServerNoticeCard from "./McpServerNoticeCard.vue";
 import MessageDisplayData from "./MessageDisplayData.vue";
 
 interface ToolDisplay {
@@ -412,6 +428,13 @@ const isError = computed(() => props.message.type === "error");
 // distilled/compacted user messages (which render agent-side and aren't a
 // single person's turn).
 const showUserEmails = inject<ComputedRef<boolean>>("showUserEmails");
+// Emoji reactions the agent sent with message_user to this message.
+// Shared empty list: a fresh [] per recompute would re-render every message.
+const NO_REACTIONS: readonly MessageReaction[] = Object.freeze([]);
+const messageUserContext = inject(messageUserContextKey, null);
+const reactions = computed(
+  () => messageUserContext?.reactions.value.get(props.message.message_id) ?? NO_REACTIONS,
+);
 const sender = computed(() =>
   isUser.value && !isDistilledUser.value ? messageSource(props.message.user_data) : null,
 );
@@ -423,6 +446,10 @@ const jobNotice = computed(() =>
 // Messages from another conversation render as a tool card.
 const conversationSender = computed(() =>
   sender.value && "conversationId" in sender.value ? sender.value : null,
+);
+// Notices that the registered MCP servers changed render as a system card.
+const mcpNotice = computed(() =>
+  isUser.value && !isDistilledUser.value ? mcpNoticeSource(props.message.user_data) : null,
 );
 const authorEmail = computed(() =>
   isUser.value && !isDistilledUser.value && showUserEmails?.value

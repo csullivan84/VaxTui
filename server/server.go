@@ -29,6 +29,7 @@ import (
 	"shelley.exe.dev/db"
 	"shelley.exe.dev/db/generated"
 	"shelley.exe.dev/llm"
+	"shelley.exe.dev/mcp"
 	"shelley.exe.dev/models"
 	"shelley.exe.dev/server/diskspace"
 	"shelley.exe.dev/server/notifications"
@@ -78,33 +79,15 @@ type ConversationState struct {
 	Model          string `json:"model,omitempty"`
 }
 
-// ConversationWithState combines a conversation with its working state.
-// Preview is the trailing text of the most recent agent message, used to
-// render a one-line summary in the conversation list without a separate
-// fetch. PreviewUpdatedAt is the agent message's CreatedAt (RFC 3339).
+// ConversationWithState is a conversation list item as the UI gets it: the
+// list query's row plus git metadata from the filesystem.
 type ConversationWithState struct {
-	generated.Conversation
+	db.ConversationListItem
 	Working         bool   `json:"working"`
 	GitRepoRoot     string `json:"git_repo_root,omitempty"`
 	GitWorktreeRoot string `json:"git_worktree_root,omitempty"`
 	GitCommit       string `json:"git_commit,omitempty"`
 	GitSubject      string `json:"git_subject,omitempty"`
-	SubagentCount   int64  `json:"subagent_count"`
-	// RunningBackgroundJobs counts this conversation's backgrounded bash
-	// commands that have not exited.
-	RunningBackgroundJobs int64  `json:"running_background_jobs"`
-	Preview               string `json:"preview,omitempty"`
-	PreviewUpdatedAt      string `json:"preview_updated_at,omitempty"`
-	// MaxSequenceID is the highest message sequence_id stored for this
-	// conversation. Clients use it to decide whether their cached snapshot
-	// is up to date without a separate /api/conversation/<id> roundtrip.
-	MaxSequenceID int64 `json:"max_sequence_id"`
-	// Participants are the distinct exe.dev accounts (from the X-ExeDev-Email
-	// header) that authored messages in this conversation, sorted. Clients use
-	// it to filter the list down to their own conversations. Empty for
-	// conversations whose messages all arrived without the header (direct or
-	// local access) or predate the user_email column.
-	Participants []db.ConversationParticipant `json:"participants,omitempty"`
 	// SearchSnippet is set on hits from /api/conversations/search. Matched
 	// terms are wrapped in \x02..\x03 sentinels (see db.SnippetMarkStart /
 	// SnippetMarkEnd) so the UI can substitute spans without HTML injection.
@@ -353,10 +336,11 @@ type Server struct {
 	llmManager          LLMProvider
 	toolSetConfig       claudetool.ToolSetConfig
 	activeConversations map[string]*ConversationManager
-	backgroundJobsMu    sync.Mutex
-	// runningBackgroundJobs holds the background jobs that have not exited,
-	// by conversation ID and job ID.
-	runningBackgroundJobs    map[string]map[string]claudetool.BackgroundJob
+	// Serialize fallback delivery with Stop so a late completion cannot
+	// restart a parent whose queue was just cleared.
+	completionMu             sync.Mutex
+	stoppedParents           map[string]bool // guarded by mu
+	stoppingParents          map[string]bool // guarded by mu; a send during Stop must not reopen the fence
 	mu                       sync.Mutex
 	deletingConversations    map[string]bool
 	logger                   *slog.Logger
@@ -383,11 +367,20 @@ type Server struct {
 	// streamPub is the server-wide subpub that fans out per-conversation
 	// events to every /api/stream2 subscriber. Events are tagged with their
 	// ConversationID so clients can route them.
-	streamPub         *subpub.SubPub[StreamResponse]
-	diskSpace         atomic.Pointer[diskSpaceMonitor]
-	shutdownCh        chan struct{} // Signals background routines to stop
-	listenPort        int           // TCP port the server is listening on
+	streamPub  *subpub.SubPub[StreamResponse]
+	diskSpace  atomic.Pointer[diskSpaceMonitor]
+	shutdownCh chan struct{} // Signals background routines to stop
+	// channelChatLocks serializes deliveries per chat; see
+	// lockChannelChat. Guarded by mu.
+	channelChatLocks map[string]*channelChatLock
+	// channelClient sends replies to channel endpoints.
+	channelClient *http.Client
+	// channelDebug is the in-memory chat service behind /debug/channels.
+	channelDebug      channelDebug
+	listenPort        int    // TCP port the server is listening on
+	socketPath        string // Unix socket the server listens on, or ""
 	terminals         *TerminalSessions
+	mcp               *mcp.Manager
 	exitDelay         time.Duration
 	exitProcess       func(int)
 	mediaRun          mediaCommandRunner
@@ -440,7 +433,8 @@ func NewServer(database *db.DB, llmManager LLMProvider, toolSetConfig claudetool
 		llmManager:              llmManager,
 		toolSetConfig:           toolSetConfig,
 		activeConversations:     make(map[string]*ConversationManager),
-		runningBackgroundJobs:   make(map[string]map[string]claudetool.BackgroundJob),
+		stoppedParents:          make(map[string]bool),
+		stoppingParents:         make(map[string]bool),
 		deletingConversations:   make(map[string]bool),
 		logger:                  logger,
 		predictableOnly:         predictableOnly,
@@ -455,11 +449,14 @@ func NewServer(database *db.DB, llmManager LLMProvider, toolSetConfig claudetool
 		mediaRun:                runMediaCommand,
 		transcriber:             newOpenAIRecordingTranscriber(llmManager, predictableOnly),
 		transcriptionJobs:       make(map[string]transcriptionJob),
+		channelClient:           &http.Client{Timeout: 30 * time.Second},
+		channelChatLocks:        make(map[string]*channelChatLock),
 		reflectionEmoji:         cachedReflectionEmoji,
 		commitTourJobs:          make(map[string]*commitTourJob),
 		commitTourRecoverySlots: make(chan struct{}, 2),
 	}
 
+	s.mcp = mcp.NewManager(database, s.mcpLoginURL)
 	s.conversationListStream = newConversationListStream(s)
 	s.streamPub = subpub.New[StreamResponse]()
 	s.conversationListGitCache = newConversationListGitCache()
@@ -562,6 +559,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	api.HandleFunc("GET /api/message/{message_id}/image/{content_index}/{toolresult_index}", s.handleMessageImage) // Serves images from DB
 	api.HandleFunc("GET /api/message/{message_id}/file", s.handleMessageFile)                                      // Serves local images referenced in message markdown
 	api.HandleFunc("GET /api/message/{message_id}/download", s.handleMessageDownload)                              // Downloads files linked as sandbox:<path> in message markdown
+	api.HandleFunc("GET /api/message/{message_id}/attachment", s.handleMessageAttachment)                          // Serves files sent with message_user
 	api.HandleFunc("POST /api/write-file", s.handleWriteFile)                                                      // Small response
 	api.Handle("GET /api/read-file", compressionHandler(http.HandlerFunc(s.handleReadFile)))                       // Reads arbitrary text files as JSON
 	api.HandleFunc("GET /api/user-agents-md", s.handleUserAgentsMd)                                                // Small response
@@ -600,6 +598,8 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	api.HandleFunc("DELETE /api/custom-models/{id}", func(w http.ResponseWriter, r *http.Request) { s.handleDeleteModel(w, r, r.PathValue("id")) })
 	api.HandleFunc("POST /api/custom-models/{id}/duplicate", func(w http.ResponseWriter, r *http.Request) { s.handleDuplicateModel(w, r, r.PathValue("id")) })
 	api.HandleFunc("POST /api/custom-models-test", s.handleTestModel)
+
+	s.registerMCPRoutes(api, mux)
 
 	// Notification channels API
 	api.HandleFunc("GET /api/notification-channels", s.handleListNotificationChannels)
@@ -644,14 +644,26 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	api.HandleFunc("GET /api/cache-key", s.handleCacheKey)
 	api.HandleFunc("POST /api/cache-session/clear", s.handleCacheSessionClear)
 
-	// Debug endpoints
-	mux.HandleFunc("GET /debug/conversations", s.handleDebugConversationsPage)
+	// Debug endpoints. List new pages in debug/index.html.
+	mux.Handle("GET /debug/", http.FileServerFS(debugAssets))
 	mux.HandleFunc("GET /debug/conversation-stream", s.handleDebugConversationStreamPage)
 	mux.HandleFunc("GET /debug/conversation-stream/history", s.handleDebugConversationStreamHistory)
 	mux.HandleFunc("GET /debug/stylebook", s.handleDebugStylebook)
 	mux.HandleFunc("GET /debug/loremipsum", s.handleDebugLoremIpsum)
 	mux.HandleFunc("POST /debug/loremipsum", s.handleDebugLoremIpsum)
 	mux.HandleFunc("GET /debug/histograms", s.handleDebugHistograms)
+	api.HandleFunc("GET /api/debug/llm/exchanges", s.handleDebugLLMList)
+	api.Handle("GET /api/debug/llm/exchanges/{id}", compressionHandler(http.HandlerFunc(s.handleDebugLLMGet)))
+	mux.HandleFunc("POST /debug/channels/gateway/{chat}/{token}/{action}", s.handleDebugChannelGateway)
+	mux.HandleFunc("DELETE /debug/channels/gateway/{chat}/{token}/{action}", s.handleDebugChannelGateway)
+	api.HandleFunc("GET /api/debug/channels", s.handleDebugChannelsList)
+	api.HandleFunc("POST /api/debug/channels/{chat}/receive", s.handleDebugChannelReceive)
+	api.HandleFunc("POST /api/debug/channels/{chat}/send", s.handleDebugChannelSend)
+	api.HandleFunc("POST /api/debug/channels/{chat}/refuse", s.handleDebugChannelRefuse)
+
+	// Channels: external chats bound to conversations.
+	api.HandleFunc("POST /api/channels/messages", s.handleChannelMessage)
+	api.HandleFunc("GET /api/channels/messages/{chat}/stream", s.handleChannelStream)
 
 	// pprof endpoints
 	mux.HandleFunc("GET /debug/pprof/", pprof.Index)
@@ -1047,11 +1059,15 @@ func (s *Server) getOrCreateConversationManager(ctx context.Context, conversatio
 		manager := NewConversationManager(conversationID, s.db, s.logger, config, s.integrationSkills, recordMessage, recordTurnStart, onStateChange, s.streamPub)
 		manager.role = role
 		manager.onTurnStartRejected = func() { go manager.drainPendingMessages(s) }
-		manager.recordDrainedQueued = func(ctx context.Context, qm db.QueuedMessage, messages []llm.Message) error {
-			return s.recordDrainedQueuedMessages(ctx, conversationID, qm.ID, messages, qm.UserEmail, qm.UserData)
+		manager.recordDrainedQueued = func(ctx context.Context, qm db.QueuedMessage, messages []llm.Message) (int64, error) {
+			return s.recordDrainedQueuedMessages(ctx, conversationID, qm, messages)
+		}
+		if role == roleTopLevel && conversation.ExternalEndpoint != nil {
+			manager.userChat = channelChat{s: s, conversationID: conversationID}
 		}
 		manager.userEmail = userEmail
 		manager.serverPort = s.listenPort
+		manager.serverSocket = s.socketPath
 		manager.keepRecentTokens = s.keepRecentTokens()
 		switch role {
 		case roleSubagent:
@@ -1193,7 +1209,25 @@ func (s *Server) recordMessage(ctx context.Context, conversationID string, messa
 		return err
 	}
 	_, err = s.insertMessages(ctx, conversationID, []db.CreateMessageParams{params})
-	return err
+	if err != nil {
+		return err
+	}
+	// A final message_parent(end_turn=true) wrote an excluded end marker
+	// after delivering the report. Only a regular final reply (or visible
+	// error) needs a separate completion notice for its parent.
+	if params.MarkAgentDone && !params.ExcludedFromContext && messageText(message) != "[Operation cancelled]" {
+		kind := "regular_final"
+		if params.Type == db.MessageTypeError {
+			kind = "error"
+		}
+		s.mu.Lock()
+		manager := s.activeConversations[conversationID]
+		s.mu.Unlock()
+		if manager != nil && manager.role == roleSubagent {
+			go s.notifySubagentCompletion(conversationID, kind)
+		}
+	}
+	return nil
 }
 
 // insertMessages is the one way recorded rows enter a conversation. It writes
@@ -1227,28 +1261,33 @@ func (s *Server) insertMessages(ctx context.Context, conversationID string, para
 // neither the rows nor the array change persists, so the item cannot be fed
 // twice. The first row removes the queued entry; the last row carries the
 // user provenance captured at queue time (drain runs on a background
-// context). Synthetic transcription audit rows stay unattributed.
-func (s *Server) recordDrainedQueuedMessages(ctx context.Context, conversationID, queuedID string, messages []llm.Message, userEmail string, userData json.RawMessage) error {
+// context). Synthetic transcription audit rows stay unattributed. Returns
+// the user row's sequence ID for rendering its external wrapper to the LLM.
+func (s *Server) recordDrainedQueuedMessages(ctx context.Context, conversationID string, qm db.QueuedMessage, messages []llm.Message) (int64, error) {
 	paramsList := make([]db.CreateMessageParams, 0, len(messages))
 	for i, message := range messages {
 		var userDataArgs []interface{}
-		if i == len(messages)-1 && len(userData) > 0 {
-			userDataArgs = append(userDataArgs, userData)
+		if i == len(messages)-1 && len(qm.UserData) > 0 {
+			userDataArgs = append(userDataArgs, qm.UserData)
 		}
 		params, err := s.buildCreateMessageParams(conversationID, message, llm.Usage{}, nil, userDataArgs...)
 		if err != nil {
-			return err
+			return 0, err
 		}
 		if i == 0 {
-			params.RemoveQueuedID = queuedID
+			params.RemoveQueuedID = qm.ID
 		}
 		if i == len(messages)-1 {
-			params.UserEmail = userEmail
+			params.UserEmail = qm.UserEmail
+			params.ExternalMessageID = qm.ExternalMessageID
 		}
 		paramsList = append(paramsList, params)
 	}
-	_, err := s.insertMessages(ctx, conversationID, paramsList)
-	return err
+	created, err := s.insertMessages(ctx, conversationID, paramsList)
+	if err != nil {
+		return 0, err
+	}
+	return created[len(created)-1].SequenceID, nil
 }
 
 // userEmailContextKey carries the authenticated exe.dev account (from the
@@ -1257,9 +1296,10 @@ func (s *Server) recordDrainedQueuedMessages(ctx context.Context, conversationID
 // Only the immediate-send path uses this; queued messages persist the email in
 // their QueuedMessage entry instead (drain runs on a background context).
 type (
-	userEmailContextKey       struct{}
-	turnUserDataContextKey    struct{}
-	localCLIRequestContextKey struct{}
+	userEmailContextKey         struct{}
+	externalMessageIDContextKey struct{}
+	turnUserDataContextKey      struct{}
+	localCLIRequestContextKey   struct{}
 )
 
 // contextWithUserEmail returns a child context carrying userEmail. An empty
@@ -1273,6 +1313,17 @@ func contextWithUserEmail(ctx context.Context, userEmail string) context.Context
 func userEmailFromContext(ctx context.Context) string {
 	email, _ := ctx.Value(userEmailContextKey{}).(string)
 	return email
+}
+
+// contextWithExternalMessageID carries a channel message's id, like
+// contextWithUserEmail, to the row that records the user turn.
+func contextWithExternalMessageID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, externalMessageIDContextKey{}, id)
+}
+
+func externalMessageIDFromContext(ctx context.Context) string {
+	id, _ := ctx.Value(externalMessageIDContextKey{}).(string)
+	return id
 }
 
 func contextWithTurnUserData(ctx context.Context, userData any) context.Context {
@@ -1329,11 +1380,23 @@ func (s *Server) recordTurnStartMessage(ctx context.Context, conversationID stri
 	// serves tool_result rows that carry MessageRoleUser — it's safe to stamp
 	// the email here unconditionally.
 	params.UserEmail = userEmailFromContext(ctx)
+	params.ExternalMessageID = externalMessageIDFromContext(ctx)
 	created, err := s.insertMessages(ctx, conversationID, []db.CreateMessageParams{params})
 	if err != nil {
 		return nil, err
 	}
+	s.resumeParentCompletions(conversationID)
 	return &created[0], nil
+}
+
+// resumeParentCompletions reopens report delivery after the user starts new
+// work. A send racing with Stop cannot reopen the fence during its teardown.
+func (s *Server) resumeParentCompletions(conversationID string) {
+	s.mu.Lock()
+	if !s.stoppingParents[conversationID] {
+		delete(s.stoppedParents, conversationID)
+	}
+	s.mu.Unlock()
 }
 
 // recordMessages records several messages for one conversation in a single
@@ -1349,6 +1412,7 @@ func (s *Server) recordMessages(ctx context.Context, conversationID string, msgs
 		if err != nil {
 			return err
 		}
+		params.ExternalMessageID = m.externalMessageID
 		paramsList = append(paramsList, params)
 	}
 	_, err := s.insertMessages(ctx, conversationID, paramsList)
@@ -1357,10 +1421,11 @@ func (s *Server) recordMessages(ctx context.Context, conversationID string, msgs
 
 // recordMessageInput is one message to record via recordMessages.
 type recordMessageInput struct {
-	message    llm.Message
-	usage      llm.Usage
-	otherUsage []llm.PurposedUsage
-	userData   []interface{}
+	message           llm.Message
+	usage             llm.Usage
+	otherUsage        []llm.PurposedUsage
+	userData          []interface{}
+	externalMessageID string
 }
 
 // getMessageType determines the message type from an LLM message
@@ -1483,11 +1548,15 @@ func publicHostname() string {
 
 // conversationURL returns the full URL for a conversation, using slug if available.
 func (s *Server) conversationURL(slug string) string {
-	hostname := publicHostname()
-	path := "/"
-	if slug != "" {
-		path = "/c/" + slug
+	if slug == "" {
+		return s.publicURL("/")
 	}
+	return s.publicURL("/c/" + slug)
+}
+
+// publicURL returns the absolute URL of path on the server's public address.
+func (s *Server) publicURL(path string) string {
+	hostname := publicHostname()
 	if s.listenPort == 443 || s.listenPort == 0 {
 		return fmt.Sprintf("https://%s%s", hostname, path)
 	}
@@ -1496,18 +1565,21 @@ func (s *Server) conversationURL(slug string) string {
 
 // hasActiveDelegatedWork reports whether conversationID has a running
 // background job or a working subagent.
-func (s *Server) hasActiveDelegatedWork(conversationID string) bool {
-	if len(s.runningBackgroundJobsOf(conversationID)) > 0 {
-		return true
-	}
-	children, err := s.db.GetSubagents(context.Background(), conversationID)
+func (s *Server) hasActiveDelegatedWork(ctx context.Context, conversationID string) (bool, error) {
+	jobs, err := s.runningBackgroundJobsOf(ctx, conversationID)
 	if err != nil {
-		s.logger.Warn("failed to load subagents", "conversationID", conversationID, "error", err)
-		return false
+		return false, err
+	}
+	if len(jobs) > 0 {
+		return true, nil
+	}
+	children, err := s.db.GetSubagents(ctx, conversationID)
+	if err != nil {
+		return false, fmt.Errorf("load subagents: %w", err)
 	}
 	return slices.ContainsFunc(children, func(c generated.Conversation) bool {
 		return c.AgentWorking && isManagedChild(c) && !isBtwReader(c)
-	})
+	}), nil
 }
 
 // publishConversationState broadcasts a conversation state update to ALL active
@@ -1529,9 +1601,17 @@ func (s *Server) publishConversationState(state ConversationState) {
 		// with disable_notifications suppress all end-of-turn notifications
 		// (push, email, discord, ntfy) and hooks, same as subagents.
 		notifyDisabled := convErr == nil && db.ParseConversationOptions(conv.ConversationOptions).DisableNotifications
-		// Work still running for this conversation will wake it again when it
-		// finishes, so that later turn is the one worth notifying about.
-		suppressNotify := isSubagent || notifyDisabled || s.hasActiveDelegatedWork(state.ConversationID)
+		suppressNotify := isSubagent || notifyDisabled
+		if !suppressNotify {
+			// Work still running for this conversation will wake it again when
+			// it finishes, so that later turn is the one worth notifying about.
+			// If that can't be told, don't announce a finish that may not be one.
+			delegated, err := s.hasActiveDelegatedWork(context.Background(), state.ConversationID)
+			if err != nil {
+				s.logger.Error("Failed to check delegated work", "conversationID", state.ConversationID, "error", err)
+			}
+			suppressNotify = delegated || err != nil
+		}
 		var hooks []db.ConversationHook
 		if !suppressNotify {
 			s.mu.Lock()
@@ -1733,6 +1813,17 @@ func (s *Server) StartWithListener(listener net.Listener) error {
 	return s.StartWithListeners(listener, "")
 }
 
+// tcpHandler wraps mux in the TCP listener's full middleware (applied in
+// reverse order: last added = first executed).
+func (s *Server) tcpHandler(mux http.Handler) http.Handler {
+	h := LoggerMiddleware(s.logger)(mux)
+	h = http.NewCrossOriginProtection().Handler(h)
+	if s.requireHeader != "" {
+		h = RequireHeaderMiddleware(s.requireHeader)(h)
+	}
+	return h
+}
+
 // StartWithListeners starts the HTTP server on the given TCP listener and optionally
 // also on a Unix socket. The TCP listener gets full middleware (CSRF, requireHeader, logger).
 // The Unix socket listener gets only the logger middleware (no CSRF, no requireHeader)
@@ -1762,16 +1853,18 @@ func (s *Server) StartWithListeners(tcpListener net.Listener, socketPath string)
 	mux := http.NewServeMux()
 	s.RegisterRoutes(mux)
 
-	// TCP handler: full middleware (applied in reverse order: last added = first executed)
-	tcpHandler := LoggerMiddleware(s.logger)(mux)
-	cop := http.NewCrossOriginProtection()
-	tcpHandler = cop.Handler(tcpHandler)
-	if s.requireHeader != "" {
-		tcpHandler = RequireHeaderMiddleware(s.requireHeader)(tcpHandler)
+	tcpServer := &http.Server{
+		Handler: s.tcpHandler(mux),
 	}
 
-	tcpServer := &http.Server{
-		Handler: tcpHandler,
+	// Listen on the socket before serving: conversations export it as SHELLEY_SOCKET.
+	var unixListener net.Listener
+	if socketPath != "" {
+		if unixListener, err = s.listenSocket(socketPath); err != nil {
+			s.logger.Error("Failed to create Unix socket listener", "error", err, "path", socketPath)
+			tcpListener.Close()
+			return err
+		}
 	}
 
 	// Start cleanup routine
@@ -1801,33 +1894,7 @@ func (s *Server) StartWithListeners(tcpListener net.Listener, socketPath string)
 
 	// Optionally start Unix socket server
 	var socketServer *http.Server
-	var actualSocketPath string
-	if socketPath != "" {
-		actualSocketPath = resolveSocketPath(socketPath, s.logger)
-
-		// Ensure the directory exists
-		if err := os.MkdirAll(filepath.Dir(actualSocketPath), 0o700); err != nil {
-			s.logger.Error("Failed to create socket directory", "error", err)
-			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer shutdownCancel()
-			tcpServer.Shutdown(shutdownCtx)
-			return err
-		}
-
-		unixListener, err := net.Listen("unix", actualSocketPath)
-		if err != nil {
-			s.logger.Error("Failed to create Unix socket listener", "error", err, "path", actualSocketPath)
-			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer shutdownCancel()
-			tcpServer.Shutdown(shutdownCtx)
-			return err
-		}
-
-		// Make socket accessible to the current user only
-		if err := os.Chmod(actualSocketPath, 0o600); err != nil {
-			s.logger.Warn("Failed to chmod socket", "path", actualSocketPath, "error", err)
-		}
-
+	if unixListener != nil {
 		// Unix socket handler: relaxed middleware (only logger, no CSRF or
 		// requireHeader). Mark it trusted so the CLI may attach sender
 		// provenance that browser/TCP callers cannot forge. Same-UID processes
@@ -1840,7 +1907,7 @@ func (s *Server) StartWithListeners(tcpListener net.Listener, socketPath string)
 		}
 
 		go func() {
-			s.logger.Info("Unix socket server starting", "path", actualSocketPath)
+			s.logger.Info("Unix socket server starting", "path", s.socketPath)
 			if err := socketServer.Serve(unixListener); err != nil && err != http.ErrServerClosed {
 				serverErrCh <- err
 			}
@@ -1849,7 +1916,16 @@ func (s *Server) StartWithListeners(tcpListener net.Listener, socketPath string)
 
 	// Resume conversations interrupted by an upgrade restart now that the
 	// listeners (and therefore ports, streams and the subagent runner) are live.
-	go s.resumeInterruptedConversations(context.Background(), resumeTurns)
+	// Channel queues drain now, and again once the resumes settle: a resumed
+	// turn drains its queue when it ends, but one whose resume failed is left
+	// idle. Draining twice is harmless; idle drains coalesce.
+	go s.recoverChannelQueues(context.Background())
+	go func() {
+		s.resumeInterruptedConversations(context.Background(), resumeTurns)
+		if len(resumeTurns) > 0 {
+			s.recoverChannelQueues(context.Background())
+		}
+	}()
 
 	// Report background jobs a previous process left running or unreported.
 	if err := s.recoverBackgroundJobs(context.Background()); err != nil {
@@ -1888,6 +1964,8 @@ func (s *Server) StartWithListeners(tcpListener net.Listener, socketPath string)
 	// it by the shutdown context so a hung stopLoop can't starve HTTP
 	// shutdown's deadline.
 	s.stopAllConversations(ctx)
+	// Before HTTP shutdown, which waits for in-flight MCP requests.
+	s.mcp.Close()
 
 	if err := tcpServer.Shutdown(ctx); err != nil {
 		s.logger.Error("TCP server forced to shutdown", "error", err)
@@ -1897,7 +1975,7 @@ func (s *Server) StartWithListeners(tcpListener net.Listener, socketPath string)
 		if err := socketServer.Shutdown(ctx); err != nil {
 			s.logger.Error("Unix socket server forced to shutdown", "error", err)
 		}
-		os.Remove(actualSocketPath)
+		os.Remove(s.socketPath)
 	}
 
 	s.logger.Info("Server exited")
@@ -2020,6 +2098,29 @@ func (s *Server) performUpgradeAndRestart(ctx context.Context, versionInfo *Vers
 	// Exit to trigger restart (systemd will restart us)
 	time.Sleep(100 * time.Millisecond)
 	os.Exit(0)
+}
+
+// listenSocket listens on the Unix socket at socketPath, made absolute, or
+// at the next free variant of it (see resolveSocketPath), and records the
+// path in s.socketPath.
+func (s *Server) listenSocket(socketPath string) (net.Listener, error) {
+	abs, err := filepath.Abs(socketPath)
+	if err != nil {
+		return nil, err
+	}
+	s.socketPath = resolveSocketPath(abs, s.logger)
+	if err := os.MkdirAll(filepath.Dir(s.socketPath), 0o700); err != nil {
+		return nil, fmt.Errorf("create socket directory: %w", err)
+	}
+	ln, err := net.Listen("unix", s.socketPath)
+	if err != nil {
+		return nil, err
+	}
+	// Make socket accessible to the current user only
+	if err := os.Chmod(s.socketPath, 0o600); err != nil {
+		s.logger.Warn("Failed to chmod socket", "path", s.socketPath, "error", err)
+	}
+	return ln, nil
 }
 
 // resolveSocketPath finds an available socket path. If the requested path has a

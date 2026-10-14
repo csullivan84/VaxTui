@@ -1,8 +1,8 @@
 -- name: CreateMessage :one
 -- created_at is normally left NULL to default to CURRENT_TIMESTAMP; see
 -- db.CreateMessageParams.CreatedAt for who overrides it and why.
-INSERT INTO messages (message_id, conversation_id, sequence_id, generation, type, llm_data, user_data, usage_data, display_data, excluded_from_context, llm_api_url, model_name, user_email, other_usage_data, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(sqlc.narg('created_at'), CURRENT_TIMESTAMP))
+INSERT INTO messages (message_id, conversation_id, sequence_id, generation, type, llm_data, user_data, usage_data, display_data, excluded_from_context, llm_api_url, model_name, user_email, other_usage_data, external_message_id, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(sqlc.narg('created_at'), CURRENT_TIMESTAMP))
 RETURNING *;
 
 -- name: GetNextSequenceID :one
@@ -177,7 +177,7 @@ SELECT m.message_id, m.conversation_id, m.sequence_id, m.type,
        m.llm_data, m.user_data, m.usage_data, m.created_at,
        m.display_data, m.excluded_from_context, m.generation,
        m.llm_api_url, m.model_name, m.forked_from_message_id, m.user_email,
-       m.other_usage_data
+       m.other_usage_data, m.external_message_id
 FROM messages m
 WHERE m.conversation_id = ? AND m.type = 'agent'
   AND m.sequence_id > COALESCE(
@@ -185,3 +185,37 @@ WHERE m.conversation_id = ? AND m.type = 'agent'
      WHERE u.conversation_id = ? AND u.type = 'user'),
     0)
 ORDER BY m.sequence_id DESC;
+
+-- name: ListTypedUserMessages :many
+-- Messages the user typed: user messages that carry neither a tool result nor
+-- machine metadata, other than the stamps of a copy that a compaction carried
+-- into a later generation. Originals come first, newest first, then copies: a
+-- copy's original, when the conversation has it, is the message the UI shows;
+-- a fork of a compacted generation has only the copies.
+SELECT * FROM messages
+WHERE conversation_id = ? AND type = 'user'
+  AND (user_data IS NULL OR user_data IN ('', 'null') OR (
+    json_valid(user_data) AND NOT EXISTS (
+      SELECT 1 FROM json_each(messages.user_data) u
+      WHERE u.key NOT IN ('compaction_carried', 'carried_from_sequence_id')
+    )
+  ))
+  AND NOT EXISTS (
+    SELECT 1 FROM json_each(messages.llm_data, '$.Content') c
+    WHERE json_extract(c.value, '$.Type') = 6
+  )
+ORDER BY user_data LIKE '%compaction_carried%', sequence_id DESC;
+
+-- name: GetAgentMessageBefore :one
+-- The newest agent message before sequence_id: for a tool-result message,
+-- the message whose tool calls it answers.
+SELECT * FROM messages
+WHERE conversation_id = ? AND type = 'agent' AND sequence_id < ?
+ORDER BY sequence_id DESC
+LIMIT 1;
+
+-- name: HasExternalMessage :one
+-- Whether a channel message was already recorded in the conversation.
+SELECT EXISTS (
+  SELECT 1 FROM messages WHERE conversation_id = ? AND external_message_id = ?
+);

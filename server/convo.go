@@ -127,6 +127,7 @@ type ConversationManager struct {
 	cwd                   string // working directory for tools
 	userEmail             string // exe.dev auth email, from X-ExeDev-Email header
 	serverPort            int    // TCP port the shelley server listens on, for SHELLEY_PORT/SHELLEY_URL
+	serverSocket          string // Unix socket the shelley server listens on, for SHELLEY_SOCKET
 	slug                  string // conversation slug, for SHELLEY_CONVERSATION_SLUG
 
 	// agentWorking tracks whether the agent is currently working.
@@ -181,7 +182,10 @@ type ConversationManager struct {
 	onTurnStartRejected func()
 	// recordDrainedQueued records a queued item's messages and removes the item
 	// from the queue in one transaction.
-	recordDrainedQueued func(ctx context.Context, qm db.QueuedMessage, messages []llm.Message) error
+	recordDrainedQueued func(ctx context.Context, qm db.QueuedMessage, messages []llm.Message) (int64, error)
+	// userChat, set for a top-level conversation bound to an external chat,
+	// is where message_user's messages also go.
+	userChat claudetool.UserChat
 
 	// idleWaiters are closed at the next working→idle transition; see idle.
 	idleWaiters []chan struct{}
@@ -686,6 +690,12 @@ func (cm *ConversationManager) acceptUserMessage(ctx context.Context, service ll
 			cm.discardUnstartedLoopLocked(loopInstance)
 		}
 		return false, "", fmt.Errorf("turn-start recorder returned no message")
+	}
+	if turnUserDataFromContext(ctx) == nil && cm.showsSequenceIDs() && typedUserForLLM(message, nil) {
+		modelMessage, err = messageWithSequenceID(modelMessage, derefString(created.ExternalMessageID), created.SequenceID)
+		if err != nil {
+			return false, created.MessageID, fmt.Errorf("render user message: %w", err)
+		}
 	}
 
 	cm.mu.Lock()
@@ -1220,8 +1230,7 @@ func (cm *ConversationManager) QueueMessage(ctx context.Context, s *Server, mode
 }
 
 // InjectMessage queues message like QueueMessage, but a running turn takes
-// it at its next LLM round instead of after the turn ends. A parent uses it
-// to steer a busy subagent.
+// it at its next LLM round instead of after the turn ends.
 func (cm *ConversationManager) InjectMessage(ctx context.Context, s *Server, modelID string, message llm.Message) error {
 	return cm.queueMessage(ctx, s, modelID, message, true)
 }
@@ -1232,6 +1241,18 @@ func (cm *ConversationManager) queueMessage(ctx context.Context, s *Server, mode
 	cm.loopLifecycleMu.Lock()
 	defer cm.loopLifecycleMu.Unlock()
 	cm.waitForLoopTeardownLocked()
+	// A subagent report must not slip between Stop's initial check and its
+	// queue clear. Stop raises this fence before taking the same lifecycle
+	// lock; whichever obtains it first determines whether the report lands
+	// before Stop (and gets cleared) or is rejected afterward.
+	if source, ok := turnUserDataFromContext(ctx).(senderMessageUserData); ok && source.SenderRelationship == senderRelationshipSubagent {
+		s.mu.Lock()
+		stopped := s.stoppedParents[cm.conversationID]
+		s.mu.Unlock()
+		if stopped {
+			return fmt.Errorf("parent conversation %s was stopped", cm.conversationID)
+		}
+	}
 
 	llmJSON, err := json.Marshal(message)
 	if err != nil {
@@ -1242,16 +1263,20 @@ func (cm *ConversationManager) queueMessage(ctx context.Context, s *Server, mode
 		return fmt.Errorf("failed to marshal queued user data: %w", err)
 	}
 	qm := db.QueuedMessage{
-		ID:        uuid.New().String(),
-		Llm:       llmJSON,
-		CreatedAt: time.Now().UTC(),
-		Model:     modelID,
-		UserEmail: userEmailFromContext(ctx),
-		UserData:  userData,
-		Inject:    midTurn,
+		ID:                uuid.New().String(),
+		Llm:               llmJSON,
+		CreatedAt:         time.Now().UTC(),
+		Model:             modelID,
+		UserEmail:         userEmailFromContext(ctx),
+		UserData:          userData,
+		Inject:            midTurn,
+		ExternalMessageID: externalMessageIDFromContext(ctx),
 	}
 	if _, err := s.db.AppendQueuedMessage(ctx, cm.conversationID, qm); err != nil {
 		return fmt.Errorf("failed to append queued message: %w", err)
+	}
+	if turnUserDataFromContext(ctx) == nil {
+		s.resumeParentCompletions(cm.conversationID)
 	}
 	cm.Touch()
 
@@ -1354,8 +1379,8 @@ func (cm *ConversationManager) takeInjectable(ctx context.Context, generation ui
 	// Right after a compaction the nudger only knows the size from before
 	// it; the next response reports the new one.
 	if nudger != nil && !compacted {
-		if text, ok := nudger.take(); ok {
-			nudge, err := cm.recordContextNudge(ctx, text)
+		if size, ok := nudger.take(); ok {
+			nudge, err := cm.recordContextNudge(ctx, size)
 			if err != nil {
 				return inj, err
 			}
@@ -1417,7 +1442,14 @@ func (cm *ConversationManager) recordQueued(ctx context.Context, qm db.QueuedMes
 	if fed, err = messageWithSenderProvenance(user, qm.UserData); err != nil {
 		return user, fed, err
 	}
-	return user, fed, cm.recordDrainedQueued(ctx, qm, messages)
+	sequenceID, err := cm.recordDrainedQueued(ctx, qm, messages)
+	if err != nil {
+		return user, fed, err
+	}
+	if cm.showsSequenceIDs() && typedUserForLLM(user, qm.UserData) {
+		fed, err = messageWithSequenceID(fed, qm.ExternalMessageID, sequenceID)
+	}
+	return user, fed, err
 }
 
 // messageText concatenates a message's text blocks.
@@ -1558,22 +1590,24 @@ func (cm *ConversationManager) drainPendingMessagesOwned(s *Server) {
 func (cm *ConversationManager) feedQueued(ctx context.Context, s *Server, queued []db.QueuedMessage) (bool, error) {
 	cm.mu.Lock()
 	loopInstance := cm.loop
-	modelID := cm.modelID
 	cm.mu.Unlock()
 
 	cm.logger.Info("Draining queued messages", "count", len(queued))
 	if loopInstance == nil {
+		// Hydrate before reading the model: a stopped loop forgets it, and
+		// messages queued by subagents and background jobs carry none.
+		// Queued messages have no messages rows until they are recorded
+		// below, so hydrating history cannot load them twice.
+		if err := cm.Hydrate(ctx); err != nil {
+			return false, fmt.Errorf("failed to hydrate: %w", err)
+		}
+		modelID := cm.GetModel()
 		if i := slices.IndexFunc(queued, func(qm db.QueuedMessage) bool { return qm.Model != "" }); i >= 0 {
 			modelID = queued[i].Model
 		}
 		svc, err := s.llmManager.GetService(modelID)
 		if err != nil {
 			return false, fmt.Errorf("failed to get LLM service %q: %w", modelID, err)
-		}
-		// Queued messages have no messages rows until they are recorded
-		// below, so hydrating history cannot load them twice.
-		if err := cm.Hydrate(ctx); err != nil {
-			return false, fmt.Errorf("failed to hydrate: %w", err)
 		}
 		if err := cm.ensureLoopLocked(svc, modelID); err != nil {
 			return false, fmt.Errorf("failed to start loop: %w", err)
@@ -1686,10 +1720,32 @@ func (cm *ConversationManager) recreateBtwReaderSystemPrompt(ctx context.Context
 	return created, nil
 }
 
+// mcpServerInfos lists the registered MCP servers for the system prompt.
+func (cm *ConversationManager) mcpServerInfos(ctx context.Context) ([]MCPServerInfo, error) {
+	var rows []generated.McpServer
+	err := cm.db.Queries(ctx, func(q *generated.Queries) (err error) {
+		rows, err = q.ListMCPServers(ctx)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	servers := make([]MCPServerInfo, len(rows))
+	for i, row := range rows {
+		servers[i] = MCPServerInfo{Name: row.Name, Description: row.Description}
+	}
+	return servers, nil
+}
+
 func (cm *ConversationManager) createSystemPrompt(ctx context.Context) (*generated.Message, error) {
 	var opts []SystemPromptOption
 	if cm.userEmail != "" {
 		opts = append(opts, WithUserEmail(cm.userEmail))
+	}
+	if servers, err := cm.mcpServerInfos(ctx); err != nil {
+		cm.logger.Warn("failed to list MCP servers for system prompt", "error", err)
+	} else if len(servers) > 0 {
+		opts = append(opts, WithMCPServers(servers))
 	}
 	systemPrompt, promptSkills, err := generateSystemPromptWithIntegrationSkills(cm.cwd, cm.integrationSkills.Skills(ctx), opts...)
 	if err != nil {
@@ -1815,11 +1871,23 @@ func (cm *ConversationManager) systemPromptDisplayData(promptSkills []skills.Ski
 	cfg.ToolOverrides = cm.conversationOptions.ToolOverrides
 	cfg.DisableAllTools = cm.conversationOptions.DisableAllTools
 	cfg.InPlaceCompactor = inPlaceCompactor{cm: cm}
+	cfg.UserMessageFinder = cm.userMessageFinder()
+	cfg.UserChat = cm.userChat
 	return systemPromptDisplayData(cfg, promptSkills)
 }
 
 func (cm *ConversationManager) createSubagentSystemPrompt(ctx context.Context) (*generated.Message, error) {
-	systemPrompt, promptSkills, err := generateSubagentSystemPromptWithIntegrationSkills(cm.cwd, cm.role == roleSubagent, cm.integrationSkills.Skills(ctx))
+	// Only subagents use MCP tools; internal workers (commit tours,
+	// transcriptions) don't, and notifyMCPServersChanged skips them too.
+	var mcpServers []MCPServerInfo
+	if cm.role == roleSubagent {
+		if servers, err := cm.mcpServerInfos(ctx); err != nil {
+			cm.logger.Warn("failed to list MCP servers for subagent system prompt", "error", err)
+		} else {
+			mcpServers = servers
+		}
+	}
+	systemPrompt, promptSkills, err := generateSubagentSystemPromptWithIntegrationSkills(cm.cwd, cm.role == roleSubagent, cm.integrationSkills.Skills(ctx), mcpServers)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate subagent system prompt: %w", err)
 	}
@@ -1886,6 +1954,7 @@ func (cm *ConversationManager) contextItems(messages []generated.Message) ([]con
 			}
 		}
 	}
+	showSequenceIDs := cm.showsSequenceIDs()
 	for i := range history {
 		src := history[i].source
 		if src == nil || src.Type != string(db.MessageTypeUser) {
@@ -1899,6 +1968,16 @@ func (cm *ConversationManager) contextItems(messages []generated.Message) ([]con
 		wrapped, err := messageWithSenderProvenance(history[i].message, userData)
 		if err != nil {
 			return nil, nil, fmt.Errorf("apply sender provenance to message %s: %w", src.MessageID, err)
+		}
+		if showSequenceIDs && typedUserForLLM(history[i].message, userData) {
+			origin, err := originSequenceID(*src)
+			if err != nil {
+				return nil, nil, fmt.Errorf("origin sequence of message %s: %w", src.MessageID, err)
+			}
+			wrapped, err = messageWithSequenceID(wrapped, derefString(src.ExternalMessageID), origin)
+			if err != nil {
+				return nil, nil, fmt.Errorf("render user message %s: %w", src.MessageID, err)
+			}
 		}
 		history[i].message = wrapped
 	}
@@ -2068,6 +2147,7 @@ func (cm *ConversationManager) ensureLoopLocked(service llm.Service, modelID str
 		Model:            modelID,
 		UserEmail:        cm.userEmail,
 		Port:             cm.serverPort,
+		Socket:           cm.serverSocket,
 	}
 	cm.mu.Unlock()
 
@@ -2141,9 +2221,12 @@ func (cm *ConversationManager) ensureLoopLocked(service llm.Service, modelID str
 		}
 	}
 	toolSetConfig.InPlaceCompactor = inPlaceCompactor{cm: cm, generation: generation}
+	toolSetConfig.UserMessageFinder = cm.userMessageFinder()
+	toolSetConfig.UserChat = cm.userChat
 	toolSet := claudetool.NewToolSet(processCtx, toolSetConfig)
 	var nudger *contextNudger
-	if claudetool.IsToolEnabled(claudetool.CompactInPlaceName, toolSetConfig.ToolOverrides, toolSetConfig.DisableAllTools) {
+	if claudetool.IsToolEnabled(claudetool.CompactInPlaceName, toolSetConfig.ToolOverrides, toolSetConfig.DisableAllTools) &&
+		!conversationOpts.DisableCompactNudges {
 		nudger = newContextNudger(conversationOpts.CompactNudgeTokens, lastContextWindowSize(dbMessages))
 		record := recordMessage
 		recordMessage = func(ctx context.Context, message llm.Message, usage llm.Usage, otherUsage []llm.PurposedUsage) error {
@@ -2513,9 +2596,9 @@ func (cm *ConversationManager) recordGitStateChange(ctx context.Context, state *
 
 // ModelChangeUserData is the structured data stored in user_data for
 // modelchange marker messages recorded when a conversation switches models
-// and/or reasoning level. The Reasoning* fields carry user-facing level names
-// ("off", "low", ..., or "default" for the service default); they are empty
-// when reasoning didn't change.
+// and/or reasoning level, or enables a tool (ToolEnabled). The Reasoning*
+// fields carry user-facing level names ("off", "low", ..., or "default" for
+// the service default); they are empty when reasoning didn't change.
 type ModelChangeUserData struct {
 	From          string `json:"from,omitempty"`
 	To            string `json:"to,omitempty"`
@@ -2526,6 +2609,9 @@ type ModelChangeUserData struct {
 	// the model didn't change; the UI falls back to From/To.
 	FromDisplay string `json:"from_display,omitempty"`
 	ToDisplay   string `json:"to_display,omitempty"`
+	// ToolEnabled names a tool enabled mid-conversation (see
+	// EnableCompactInPlace); the model and reasoning are unchanged then.
+	ToolEnabled string `json:"tool_enabled,omitempty"`
 	Text        string `json:"text"`
 }
 

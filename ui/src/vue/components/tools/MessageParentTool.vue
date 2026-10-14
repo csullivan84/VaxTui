@@ -16,6 +16,7 @@
       <div class="tool-summary">
         <span class="tool-emoji" :class="{ running: isRunning }" aria-hidden="true">💬</span>
         <span class="tool-command">→ parent: {{ firstLine || "..." }}</span>
+        <span v-if="endTurn" class="tool-command">(final)</span>
         <ToolStatusIcon v-if="isComplete && hasError" state="error" class="tool-error" />
         <ToolStatusIcon v-if="isComplete && !hasError" state="ok" class="tool-success" />
       </div>
@@ -40,7 +41,7 @@
       <RunningToolTime v-if="isRunning && isExpanded" :start-time="toolInvokedAt" />
       <div class="tool-section">
         <div class="tool-label">
-          Message:
+          {{ messageLabel }}:
           <span v-if="executionTime" class="tool-time">{{ executionTime }}</span>
         </div>
         <div class="tool-code">{{ text || "(empty)" }}</div>
@@ -84,6 +85,19 @@ const text = computed(() => {
 });
 
 const firstLine = computed(() => text.value.trim().split(/\r?\n/)[0] ?? "");
+const endTurnValue = computed(() => {
+  const ti = props.toolInput;
+  if (typeof ti !== "object" || ti === null || !("end_turn" in ti)) return null;
+  return typeof ti.end_turn === "boolean" ? ti.end_turn : null;
+});
+const endTurn = computed(() => endTurnValue.value === true);
+const messageLabel = computed(() =>
+  endTurnValue.value === null
+    ? "Message"
+    : endTurn.value
+      ? "Final report (ends turn)"
+      : "Progress message",
+);
 
 const resultText = computed(
   () =>
@@ -100,7 +114,7 @@ const toggleLabel = computed(
     toolOutcomeSuffix(isComplete.value, props.hasError),
 );
 const collapsedPlainText = computed(() => {
-  const message = `Message:\n${text.value || "(empty)"}`;
+  const message = `${messageLabel.value}:\n${text.value || "(empty)"}`;
   return isComplete.value && props.hasError ? `${message}\n\nError:\n${resultText.value}` : message;
 });
 </script>

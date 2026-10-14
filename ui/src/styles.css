@@ -333,9 +333,10 @@ body {
 /* Buttons */
 /* Migrated PrimeVue <Button>s inherit the legacy .btn-* letter-spacing so text
    buttons match the un-migrated ones exactly. (PrimeVue has no letter-spacing
-   token, so it lives here.) */
+   token, so it lives here.) A <Button as="a"> link isn't underlined. */
 .p-button {
   letter-spacing: -0.01em;
+  text-decoration: none;
 }
 /* Bare-element reset for legacy native <button>s. Wrapped in :where() so it has
    ZERO specificity: it still resets plain <button>s but loses to the .btn-*
@@ -1615,6 +1616,119 @@ body {
   color: var(--user-message-text);
 }
 
+/* message_user: the agent's chat bubble, its notes, and its emoji reactions
+   on the user's messages. */
+.message-agent-chat-bubble {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-right: auto;
+  max-width: 80%;
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.message-user-quote {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  max-width: 100%;
+  padding: 0.125rem 0 0.125rem 0.5rem;
+  border: 0;
+  border-left: 3px solid var(--user-message-text);
+  background: none;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--font-size-13);
+  text-align: left;
+  cursor: pointer;
+}
+
+.message-user-quote:hover:not(:disabled) {
+  border-left-color: var(--primary);
+  color: var(--text-primary);
+}
+
+.message-user-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
+.message-user-image img {
+  display: block;
+  max-width: min(100%, 20rem);
+  max-height: 16rem;
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+}
+
+.message-user-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  max-width: 100%;
+  padding: 0.375rem 0.625rem;
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-size: var(--font-size-13);
+  text-decoration: none;
+}
+
+.message-user-file:hover {
+  border-color: var(--text-tertiary);
+  background: var(--bg-hover);
+}
+
+.message-user-note {
+  padding: 0.25rem 1rem;
+  color: var(--text-secondary);
+  font-size: var(--font-size-13);
+}
+
+.message-user-quote-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-decoration: underline dotted;
+  cursor: pointer;
+}
+
+.message-reactions {
+  position: relative;
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.25rem;
+  margin-top: -0.75rem;
+  padding-right: 0.5rem;
+}
+
+.message-reaction {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.125rem;
+  padding: 0.0625rem 0.375rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-base);
+  font-size: var(--font-size-14);
+  line-height: 1.4;
+}
+
+.message-user-file-size,
+.message-reaction-count {
+  color: var(--text-secondary);
+  font-size: var(--font-size-11);
+  white-space: nowrap;
+}
+
 /* Author email label, shown on user messages when multiple users have
    participated in the conversation. Right-aligned to match user bubbles. */
 .message-author-email {
@@ -2092,7 +2206,9 @@ body {
   background: rgba(255, 255, 255, 0.02);
 }
 
-.tool-header--static {
+.tool-header--static,
+.message-user-quote:disabled,
+.message-user-quote-link:disabled {
   cursor: default;
 }
 
@@ -4461,8 +4577,9 @@ diffs-container {
    just dead space above the column labels and a gap below the last row. Make
    the modal a flex column and let the table fill it edge-to-edge (also lets
    scroll-height="flex" work — it needs a definite-height flex ancestor).
-   Scoped to .modal-xwide, which only this modal uses; the form/empty views
-   keep their normal padding since they don't add .models-modal-list. */
+   Scoped to .modal-xwide, which only this modal and McpServersModal use; the
+   form/empty views keep their normal padding since they don't add
+   .models-modal-list. */
 .modal.modal-xwide {
   display: flex;
   flex-direction: column;
@@ -9613,16 +9730,32 @@ button.tour-visibility-control:focus-visible,
   color: var(--text-secondary);
 }
 
-.models-error {
+.models-error,
+.models-notice {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 0.5rem;
   padding: 0.75rem 1rem;
   background: var(--error-bg);
   border: 1px solid var(--error-border);
   border-radius: 0.375rem;
   color: var(--error-text);
   margin-bottom: 1rem;
+  overflow-wrap: anywhere;
+}
+
+/* The list fills the modal edge to edge; a message above it doesn't. */
+.models-modal-list > .models-error,
+.models-modal-list > .models-notice {
+  margin: 0.25rem 1rem 0.75rem;
+}
+
+.models-notice,
+.mcp-pill-ok {
+  border-color: var(--success-border);
+  background: var(--success-bg);
+  color: var(--success-text);
 }
 
 .models-error-dismiss {
@@ -10043,6 +10176,50 @@ button.tour-visibility-control:focus-visible,
   .integrations-copy-line {
     flex-wrap: wrap;
   }
+}
+
+/* MCP Servers (McpServersModal.vue reuses the Manage Models styles). */
+.mcp-cell-clip {
+  max-width: 20rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mcp-login {
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
+  gap: 0.25rem;
+}
+
+/* Phones: the pill above its link, so the row fits next to the actions. */
+@media (max-width: 767px) {
+  .mcp-login {
+    flex-wrap: wrap;
+    justify-content: center;
+    row-gap: 0.125rem;
+  }
+}
+
+.mcp-pill {
+  padding: 0 0.375rem;
+  border: 1px solid;
+  border-radius: 9999px;
+  font-size: var(--font-size-11);
+}
+
+.mcp-pill-warn {
+  border-color: var(--warning-border);
+  background: var(--warning-bg);
+  color: var(--warning-text);
+}
+
+.mcp-header-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.375rem;
 }
 
 .models-empty {
@@ -11974,9 +12151,11 @@ kbd {
   color: var(--text-secondary);
 }
 
-/* Customized pill for an actual model/reasoning switch. Override the base
-   .message column flex so the chips lay out inline. */
-.message.msg-modelchange-switch {
+/* Customized pill for an actual model/reasoning switch, and the one-line
+   notice for a tool enabled mid-conversation (unlike the multi-line /model
+   output). Override the base .message column flex so they lay out inline. */
+.message.msg-modelchange-switch,
+.message.msg-modelchange-tool {
   flex-flow: row wrap;
   align-items: center;
   justify-content: center;
@@ -16807,4 +16986,19 @@ kbd {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   color: var(--text-primary);
+}
+
+/* The index a context nudge carries (see ContextNudgeMessage.vue): a table,
+   so it scrolls rather than wraps. */
+.msg-context-nudge-index {
+  margin: 0.25em 0 0;
+  padding: 0.5em;
+  max-height: 24em;
+  overflow: auto;
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-13);
+  background: var(--code-bg);
+  color: var(--text-primary);
+  border-radius: 4px;
 }

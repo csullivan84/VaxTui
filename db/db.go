@@ -307,6 +307,11 @@ type ConversationOptions struct {
 	// the size of its context while the compact_in_place tool is enabled.
 	// Zero means the default (160k).
 	CompactNudgeTokens int `json:"compact_nudge_tokens,omitempty"`
+	// DisableCompactNudges keeps the agent from being told its context size
+	// even though compact_in_place is enabled. Set when the user enables the
+	// tool mid-conversation (the Compact in Place button): they asked for a
+	// compaction, not for an agent that watches its context.
+	DisableCompactNudges bool `json:"disable_compact_nudges,omitempty"`
 }
 
 // ParseConversationOptions parses a JSON string into ConversationOptions.
@@ -334,9 +339,12 @@ func (db *DB) UpdateConversationOptions(ctx context.Context, conversationID stri
 	})
 }
 
-// RegisterConversationHook atomically adds hook to conversation options if absent.
-func (db *DB) RegisterConversationHook(ctx context.Context, conversationID string, hook ConversationHook) (ConversationOptions, error) {
+// ModifyConversationOptions atomically applies modify to a conversation's
+// stored options, writing them back if modify reports a change. It returns the
+// resulting options and whether they changed.
+func (db *DB) ModifyConversationOptions(ctx context.Context, conversationID string, modify func(*ConversationOptions) bool) (ConversationOptions, bool, error) {
 	var opts ConversationOptions
+	var changed bool
 	err := db.pool.Tx(ctx, func(ctx context.Context, tx *Tx) error {
 		q := generated.New(tx.Conn())
 		raw, err := q.GetConversationOptions(ctx, conversationID)
@@ -344,12 +352,9 @@ func (db *DB) RegisterConversationHook(ctx context.Context, conversationID strin
 			return err
 		}
 		opts = ParseConversationOptions(raw)
-		for _, existing := range opts.EndOfTurnHooks {
-			if existing.URL == hook.URL {
-				return nil
-			}
+		if changed = modify(&opts); !changed {
+			return nil
 		}
-		opts.EndOfTurnHooks = append(append([]ConversationHook(nil), opts.EndOfTurnHooks...), hook)
 		optsJSON, err := json.Marshal(opts)
 		if err != nil {
 			return fmt.Errorf("failed to marshal conversation options: %w", err)
@@ -359,6 +364,20 @@ func (db *DB) RegisterConversationHook(ctx context.Context, conversationID strin
 			ConversationOptions: string(optsJSON),
 		})
 	})
+	return opts, changed, err
+}
+
+// RegisterConversationHook atomically adds hook to conversation options if absent.
+func (db *DB) RegisterConversationHook(ctx context.Context, conversationID string, hook ConversationHook) (ConversationOptions, error) {
+	opts, _, err := db.ModifyConversationOptions(ctx, conversationID, func(o *ConversationOptions) bool {
+		for _, existing := range o.EndOfTurnHooks {
+			if existing.URL == hook.URL {
+				return false
+			}
+		}
+		o.EndOfTurnHooks = append(append([]ConversationHook(nil), o.EndOfTurnHooks...), hook)
+		return true
+	})
 	return opts, err
 }
 
@@ -367,26 +386,12 @@ func (db *DB) RegisterConversationHook(ctx context.Context, conversationID strin
 // returns the resulting options. reasoning is a user-facing level name
 // ("off", "minimal", "low", "medium", "high", "xhigh").
 func (db *DB) SetConversationThinkingLevel(ctx context.Context, conversationID, reasoning string) (ConversationOptions, error) {
-	var opts ConversationOptions
-	err := db.pool.Tx(ctx, func(ctx context.Context, tx *Tx) error {
-		q := generated.New(tx.Conn())
-		raw, err := q.GetConversationOptions(ctx, conversationID)
-		if err != nil {
-			return err
+	opts, _, err := db.ModifyConversationOptions(ctx, conversationID, func(o *ConversationOptions) bool {
+		if o.ThinkingLevel == reasoning {
+			return false
 		}
-		opts = ParseConversationOptions(raw)
-		if opts.ThinkingLevel == reasoning {
-			return nil
-		}
-		opts.ThinkingLevel = reasoning
-		optsJSON, err := json.Marshal(opts)
-		if err != nil {
-			return fmt.Errorf("failed to marshal conversation options: %w", err)
-		}
-		return q.UpdateConversationOptions(ctx, generated.UpdateConversationOptionsParams{
-			ConversationID:      conversationID,
-			ConversationOptions: string(optsJSON),
-		})
+		o.ThinkingLevel = reasoning
+		return true
 	})
 	return opts, err
 }
@@ -411,6 +416,36 @@ func (db *DB) CreateConversation(ctx context.Context, slug *string, userInitiate
 			Cwd:                 cwd,
 			Model:               model,
 			ConversationOptions: string(optsJSON),
+		})
+		return err
+	})
+	return &conversation, err
+}
+
+// CreateChannelConversation creates the conversation for an external chat:
+// externalID is the channel's chat id, endpoint the base URL its replies
+// are sent to ("" for none), and opts its options.
+func (db *DB) CreateChannelConversation(ctx context.Context, externalID, endpoint, model string, opts ConversationOptions) (*generated.Conversation, error) {
+	conversationID, err := GenerateConversationID()
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate conversation ID: %w", err)
+	}
+	optsJSON, err := json.Marshal(opts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal conversation options: %w", err)
+	}
+	var ep *string
+	if endpoint != "" {
+		ep = &endpoint
+	}
+	var conversation generated.Conversation
+	err = db.pool.Tx(ctx, func(ctx context.Context, tx *Tx) error {
+		conversation, err = generated.New(tx.Conn()).CreateChannelConversation(ctx, generated.CreateChannelConversationParams{
+			ConversationID:         conversationID,
+			Model:                  &model,
+			ConversationOptions:    string(optsJSON),
+			ExternalConversationID: &externalID,
+			ExternalEndpoint:       ep,
 		})
 		return err
 	})
@@ -594,10 +629,14 @@ type QueuedMessage struct {
 	// UserData is message provenance and other presentation metadata captured at
 	// queue time. It is copied to messages.user_data when the item drains.
 	UserData json.RawMessage `json:"user_data,omitempty"`
+	// ExternalMessageID is the channel's id for a message that arrived from
+	// an external chat; it is stamped onto the messages row on drain.
+	ExternalMessageID string `json:"external_message_id,omitempty"`
 	// Inject lets a running turn take the message at its next LLM round
 	// instead of waiting for the turn to end.
 	Inject bool `json:"inject,omitempty"`
-	// ID, CreatedAt, Model, UserEmail, and UserData are shared queue metadata.
+	// ID, CreatedAt, Model, UserEmail, UserData, and ExternalMessageID are
+	// shared queue metadata.
 	// Kind, State, Transcription, Error, and the optional ready Llm payload form
 	// the specialized-work variant.
 	Kind          QueuedMessageKind    `json:"kind,omitempty"`
@@ -856,20 +895,30 @@ func (db *DB) GetConversationBySlug(ctx context.Context, slug string) (*generate
 }
 
 // ConversationListItem is a conversation row plus the derived fields the
-// conversation list needs but that don't live on the conversation row: a
-// one-line preview of the trailing agent message, that message's timestamp,
-// the conversation's current max sequence_id, and its participants. All are
-// computed by correlated subqueries IN the list/search query itself (see
+// conversation list needs but that don't live on the conversation row. All
+// are computed by correlated subqueries IN the list/search query itself (see
 // conversations.sql), scoped to exactly the window of conversations returned,
 // so we never scan or JSON-decode messages for conversations off-window.
 type ConversationListItem struct {
 	generated.Conversation
-	Preview          string
-	PreviewUpdatedAt string // RFC 3339 (trailing Z), empty if there's no preview message
-	MaxSequenceID    int64
-	// Participants are the exe.dev accounts that authored messages in this
-	// conversation, with authored-message counts, sorted by email.
-	Participants []ConversationParticipant
+	// Preview is the trailing text of the most recent agent message, so the
+	// list can show a one-line summary without a separate fetch.
+	Preview string `json:"preview,omitempty"`
+	// PreviewUpdatedAt is that message's CreatedAt, RFC 3339 (trailing Z).
+	PreviewUpdatedAt string `json:"preview_updated_at,omitempty"`
+	// MaxSequenceID is the highest message sequence_id stored for this
+	// conversation. Clients use it to decide whether their cached snapshot
+	// is up to date without a separate /api/conversation/<id> roundtrip.
+	MaxSequenceID int64 `json:"max_sequence_id"`
+	// Participants are the exe.dev accounts (from the X-ExeDev-Email header)
+	// that authored messages in this conversation, with authored-message
+	// counts, sorted by email. Clients use it to filter the list down to
+	// their own conversations.
+	Participants  []ConversationParticipant `json:"participants,omitempty"`
+	SubagentCount int64                     `json:"subagent_count"`
+	// RunningBackgroundJobs counts this conversation's backgrounded bash
+	// commands that have not exited.
+	RunningBackgroundJobs int64 `json:"running_background_jobs"`
 }
 
 type ConversationParticipant struct {
@@ -952,18 +1001,20 @@ func splitPreviewPacked(packed string) (preview, updatedAt string) {
 
 // newConversationListItem assembles a list item from a conversation row and
 // the derived columns the list/search queries compute alongside it.
-func newConversationListItem(conv generated.Conversation, previewPacked string, maxSequenceID int64, participantsJSON string) (ConversationListItem, error) {
+func newConversationListItem(conv generated.Conversation, previewPacked string, maxSequenceID int64, participantsJSON string, subagentCount, runningBackgroundJobs int64) (ConversationListItem, error) {
 	participants, err := decodeParticipants(participantsJSON)
 	if err != nil {
 		return ConversationListItem{}, err
 	}
 	preview, updatedAt := splitPreviewPacked(previewPacked)
 	return ConversationListItem{
-		Conversation:     conv,
-		Preview:          preview,
-		PreviewUpdatedAt: updatedAt,
-		MaxSequenceID:    maxSequenceID,
-		Participants:     participants,
+		Conversation:          conv,
+		Preview:               preview,
+		PreviewUpdatedAt:      updatedAt,
+		MaxSequenceID:         maxSequenceID,
+		Participants:          participants,
+		SubagentCount:         subagentCount,
+		RunningBackgroundJobs: runningBackgroundJobs,
 	}, nil
 }
 
@@ -981,7 +1032,7 @@ func (db *DB) ListConversations(ctx context.Context, limit, offset int64) ([]Con
 		}
 		items = make([]ConversationListItem, len(rows))
 		for i, r := range rows {
-			item, err := newConversationListItem(r.Conversation, r.PreviewPacked, r.MaxSequenceID, r.ParticipantsJson)
+			item, err := newConversationListItem(r.Conversation, r.PreviewPacked, r.MaxSequenceID, r.ParticipantsJson, r.SubagentCount, r.RunningBackgroundJobs)
 			if err != nil {
 				return err
 			}
@@ -1006,7 +1057,7 @@ func (db *DB) ListAllConversations(ctx context.Context, limit, offset int64) ([]
 		}
 		items = make([]ConversationListItem, len(rows))
 		for i, r := range rows {
-			item, err := newConversationListItem(r.Conversation, r.PreviewPacked, r.MaxSequenceID, r.ParticipantsJson)
+			item, err := newConversationListItem(r.Conversation, r.PreviewPacked, r.MaxSequenceID, r.ParticipantsJson, r.SubagentCount, r.RunningBackgroundJobs)
 			if err != nil {
 				return err
 			}
@@ -1033,7 +1084,7 @@ func (db *DB) SearchConversations(ctx context.Context, query string, limit, offs
 		}
 		items = make([]ConversationListItem, len(rows))
 		for i, r := range rows {
-			item, err := newConversationListItem(r.Conversation, r.PreviewPacked, r.MaxSequenceID, r.ParticipantsJson)
+			item, err := newConversationListItem(r.Conversation, r.PreviewPacked, r.MaxSequenceID, r.ParticipantsJson, r.SubagentCount, r.RunningBackgroundJobs)
 			if err != nil {
 				return err
 			}
@@ -1060,7 +1111,7 @@ func (db *DB) SearchConversationsWithMessages(ctx context.Context, query string,
 		}
 		items = make([]ConversationListItem, len(rows))
 		for i, r := range rows {
-			item, err := newConversationListItem(r.Conversation, r.PreviewPacked, r.MaxSequenceID, r.ParticipantsJson)
+			item, err := newConversationListItem(r.Conversation, r.PreviewPacked, r.MaxSequenceID, r.ParticipantsJson, r.SubagentCount, r.RunningBackgroundJobs)
 			if err != nil {
 				return err
 			}
@@ -1133,7 +1184,7 @@ func (db *DB) SearchConversationsFTS(ctx context.Context, query string, limit, o
 		results = make([]ConversationSearchResult, len(convs))
 		convIDs := make([]string, len(convs))
 		for i, c := range convs {
-			item, err := newConversationListItem(c.Conversation, c.PreviewPacked, c.MaxSequenceID, c.ParticipantsJson)
+			item, err := newConversationListItem(c.Conversation, c.PreviewPacked, c.MaxSequenceID, c.ParticipantsJson, c.SubagentCount, c.RunningBackgroundJobs)
 			if err != nil {
 				return err
 			}
@@ -1638,7 +1689,8 @@ const (
 	MessageTypeGitInfo MessageType = "gitinfo" // user-visible only, not sent to LLM
 	MessageTypeWarning MessageType = "warning" // user-visible only, not sent to LLM
 	// MessageTypeModelChange marks where the conversation switched models via
-	// the /model command. User-visible only, never sent to the LLM.
+	// the /model command, or otherwise changed what its loop is built with (a
+	// tool enabled mid-conversation). User-visible only, never sent to the LLM.
 	MessageTypeModelChange MessageType = "modelchange"
 	// MessageTypeSlug records the LLM call that generated the conversation's
 	// slug. Rendered as nothing and never sent to the LLM: it exists only to
@@ -1674,7 +1726,10 @@ type CreateMessageParams struct {
 	// HTTPS proxy stamps) that authored a user message. Empty strings are
 	// stored as NULL: only user messages carry it, and requests without the
 	// header (direct/local access) leave it unset.
-	UserEmail           string
+	UserEmail string
+	// ExternalMessageID is the channel's id for a user message that arrived
+	// from an external chat. Empty strings are stored as NULL.
+	ExternalMessageID   string
 	DisplayData         interface{} // Will be JSON marshalled, tool-specific display content
 	ExcludedFromContext bool        // If true, message is stored but not sent to LLM
 	// OtherUsageData is the usage of indirect LLM calls affiliated with this
@@ -1811,6 +1866,7 @@ func insertMessageTx(ctx context.Context, q *generated.Queries, params CreateMes
 		ModelName:           nullableString(params.ModelName),
 		UserEmail:           nullableString(params.UserEmail),
 		OtherUsageData:      otherUsageDataJSON,
+		ExternalMessageID:   nullableString(params.ExternalMessageID),
 		CreatedAt:           sqliteTimeArg(params.CreatedAt),
 	})
 	if err != nil {
@@ -2119,6 +2175,36 @@ func (db *DB) ListMessagesByType(ctx context.Context, conversationID string, mes
 	return messages, err
 }
 
+// ListTypedUserMessages returns the messages the user typed in a
+// conversation, newest first.
+func (db *DB) ListTypedUserMessages(ctx context.Context, conversationID string) ([]generated.Message, error) {
+	var messages []generated.Message
+	err := db.pool.Rx(ctx, func(ctx context.Context, rx *Rx) error {
+		var err error
+		messages, err = generated.New(rx.Conn()).ListTypedUserMessages(ctx, conversationID)
+		return err
+	})
+	return messages, err
+}
+
+// GetAgentMessageBefore returns the newest agent message of a conversation
+// before sequenceID.
+func (db *DB) GetAgentMessageBefore(ctx context.Context, conversationID string, sequenceID int64) (*generated.Message, error) {
+	var message generated.Message
+	err := db.pool.Rx(ctx, func(ctx context.Context, rx *Rx) error {
+		var err error
+		message, err = generated.New(rx.Conn()).GetAgentMessageBefore(ctx, generated.GetAgentMessageBeforeParams{
+			ConversationID: conversationID,
+			SequenceID:     sequenceID,
+		})
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &message, nil
+}
+
 // ListAgentMessagesSinceLastUser returns the agent messages produced since
 // the most recent user message in a conversation, newest first (or all
 // agent messages if there is no user message). Useful for picking a
@@ -2390,27 +2476,6 @@ func (db *DB) GetSubagentOtherUsage(ctx context.Context, parentID string) ([]gen
 		return err
 	})
 	return rows, err
-}
-
-// GetSubagentCounts returns a map of parent_conversation_id -> subagent count.
-func (db *DB) GetSubagentCounts(ctx context.Context) (map[string]int64, error) {
-	var rows []generated.GetSubagentCountsRow
-	err := db.pool.Rx(ctx, func(ctx context.Context, rx *Rx) error {
-		q := generated.New(rx.Conn())
-		var err error
-		rows, err = q.GetSubagentCounts(ctx)
-		return err
-	})
-	if err != nil {
-		return nil, err
-	}
-	counts := make(map[string]int64, len(rows))
-	for _, r := range rows {
-		if r.ParentConversationID != nil {
-			counts[*r.ParentConversationID] = r.Count
-		}
-	}
-	return counts, nil
 }
 
 // GetMaxSequenceIDsForAllConversations returns a map of conversation_id -> max sequence_id.

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"regexp"
 	"slices"
@@ -92,6 +93,21 @@ func (c *compactTestConversation) seqWith(s string) int64 {
 		}
 	}
 	c.t.Fatalf("no row containing %q", s)
+	return 0
+}
+
+// callSeq returns the sequence id of the message making the tool call
+// useID: the id of its row in the index.
+func (c *compactTestConversation) callSeq(useID string) int64 {
+	c.t.Helper()
+	for seq, m := range c.rows() {
+		for _, ct := range m.Content {
+			if ct.Type == llm.ContentTypeToolUse && ct.ID == useID {
+				return seq
+			}
+		}
+	}
+	c.t.Fatalf("no call %s", useID)
 	return 0
 }
 
@@ -184,6 +200,7 @@ func TestCompactInPlaceEndToEnd(t *testing.T) {
 	hiSeq := c.seqWith("Well, hi there!")
 	firstResultSeq := c.seqWith(`FIRST_OUTPUT\n`)
 	firstUseID := c.rows()[firstResultSeq].Content[0].ToolUseID
+	firstCallSeq := c.callSeq(firstUseID)
 
 	c.turn(`compact_in_place: {"action":"index"}`)
 	index, isErr := c.lastToolOutput()
@@ -194,12 +211,15 @@ func TestCompactInPlaceEndToEnd(t *testing.T) {
 		"## Index",
 		"dead ends",
 		fmt.Sprintf("%d  ", helloSeq),
-		"bash output (trim " + firstUseID + ")",
 		"is kept as is and not listed",
 	} {
 		if !strings.Contains(index, want) {
 			t.Fatalf("index missing %q:\n%s", want, index)
 		}
+	}
+	// The call and its output share a row, under the call's id.
+	if want := regexp.MustCompile(fmt.Sprintf(`(?m)^%d +assistant +\d+ .*bash "echo FIRST_OUTPUT" → \d+$`, firstCallSeq)); !want.MatchString(index) {
+		t.Fatalf("index lacks the row of the first call and its output:\n%s", index)
 	}
 	if want := regexp.MustCompile(fmt.Sprintf(`(?m)^%d +user\* `, helloSeq)); !want.MatchString(index) {
 		t.Fatalf("index does not mark the user's message with *:\n%s", index)
@@ -209,7 +229,7 @@ func TestCompactInPlaceEndToEnd(t *testing.T) {
 		t.Fatalf("index lists the recent part:\n%s", index)
 	}
 
-	compact := func(trim []string, collapse ...claudetool.CompactCollapse) {
+	compact := func(trim []claudetool.IndexID, collapse ...claudetool.CompactCollapse) {
 		t.Helper()
 		in, _ := json.Marshal(claudetool.CompactInPlaceInput{Action: "compact", Trim: trim, Collapse: collapse})
 		c.turn("compact_in_place: " + string(in))
@@ -226,15 +246,15 @@ func TestCompactInPlaceEndToEnd(t *testing.T) {
 			t.Fatalf("want error %q, got %q (error %v)", want, out, isErr)
 		}
 	}
-	compact([]string{"nope"})
-	if out, isErr := c.lastToolOutput(); !isErr || !strings.Contains(out, "no tool output") {
+	compact([]claudetool.IndexID{"nope"})
+	if out, isErr := c.lastToolOutput(); !isErr || !strings.Contains(out, "trim nope: unknown id") {
 		t.Fatalf("bad trim: %q", out)
 	}
 	if n := c.records(); n != 0 {
 		t.Fatalf("invalid requests recorded %d compactions", n)
 	}
 
-	compact([]string{firstUseID}, claudetool.CompactCollapse{From: seq(hiSeq), To: seq(hiSeq), Note: "GREETED"})
+	compact([]claudetool.IndexID{seq(firstCallSeq)}, claudetool.CompactCollapse{From: seq(hiSeq), To: seq(hiSeq), Note: "GREETED"})
 	if out, isErr := c.lastToolOutput(); isErr || !strings.Contains(out, "Compacted: 1 collapsed, 1 trimmed") {
 		t.Fatalf("compact: %q", out)
 	}
@@ -290,7 +310,7 @@ func TestCompactInPlaceEndToEnd(t *testing.T) {
 	// The next index shows the note and the trimmed output.
 	c.turn(`compact_in_place: {"action":"index"}`)
 	index, _ = c.lastToolOutput()
-	if !strings.Contains(index, `note "GREETED"`) || !strings.Contains(index, "bash output (trimmed)") {
+	if !strings.Contains(index, `note "GREETED"`) || !strings.Contains(index, `bash "echo FIRST_OUTPUT" → trimmed`) {
 		t.Fatalf("index after compaction:\n%s", index)
 	}
 }
@@ -304,11 +324,15 @@ func TestCompactInPlaceNudge(t *testing.T) {
 		ToolOverrides:      map[string]string{claudetool.CompactInPlaceName: "on"},
 		CompactNudgeTokens: 1,
 	})
-	nudges := func() []string {
-		var out []string
+	nudges := func() []llm.Message {
+		var out []llm.Message
 		for _, m := range listMessages(t, c.database, c.id) {
 			if m.UserData != nil && strings.Contains(*m.UserData, `"context_nudge":true`) {
-				out = append(out, *m.LlmData)
+				var msg llm.Message
+				if err := json.Unmarshal([]byte(*m.LlmData), &msg); err != nil {
+					t.Fatal(err)
+				}
+				out = append(out, msg)
 			}
 		}
 		return out
@@ -319,21 +343,28 @@ func TestCompactInPlaceNudge(t *testing.T) {
 	}
 	c.turn("echo: two")
 	got := nudges()
-	if len(got) != 1 || !strings.Contains(got[0], `"Text":"Context is 0k."`) {
-		t.Fatalf("nudges = %v", got)
+	// The nudge comes with the index, so the agent can compact right away.
+	if len(got) != 1 || len(got[0].Content) != 2 || got[0].Content[0].Text != "Context is 0k." ||
+		!strings.HasPrefix(got[0].Content[1].Text, "## Index") || !strings.Contains(got[0].Content[1].Text, `text "hello"`) {
+		t.Fatalf("nudges = %+v", got)
 	}
-	if !strings.Contains(requestDump(c.ps.GetLastRequest()), "Context is 0k.") {
-		t.Fatal("nudge not sent to the model")
+	if req := requestDump(c.ps.GetLastRequest()); !strings.Contains(req, "Context is 0k.") || !strings.Contains(req, "## Index") {
+		t.Fatalf("nudge not sent to the model:\n%s", req)
 	}
 	c.turn("echo: three")
 	if n := len(nudges()); n != 1 {
 		t.Fatalf("nudged again below the next step: %d", n)
 	}
 
-	// A compaction hides the nudges from the model.
-	c.turn("bash: echo OUTPUT")
-	useID := c.rows()[c.seqWith(`OUTPUT\n`)].Content[0].ToolUseID
-	c.turn(`compact_in_place: {"action":"compact","trim":["` + useID + `"]}`)
+	// The agent can compact from the nudge's index, without asking for one,
+	// and the compaction hides the nudges from the model.
+	var id string
+	for _, line := range strings.Split(got[0].Content[1].Text, "\n") {
+		if strings.Contains(line, `text "Well, hi there!"`) {
+			id = strings.Fields(line)[0]
+		}
+	}
+	c.turn(`compact_in_place: {"action":"compact","collapse":[{"from":"` + id + `","to":"` + id + `","note":"hi"}]}`)
 	if out, isErr := c.lastToolOutput(); isErr {
 		t.Fatalf("compact: %s", out)
 	}
@@ -345,7 +376,7 @@ func TestCompactInPlaceNudge(t *testing.T) {
 	// (here, as its input carries a long message). Right after the
 	// compaction that size is stale: no nudge.
 	c.turn("bash: echo AGAIN")
-	useID = c.rows()[c.seqWith(`AGAIN\n`)].Content[0].ToolUseID
+	callSeq := c.callSeq(c.rows()[c.seqWith(`AGAIN\n`)].Content[0].ToolUseID)
 	size := lastContextWindowSize(listMessages(t, c.database, c.id))
 	if err := c.database.UpdateConversationOptions(t.Context(), c.id, db.ConversationOptions{
 		ToolOverrides:      map[string]string{claudetool.CompactInPlaceName: "on"},
@@ -359,7 +390,7 @@ func TestCompactInPlaceNudge(t *testing.T) {
 	}
 	manager.ResetLoop()
 	before := len(nudges())
-	c.turn(`compact_in_place: {"action":"compact","trim":["` + useID + `"]}` + strings.Repeat(" ", 2000))
+	c.turn(fmt.Sprintf(`compact_in_place: {"action":"compact","trim":[%d]}`, callSeq) + strings.Repeat(" ", 2000))
 	if out, isErr := c.lastToolOutput(); isErr {
 		t.Fatalf("compact: %s", out)
 	}
@@ -405,9 +436,9 @@ func outputItem(seq int64, id, text string) contextItem {
 	}}}
 }
 
-// TestBuildCompactionKeepsCallsWithOutputs: a range may neither start on a
-// tool output nor end on a tool call, and the other problems of the request
-// are reported with it.
+// TestBuildCompactionKeepsCallsWithOutputs: a range covers whole rows, so it
+// cannot split a tool call from its output; the output's own sequence id is
+// not an id in the index. Other problems of the request are reported with it.
 func TestBuildCompactionKeepsCallsWithOutputs(t *testing.T) {
 	out := strings.Repeat("x", 400)
 	items := []contextItem{
@@ -421,19 +452,83 @@ func TestBuildCompactionKeepsCallsWithOutputs(t *testing.T) {
 		return claudetool.CompactCollapse{From: from, To: to, Note: note}
 	}
 	_, err := buildCompaction(items, 20_000, claudetool.CompactInPlaceInput{Collapse: []claudetool.CompactCollapse{
-		col("3", "6", "n"), col("4", "4", "n"), col("2", "3", ""), col("3", "4", "n"),
+		col("3", "6", "n"), col("2", "3", "n"), col("4", "4", ""),
 	}})
-	want := "4 problems. Nothing was compacted; fix them and send the whole request again:\n" +
-		"- collapse 3-6: starts with a tool output, which must stay with its call; start at the call before it, or after the output\n" +
-		"- collapse 4-4: ends with a tool call, which must stay with its output; extend it to include the output, or end before the call\n" +
-		"- collapse 2-3: note is empty\n" +
-		"- collapse 3-4: starts with a tool output"
-	if err == nil || !strings.HasPrefix(err.Error(), want) {
+	want := "3 problems. Nothing was compacted; fix them and send the whole request again:\n" +
+		"- collapse 3-6: unknown id; use ids from the index\n" +
+		"- collapse 2-3: unknown id; use ids from the index\n" +
+		"- collapse 4-4: note is empty"
+	if err == nil || err.Error() != want {
 		t.Fatalf("got %v", err)
 	}
-	c, err := buildCompaction(items, 20_000, claudetool.CompactInPlaceInput{Collapse: []claudetool.CompactCollapse{col("2", "3", "n"), col("4", "6", "n")}})
-	if err != nil || len(c.Squishes) != 2 {
+	c, err := buildCompaction(items, 20_000, claudetool.CompactInPlaceInput{Collapse: []claudetool.CompactCollapse{col("2", "2", "n"), col("4", "6", "n")}})
+	if err != nil || len(c.Squishes) != 2 || c.Squishes[0].ToSequenceID != 3 || c.Squishes[1].FromSequenceID != 4 || c.Squishes[1].ToSequenceID != 6 {
 		t.Fatalf("%+v, %v", c, err)
+	}
+}
+
+// TestBuildCompactionOrphans: a call can lack its output (the server stopped
+// while it ran), or an output its call. Such a row gets a row of its own, and
+// a range may cover it, but not end at the call or start at the output: that
+// would leave the output, or the call, behind.
+func TestBuildCompactionOrphans(t *testing.T) {
+	items := []contextItem{
+		textItem(1, llm.MessageRoleUser, "do it"),
+		callItem(2, "a"), outputItem(3, "a", "ok"),
+		callItem(4, "lost"),
+		textItem(5, llm.MessageRoleAssistant, strings.Repeat("x", 400)),
+		outputItem(6, "late", "late"),
+		textItem(7, llm.MessageRoleAssistant, "done"),
+		textItem(8, llm.MessageRoleAssistant, strings.Repeat("x", 4*25_000)),
+	}
+	index, err := compactIndex(items, 20_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !regexp.MustCompile(`(?m)^4 .*bash → no output$`).MatchString(index) || !regexp.MustCompile(`(?m)^6 .*tool output → 1$`).MatchString(index) {
+		t.Fatalf("index does not show the orphans:\n%s", index)
+	}
+	col := func(from, to claudetool.IndexID) claudetool.CompactCollapse {
+		return claudetool.CompactCollapse{From: from, To: to, Note: "n"}
+	}
+	_, err = buildCompaction(items, 20_000, claudetool.CompactInPlaceInput{Collapse: []claudetool.CompactCollapse{col("2", "4"), col("6", "7")}})
+	want := "2 problems. Nothing was compacted; fix them and send the whole request again:\n" +
+		"- collapse 2-4: 4 is a tool call without its output; end the range before it\n" +
+		"- collapse 6-7: 6 is a tool output without its call; start the range after it"
+	if err == nil || err.Error() != want {
+		t.Fatalf("got %v", err)
+	}
+	// Suggestions around a row that can only be collapsed on its own leave
+	// them out at the ends.
+	withUser := slices.Insert(slices.Clone(items), 4, textItem(10, llm.MessageRoleUser, "back"))
+	_, err = buildCompaction(withUser, 20_000, claudetool.CompactInPlaceInput{Collapse: []claudetool.CompactCollapse{col("2", "5")}})
+	if want := "covers 10, which can only be collapsed on its own; collapse e.g. 2, 5 instead"; err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("want %q, got %v", want, err)
+	}
+	// Otherwise they go with the range.
+	for _, r := range []claudetool.CompactCollapse{col("2", "5"), col("4", "6"), col("5", "7")} {
+		c, err := buildCompaction(items, 20_000, claudetool.CompactInPlaceInput{Collapse: []claudetool.CompactCollapse{r}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := applyInPlaceCompaction(items, c, "c1", 9); err != nil {
+			t.Fatalf("collapse %s-%s: %v", r.From, r.To, err)
+		}
+	}
+}
+
+func TestReadableToolInput(t *testing.T) {
+	for in, want := range map[string]string{
+		`{"command":"cd /x \u0026\u0026 ls","slow_ok":false}`: "cd /x && ls slow_ok=false",
+		`{"a":{"b":1},"c":[1],"d":null,"e":"","n":2.5}`:       "n=2.5",
+		`"text"`:    `"text"`,
+		`null`:      "null",
+		``:          "",
+		`{"a":"x",`: `{"a":"x",`,
+	} {
+		if got := readableToolInput(json.RawMessage(in)); got != want {
+			t.Errorf("%s: got %q, want %q", in, got, want)
+		}
 	}
 }
 
@@ -538,8 +633,54 @@ func TestIndexSkipsEvidenceOfEarlierAttempts(t *testing.T) {
 	for _, r := range rows {
 		ids = append(ids, r[1])
 	}
-	if got := strings.Join(ids, " "); got != "1 2 3 7 8" {
-		t.Errorf("index lists rows %s, want 1 2 3 7 8 (the work, then not the recent part from 9):\n%s", got, index)
+	if got := strings.Join(ids, " "); got != "1 2 7 8" {
+		t.Errorf("index lists rows %s, want 1 2 7 8 (the work, then not the recent part from 9):\n%s", got, index)
+	}
+}
+
+// TestCompactIndexRows: a tool call shares a row with its output, under the
+// call's id. Inputs read like commands, and outputs show their size or that
+// they are trimmed.
+func TestCompactIndexRows(t *testing.T) {
+	use := func(id, name, input string) llm.Content {
+		return llm.Content{Type: llm.ContentTypeToolUse, ID: id, ToolName: name, ToolInput: json.RawMessage(input)}
+	}
+	result := func(id, text string) llm.Content {
+		return llm.Content{Type: llm.ContentTypeToolResult, ToolUseID: id, ToolResult: []llm.Content{{Type: llm.ContentTypeText, Text: text}}}
+	}
+	msg := func(seq int64, role llm.MessageRole, content ...llm.Content) contextItem {
+		typ := string(db.MessageTypeAgent)
+		if role == llm.MessageRoleUser {
+			typ = string(db.MessageTypeUser)
+		}
+		return contextItem{from: seq, to: seq, source: &generated.Message{SequenceID: seq, Type: typ}, message: llm.Message{Role: role, Content: content}}
+	}
+	history := []contextItem{
+		textItem(1, llm.MessageRoleUser, "do it"),
+		msg(2, llm.MessageRoleAssistant, llm.Content{Type: llm.ContentTypeThinking, Thinking: "hmm"},
+			use("a", "bash", `{"command":"cd /x \u0026\u0026 ls\n  -la","slow_ok":false}`)),
+		// Output that merely starts like a trimmed one is not trimmed.
+		msg(3, llm.MessageRoleUser, result("a", "[Tool output compacted, says the log]"+strings.Repeat("x", 363))),
+		// Parallel calls; one output is trimmed already.
+		msg(4, llm.MessageRoleAssistant, use("b", "bash", `{"command":"make"}`),
+			use("c", "browser", `{"action":"navigate","url":"http://localhost/","expression":"","await":false,"timeout":0,"tabs":[1]}`)),
+		msg(5, llm.MessageRoleUser, result("b", trimmedToolOutputText("c1", 5)), result("c", "page")),
+		textItem(6, llm.MessageRoleAssistant, "done"),
+		textItem(7, llm.MessageRoleUser, strings.Repeat("x", 4*15_000)),
+	}
+	index, err := compactIndex(history, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, table, _ := strings.Cut(index, "```\n")
+	want := "id  role       tokens  content\n" +
+		"1   user*      2       text \"do it\"\n" +
+		"2   assistant  117     thinking, bash \"cd /x && ls -la slow_ok=false\" → 100\n" +
+		"4   assistant  49      bash \"make\" → trimmed, browser \"navigate http://localhost/ await=false timeout=0\" → 1\n" +
+		"6   assistant  1       text \"done\"\n" +
+		"```\n"
+	if table != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", table, want)
 	}
 }
 
@@ -547,16 +688,25 @@ func TestBuildCompactionTrimsOnlyOlderOutputs(t *testing.T) {
 	history := []contextItem{
 		textItem(1, llm.MessageRoleUser, "do it"),
 		callItem(2, "a"), outputItem(3, "a", "old"),
-		callItem(4, "b"), outputItem(5, "b", "new"),
+		callItem(4, "t"), outputItem(5, "t", trimmedToolOutputText("c1", 5)),
+		callItem(6, "b"), outputItem(7, "b", "new"),
 	}
 	// The recent part is the last call and its output.
-	c, err := buildCompaction(history, 1, claudetool.CompactInPlaceInput{Trim: []string{"a"}})
-	if err != nil || len(c.Trims) != 1 || c.Trims[0].SequenceID != 3 {
-		t.Fatalf("trim a: %+v, %v", c, err)
+	// Rows are trimmed by id: the call's.
+	c, err := buildCompaction(history, 1, claudetool.CompactInPlaceInput{Trim: []claudetool.IndexID{"2"}})
+	if err != nil || len(c.Trims) != 1 || c.Trims[0] != (db.CompactionTrim{SequenceID: 3, ToolUseID: "a"}) {
+		t.Fatalf("trim 2: %+v, %v", c, err)
 	}
-	_, err = buildCompaction(history, 1, claudetool.CompactInPlaceInput{Trim: []string{"b"}})
-	if err == nil || !strings.Contains(err.Error(), "trim b: in the recent part, which is kept as is") {
-		t.Fatalf("trim b: %v", err)
+	for id, want := range map[claudetool.IndexID]string{
+		"6": "in the recent part, which is kept as is",
+		"4": "already trimmed",
+		"1": "has no tool output",
+		"3": "unknown id",
+	} {
+		_, err = buildCompaction(history, 1, claudetool.CompactInPlaceInput{Trim: []claudetool.IndexID{id}})
+		if want := fmt.Sprintf("trim %s: %s", id, want); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("want %q, got %v", want, err)
+		}
 	}
 }
 
@@ -597,19 +747,19 @@ func TestBuildCompaction(t *testing.T) {
 	}
 	// Every problem is reported at once, and nothing is compacted.
 	_, err := buildCompaction(items, 20_000, claudetool.CompactInPlaceInput{
-		Trim:     []string{"nope"},
+		Trim:     []claudetool.IndexID{"nope"},
 		Collapse: []claudetool.CompactCollapse{col("99", "2"), col("2", "4")},
 	})
 	want := "3 problems. Nothing was compacted; fix them and send the whole request again:\n" +
-		"- trim nope: no tool output with that id in the index\n" +
+		"- trim nope: unknown id; use ids from the index\n" +
 		"- collapse 99-2: unknown id; use ids from the index\n" +
 		"- collapse 2-4: covers ~"
 	if err == nil || !strings.HasPrefix(err.Error(), want) {
 		t.Errorf("want error starting %q, got %v", want, err)
 	}
-	// Over the limit is fine for one tool call and its output, and a user
-	// message may be collapsed on its own.
-	c, err := buildCompaction(items, 20_000, claudetool.CompactInPlaceInput{Collapse: []claudetool.CompactCollapse{col("8", "9"), col("2", "3"), col("6", "6"), col("1", "1")}})
+	// Over the limit is fine for one row, here a tool call and its output,
+	// and a user message may be collapsed on its own.
+	c, err := buildCompaction(items, 20_000, claudetool.CompactInPlaceInput{Collapse: []claudetool.CompactCollapse{col("8", "9"), col("2", "2"), col("6", "6"), col("1", "1")}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -691,5 +841,120 @@ func TestHideItems(t *testing.T) {
 		if _, err := hideItems(slices.Clone(items), nil, bad); err == nil {
 			t.Errorf("hide %v: want error", bad)
 		}
+	}
+}
+
+// postEnableCompactInPlace presses the Compact in Place button's first half.
+func postEnableCompactInPlace(t *testing.T, s *Server, conversationID string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/api/conversation/"+conversationID+"/enable-compact-in-place", nil)
+	w := httptest.NewRecorder()
+	s.handleEnableCompactInPlace(w, req, conversationID)
+	return w
+}
+
+// toolEnabledMarkers counts the log rows recording compact_in_place being
+// enabled.
+func (c *compactTestConversation) toolEnabledMarkers() int {
+	n := 0
+	for _, m := range listMessages(c.t, c.database, c.id) {
+		if m.Type == string(db.MessageTypeModelChange) && m.UserData != nil &&
+			strings.Contains(*m.UserData, `"tool_enabled":"compact_in_place"`) {
+			n++
+		}
+	}
+	return n
+}
+
+func (c *compactTestConversation) options() db.ConversationOptions {
+	c.t.Helper()
+	conv, err := c.database.GetConversationByID(c.t.Context(), c.id)
+	if err != nil {
+		c.t.Fatal(err)
+	}
+	return db.ParseConversationOptions(conv.ConversationOptions)
+}
+
+// TestEnableCompactInPlaceMidConversation: a conversation started without
+// compact_in_place gets it on demand. Later turns offer the tool, the log
+// says where it appeared, and the agent is not nudged: the user asked for a
+// compaction, not for an agent that watches its context.
+func TestEnableCompactInPlaceMidConversation(t *testing.T) {
+	t.Parallel()
+	c := newCompactTestConversation(t, db.ConversationOptions{})
+	c.turn("hello")
+	c.turn("bash: echo OUTPUT")
+	if hasTool(c.ps.GetLastRequest(), claudetool.CompactInPlaceName) {
+		t.Fatal("compact_in_place offered before being enabled")
+	}
+	// Were nudges on, the next turns would cross the first threshold.
+	size := lastContextWindowSize(listMessages(t, c.database, c.id))
+	if err := c.database.UpdateConversationOptions(t.Context(), c.id, db.ConversationOptions{CompactNudgeTokens: int(size) + 100}); err != nil {
+		t.Fatal(err)
+	}
+
+	if w := postEnableCompactInPlace(t, c.srv, c.id); w.Code != http.StatusOK {
+		t.Fatalf("enable: got %d: %s", w.Code, w.Body.String())
+	}
+	opts := c.options()
+	if !claudetool.IsToolEnabled(claudetool.CompactInPlaceName, opts.ToolOverrides, opts.DisableAllTools) || !opts.DisableCompactNudges {
+		t.Fatalf("options after enabling: %+v", opts)
+	}
+	if n := c.toolEnabledMarkers(); n != 1 {
+		t.Fatalf("%d markers, want 1", n)
+	}
+
+	c.turn("echo: two" + strings.Repeat(" ", 2000))
+	c.turn("echo: three")
+	for _, m := range listMessages(t, c.database, c.id) {
+		if m.UserData != nil && strings.Contains(*m.UserData, `"context_nudge":true`) {
+			t.Fatalf("nudged: %s", *m.LlmData)
+		}
+	}
+	req := c.ps.GetLastRequest()
+	if !hasTool(req, claudetool.CompactInPlaceName) {
+		t.Fatal("compact_in_place not offered after enabling")
+	}
+	if strings.Contains(requestDump(req), "Enabled the compact_in_place tool") {
+		t.Fatal("the marker reached the model")
+	}
+	callSeq := c.callSeq(c.rows()[c.seqWith(`OUTPUT\n`)].Content[0].ToolUseID)
+	c.turn(fmt.Sprintf(`compact_in_place: {"action":"compact","trim":["%d"]}`, callSeq))
+	if out, isErr := c.lastToolOutput(); isErr {
+		t.Fatalf("compact: %s", out)
+	}
+	if c.records() != 1 {
+		t.Fatalf("%d compaction records, want 1", c.records())
+	}
+
+	// Pressing the button again changes nothing.
+	if w := postEnableCompactInPlace(t, c.srv, c.id); w.Code != http.StatusOK {
+		t.Fatalf("enable again: got %d: %s", w.Code, w.Body.String())
+	}
+	if n := c.toolEnabledMarkers(); n != 1 {
+		t.Fatalf("%d markers after enabling twice, want 1", n)
+	}
+}
+
+// Enabling rebuilds the loop, which would drop a running turn's tools out
+// from under it, so it waits for the turn to end.
+func TestEnableCompactInPlaceRefusesWhileWorking(t *testing.T) {
+	t.Parallel()
+	c := newCompactTestConversation(t, db.ConversationOptions{})
+	c.turn("hello")
+	if w := postChat(t, c.srv, c.id, "bash: sleep 5"); w.Code != http.StatusAccepted {
+		t.Fatalf("chat: got %d: %s", w.Code, w.Body.String())
+	}
+	manager, err := c.srv.getOrCreateConversationManager(t.Context(), c.id, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 5*time.Second, manager.IsAgentWorking)
+
+	if w := postEnableCompactInPlace(t, c.srv, c.id); w.Code != http.StatusConflict {
+		t.Fatalf("expected 409 while the agent works, got %d: %s", w.Code, w.Body.String())
+	}
+	if opts := c.options(); opts.ToolOverrides[claudetool.CompactInPlaceName] != "" || c.toolEnabledMarkers() != 0 {
+		t.Fatalf("enabled while the agent was working: %+v", opts)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"shelley.exe.dev/db"
@@ -26,6 +27,9 @@ type senderMessageUserData struct {
 	SenderConversationID string             `json:"sender_conversation_id"`
 	SenderSlug           string             `json:"sender_slug"`
 	SenderRelationship   senderRelationship `json:"sender_relationship"`
+	// CompletionKind distinguishes a fallback turn-end notice from a
+	// message_parent report so it can be counted from persisted messages.
+	CompletionKind string `json:"completion_kind,omitempty"`
 	// Text duplicates the final user message because the FTS trigger searches
 	// user_data instead of llm_data whenever user_data is present.
 	Text string `json:"Text"`
@@ -44,6 +48,17 @@ type backgroundJobUserData struct {
 	LogPath  string `json:"log_path"`
 	// Tail is the last lines of the job's output.
 	Tail string `json:"tail"`
+	// Text duplicates the message for full-text search, as in
+	// senderMessageUserData.
+	Text string `json:"Text"`
+}
+
+// mcpNoticeUserData marks a notice that the registered MCP servers changed
+// while the agent was working; it is not from a human. MCPServerChange is
+// "added", "updated" or "removed".
+type mcpNoticeUserData struct {
+	MCPServerChange string `json:"mcp_server_change"`
+	ServerName      string `json:"server_name"`
 	// Text duplicates the message for full-text search, as in
 	// senderMessageUserData.
 	Text string `json:"Text"`
@@ -138,6 +153,13 @@ func provenanceTag(rawUserData []byte) (string, []xml.Attr, error) {
 		if err := json.Unmarshal(rawUserData, &job); err == nil && job.BackgroundJobID != "" {
 			return "background_job", []xml.Attr{{Name: xml.Name{Local: "id"}, Value: job.BackgroundJobID}}, nil
 		}
+		var mcpN mcpNoticeUserData
+		if err := json.Unmarshal(rawUserData, &mcpN); err == nil && mcpN.MCPServerChange != "" {
+			return "mcp_servers_changed", []xml.Attr{
+				{Name: xml.Name{Local: "server"}, Value: mcpN.ServerName},
+				{Name: xml.Name{Local: "change"}, Value: mcpN.MCPServerChange},
+			}, nil
+		}
 	}
 	data, ok, err := parseSenderMessageUserData(rawUserData)
 	if err != nil || !ok {
@@ -158,9 +180,53 @@ func messageWithSenderProvenance(message llm.Message, rawUserData []byte) (llm.M
 	if err != nil || tag == "" {
 		return message, err
 	}
+	return wrapMessageForLLM(message, tag, attrs...)
+}
+
+// messageWithSequenceID shows the stable sequence ID of a typed user message
+// to the LLM, without changing its persisted or UI text. For channel messages,
+// the transport's own ID stays out of the prompt and is resolved on reply.
+func messageWithSequenceID(message llm.Message, externalID string, sequenceID int64) (llm.Message, error) {
+	tag := "user_message"
+	if externalID != "" {
+		tag = "external_message"
+	}
+	return wrapMessageForLLM(message, tag, xml.Attr{
+		Name: xml.Name{Local: "sequence_id"}, Value: strconv.FormatInt(sequenceID, 10),
+	})
+}
+
+// typedUserForLLM mirrors ListTypedUserMessages: machine notices and tool
+// results aren't reply targets, even when they have the user role. Compaction
+// copies are still the user's messages.
+func typedUserForLLM(message llm.Message, rawUserData []byte) bool {
+	if message.Role != llm.MessageRoleUser {
+		return false
+	}
+	for _, content := range message.Content {
+		if content.Type == llm.ContentTypeToolResult {
+			return false
+		}
+	}
+	if len(rawUserData) == 0 || string(rawUserData) == "null" {
+		return true
+	}
+	var data map[string]json.RawMessage
+	if err := json.Unmarshal(rawUserData, &data); err != nil {
+		return false
+	}
+	for key := range data {
+		if key != "compaction_carried" && key != carriedFromKey {
+			return false
+		}
+	}
+	return true
+}
+
+func wrapMessageForLLM(message llm.Message, tag string, attrs ...xml.Attr) (llm.Message, error) {
 	opening, err := xmlProvenanceOpeningTag(tag, attrs...)
 	if err != nil {
-		return message, fmt.Errorf("encode sender provenance tag: %w", err)
+		return message, fmt.Errorf("encode %s tag: %w", tag, err)
 	}
 	closing := "</" + tag + ">"
 
@@ -177,7 +243,12 @@ func messageWithSenderProvenance(message llm.Message, rawUserData []byte) (llm.M
 		lastText = i
 	}
 	if firstText < 0 {
-		return message, fmt.Errorf("sender provenance message has no text content")
+		if tag != "user_message" && tag != "external_message" {
+			return message, fmt.Errorf("%s message has no text content", tag)
+		}
+		message.Content = append([]llm.Content{{Type: llm.ContentTypeText, Text: opening}}, message.Content...)
+		message.Content = append(message.Content, llm.Content{Type: llm.ContentTypeText, Text: closing})
+		return message, nil
 	}
 	message.Content[firstText].Text = opening + "\n" + message.Content[firstText].Text
 	message.Content[lastText].Text += "\n" + closing

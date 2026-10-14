@@ -205,6 +205,10 @@
           ><kbd>{{ menuShortcutLabel("editFile") }}</kbd></span
         >
       </button>
+      <button class="overflow-menu-item" @click="onMcpServers">
+        <i class="pi pi-server chat-menu-icon" aria-hidden="true" />
+        {{ t("mcpServers") }}
+      </button>
 
       <div class="overflow-menu-divider" />
       <button class="overflow-menu-item" @click="onCheckVersion">
@@ -224,7 +228,7 @@
           class="overflow-quick-control"
           data-testid="conversation-view-toggle"
           :aria-label="conversationViewLabel"
-          :aria-pressed="conversationViewMode === 'end-of-turn'"
+          :aria-pressed="conversationViewMode !== 'all'"
           :title="conversationViewLabel"
           @click="toggleConversationView"
         >
@@ -244,6 +248,13 @@
                   <circle cx="4" cy="12" r="1.4" fill="currentColor" stroke="none" />
                   <circle cx="4" cy="18" r="1.4" fill="currentColor" stroke="none" />
                 </template>
+                <template v-else-if="conversationViewMode === 'brief'">
+                  <path
+                    d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v7a2.5 2.5 0 0 1-2.5 2.5H10l-4 4v-4h0.5A2.5 2.5 0 0 1 4 13.5z"
+                    stroke-width="2"
+                    stroke-linejoin="round"
+                  />
+                </template>
                 <template v-else>
                   <path d="M8 7h12M8 17h12" stroke-width="2" stroke-linecap="round" />
                   <circle cx="4" cy="7" r="1.4" fill="currentColor" stroke="none" />
@@ -259,7 +270,20 @@
           </span>
           <span class="overflow-choice-alternatives" aria-hidden="true">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
-              <template v-if="conversationViewMode === 'all'">
+              <template v-if="nextConversationViewMode === 'all'">
+                <path d="M8 6h12M8 12h12M8 18h12" stroke-width="2" stroke-linecap="round" />
+                <circle cx="4" cy="6" r="1.4" fill="currentColor" stroke="none" />
+                <circle cx="4" cy="12" r="1.4" fill="currentColor" stroke="none" />
+                <circle cx="4" cy="18" r="1.4" fill="currentColor" stroke="none" />
+              </template>
+              <template v-else-if="nextConversationViewMode === 'brief'">
+                <path
+                  d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v7a2.5 2.5 0 0 1-2.5 2.5H10l-4 4v-4h0.5A2.5 2.5 0 0 1 4 13.5z"
+                  stroke-width="2"
+                  stroke-linejoin="round"
+                />
+              </template>
+              <template v-else>
                 <path d="M8 7h12M8 17h12" stroke-width="2" stroke-linecap="round" />
                 <circle cx="4" cy="7" r="1.4" fill="currentColor" stroke="none" />
                 <path
@@ -268,12 +292,6 @@
                   stroke-linecap="round"
                   stroke-linejoin="round"
                 />
-              </template>
-              <template v-else>
-                <path d="M8 6h12M8 12h12M8 18h12" stroke-width="2" stroke-linecap="round" />
-                <circle cx="4" cy="6" r="1.4" fill="currentColor" stroke="none" />
-                <circle cx="4" cy="12" r="1.4" fill="currentColor" stroke="none" />
-                <circle cx="4" cy="18" r="1.4" fill="currentColor" stroke="none" />
               </template>
             </svg>
           </span>
@@ -374,7 +392,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, ref } from "vue";
+import { computed, nextTick, ref, toRef } from "vue";
 import Popover from "primevue/popover";
 import Button from "primevue/button";
 import SelectButton from "primevue/selectbutton";
@@ -396,7 +414,7 @@ import {
   requestBrowserNotificationPermission,
 } from "../../services/notifications";
 
-defineProps<{
+const props = defineProps<{
   hasCwd: boolean;
   showDirectory: boolean;
   cwd: string;
@@ -404,6 +422,9 @@ defineProps<{
   canArchive: boolean;
   canExport: boolean;
   hasUpdate: boolean;
+  // The conversation has the message_user tool: offer the brief (chat only)
+  // view instead of end-of-turn.
+  messageUser: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -417,21 +438,33 @@ const emit = defineEmits<{
   (e: "export"): void;
   (e: "edit-agents-md"): void;
   (e: "edit-file"): void;
+  (e: "open-mcp-servers"): void;
   (e: "check-version"): void;
 }>();
 
 const { t, locale, setLocale } = useI18n();
 const { screenReaderMode, setScreenReaderMode } = useScreenReaderMode();
-const { conversationViewMode, setConversationViewMode } = useConversationView();
-const conversationViewLabel = computed(() => {
-  const current =
-    conversationViewMode.value === "all" ? t("seeAllMessages") : t("seeEndOfTurnMessagesOnly");
-  const next =
-    conversationViewMode.value === "all" ? t("seeEndOfTurnMessagesOnly") : t("seeAllMessages");
-  return `${current} → ${next}`;
-});
+const { conversationViewMode, setConversationViewMode } = useConversationView(
+  toRef(props, "messageUser"),
+);
+// One toggle between everything and the reduced view this conversation offers:
+// the chat only with message_user, end-of-turn messages otherwise.
+const reducedConversationViewMode = computed(() =>
+  props.messageUser ? ("brief" as const) : ("end-of-turn" as const),
+);
+const nextConversationViewMode = computed(() =>
+  conversationViewMode.value === "all" ? reducedConversationViewMode.value : "all",
+);
+function conversationViewName(mode: "all" | "end-of-turn" | "brief"): string {
+  if (mode === "all") return t("seeAllMessages");
+  return mode === "brief" ? t("seeChatOnly") : t("seeEndOfTurnMessagesOnly");
+}
+const conversationViewLabel = computed(
+  () =>
+    `${conversationViewName(conversationViewMode.value)} → ${conversationViewName(nextConversationViewMode.value)}`,
+);
 function toggleConversationView() {
-  setConversationViewMode(conversationViewMode.value === "all" ? "end-of-turn" : "all");
+  setConversationViewMode(nextConversationViewMode.value);
 }
 
 const triggerRef = ref<{ $el: HTMLButtonElement } | null>(null);
@@ -457,6 +490,7 @@ const onArchive = () => (emit("archive"), hide());
 const onExport = () => (emit("export"), hide());
 const onEditAgentsMd = () => (emit("edit-agents-md"), hide());
 const onEditFile = () => (emit("edit-file"), hide());
+const onMcpServers = () => (emit("open-mcp-servers"), hide());
 const onCheckVersion = () => (emit("check-version"), hide());
 function onExternalLink(url: string) {
   emit("open-external-link", url);

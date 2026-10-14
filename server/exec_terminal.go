@@ -87,7 +87,7 @@ func (s *Server) handleExecWS(w http.ResponseWriter, r *http.Request) {
 			slug = *conv.Slug
 		}
 	}
-	extraEnv := buildTerminalEnv(conversationID, slug, model, userEmail, cwd, s.listenPort)
+	extraEnv := buildTerminalEnv(conversationID, slug, model, userEmail, cwd, s.listenPort, s.socketPath)
 	if termID == "" {
 		workspace, workspaceErr := s.workspaceForTerminal(ctx, workspaceID, cwd)
 		if workspaceErr != nil {
@@ -124,13 +124,14 @@ func (s *Server) handleExecWS(w http.ResponseWriter, r *http.Request) {
 // ephemeral / persistent terminals spawned from the UI. It shares the same
 // claudetool.ShelleyEnv used by the agent's bash tool so interactive
 // "!" commands and agent-run commands see an identical environment.
-func buildTerminalEnv(conversationID, slug, model, userEmail, cwd string, listenPort int) []string {
+func buildTerminalEnv(conversationID, slug, model, userEmail, cwd string, listenPort int, socketPath string) []string {
 	return claudetool.ShelleyEnv{
 		ConversationID:   conversationID,
 		ConversationSlug: slug,
 		Model:            model,
 		UserEmail:        userEmail,
 		Port:             listenPort,
+		Socket:           socketPath,
 	}.Environ(cwd)
 }
 

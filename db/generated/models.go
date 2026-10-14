@@ -19,6 +19,7 @@ type BackgroundJob struct {
 	ExitPath         string    `json:"exit_path"`
 	StartedAt        time.Time `json:"started_at"`
 	Notified         bool      `json:"notified"`
+	Exited           bool      `json:"exited"`
 }
 
 type CacheSession struct {
@@ -29,23 +30,41 @@ type CacheSession struct {
 }
 
 type Conversation struct {
-	ConversationID       string    `json:"conversation_id"`
-	Slug                 *string   `json:"slug"`
-	UserInitiated        bool      `json:"user_initiated"`
-	CreatedAt            time.Time `json:"created_at"`
-	UpdatedAt            time.Time `json:"updated_at"`
-	Cwd                  *string   `json:"cwd"`
-	Archived             bool      `json:"archived"`
-	ParentConversationID *string   `json:"parent_conversation_id"`
-	Model                *string   `json:"model"`
-	ConversationOptions  string    `json:"conversation_options"`
-	CurrentGeneration    int64     `json:"current_generation"`
-	AgentWorking         bool      `json:"agent_working"`
-	Tags                 string    `json:"tags"`
-	IsDraft              bool      `json:"is_draft"`
-	Draft                string    `json:"draft"`
-	QueuedMessages       string    `json:"queued_messages"`
-	TurnInterrupted      bool      `json:"turn_interrupted"`
+	ConversationID         string    `json:"conversation_id"`
+	Slug                   *string   `json:"slug"`
+	UserInitiated          bool      `json:"user_initiated"`
+	CreatedAt              time.Time `json:"created_at"`
+	UpdatedAt              time.Time `json:"updated_at"`
+	Cwd                    *string   `json:"cwd"`
+	Archived               bool      `json:"archived"`
+	ParentConversationID   *string   `json:"parent_conversation_id"`
+	Model                  *string   `json:"model"`
+	ConversationOptions    string    `json:"conversation_options"`
+	CurrentGeneration      int64     `json:"current_generation"`
+	AgentWorking           bool      `json:"agent_working"`
+	Tags                   string    `json:"tags"`
+	IsDraft                bool      `json:"is_draft"`
+	Draft                  string    `json:"draft"`
+	QueuedMessages         string    `json:"queued_messages"`
+	TurnInterrupted        bool      `json:"turn_interrupted"`
+	ExternalConversationID *string   `json:"external_conversation_id"`
+	ExternalEndpoint       *string   `json:"external_endpoint"`
+}
+
+type McpOauth struct {
+	ServerName string    `json:"server_name"`
+	Client     string    `json:"client"`
+	Token      string    `json:"token"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+type McpServer struct {
+	Name        string    `json:"name"`
+	Url         string    `json:"url"`
+	Description string    `json:"description"`
+	Headers     string    `json:"headers"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 type Herd struct {
@@ -90,6 +109,7 @@ type Message struct {
 	ForkedFromMessageID *string   `json:"forked_from_message_id"`
 	UserEmail           *string   `json:"user_email"`
 	OtherUsageData      *string   `json:"other_usage_data"`
+	ExternalMessageID   *string   `json:"external_message_id"`
 }
 
 type Model struct {
