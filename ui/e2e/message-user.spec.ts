@@ -106,6 +106,24 @@ test("message_user conversations show the chat", async ({ page, request }) => {
     await page.keyboard.press("Escape");
     await expect(chatArea.getByText("message_user failed", { exact: false })).toBeVisible();
     await expect(page.getByTestId("message-user-bubble")).toHaveCount(2);
+    // The refused call is a keyboard-operable tool card (expanded by default
+    // in screen reader mode) whose details stay readable when collapsed.
+    const failedHeader = chatArea.locator('[data-tool-name="message_user"] .tool-header');
+    await expect(failedHeader).toHaveAttribute("aria-expanded", "true");
+    await expect(failedHeader).toHaveAttribute(
+      "aria-label",
+      "Collapse failed message to user, failed",
+    );
+    await failedHeader.focus();
+    await page.keyboard.press("Enter");
+    await expect(failedHeader).toHaveAttribute("aria-expanded", "false");
+    await expect(failedHeader).toHaveAttribute(
+      "aria-label",
+      "Expand failed message to user, failed",
+    );
+    await expect(
+      chatArea.locator('[data-tool-name="message_user"] [data-testid="tool-output-sr"]'),
+    ).toContainText("Error:");
     await page.reload();
     await expect(chatArea.getByText("message_user failed", { exact: false })).toBeVisible();
 

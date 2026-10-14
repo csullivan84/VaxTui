@@ -18,29 +18,47 @@
     data-testid="tool-call-completed"
     data-tool-name="message_user"
   >
-    <div class="tool-header" @click="isExpanded = !isExpanded">
+    <div
+      class="tool-header"
+      role="button"
+      tabindex="0"
+      :aria-expanded="isExpanded"
+      :aria-label="toggleLabel"
+      @click="isExpanded = !isExpanded"
+      @keydown.enter.prevent="isExpanded = !isExpanded"
+      @keydown.space.prevent="isExpanded = !isExpanded"
+    >
       <div class="tool-summary">
-        <span class="tool-emoji">💬</span>
+        <span class="tool-emoji" aria-hidden="true">💬</span>
         <span class="tool-command">message_user failed: {{ resultText }}</span>
+        <ToolStatusIcon state="error" class="tool-error" />
       </div>
       <button
+        type="button"
         class="tool-toggle"
-        :aria-label="isExpanded ? 'Collapse' : 'Expand'"
+        tabindex="-1"
+        :aria-label="toggleLabel"
         :aria-expanded="isExpanded"
+        @click.stop="isExpanded = !isExpanded"
       >
         <ToolChevron :expanded="isExpanded" />
       </button>
     </div>
-    <div v-if="isExpanded" class="tool-details">
+    <ToolAccessibleBody
+      :expanded="isExpanded"
+      label="Failed message to user"
+      :plain-text="collapsedPlainText"
+      body-class="tool-details"
+    >
       <div class="tool-section">
         <div class="tool-label">Input:</div>
-        <div class="tool-code">{{ JSON.stringify(toolInput, null, 2) }}</div>
+        <div class="tool-code">{{ inputJSON }}</div>
       </div>
       <div class="tool-section">
         <div class="tool-label">Error:</div>
         <div class="tool-code error">{{ resultText }}</div>
       </div>
-    </div>
+    </ToolAccessibleBody>
   </div>
 
   <div
@@ -130,7 +148,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, inject, reactive, ref } from "vue";
+import { computed, inject, reactive } from "vue";
 import type { LLMContent } from "../../../types";
 import {
   isDeliveredUserMessage,
@@ -139,7 +157,10 @@ import {
 } from "../../../utils/conversationView";
 import { messageUserContextKey } from "../messageUserContext";
 import InlineText from "../InlineText.vue";
+import { useToolExpanded } from "../../composables/toolDetail";
+import ToolAccessibleBody from "./ToolAccessibleBody.vue";
 import ToolChevron from "./ToolChevron.vue";
+import ToolStatusIcon from "./ToolStatusIcon.vue";
 
 const props = defineProps<{
   toolInput?: unknown;
@@ -150,7 +171,7 @@ const props = defineProps<{
   resultMessageId?: string;
 }>();
 
-const isExpanded = ref(false);
+const isExpanded = useToolExpanded();
 const brokenImages = reactive(new Set<string>());
 
 const input = computed(() => messageUserInput(props.toolInput));
@@ -172,6 +193,16 @@ const resultText = computed(() =>
     .map((r) => r.Text || "")
     .join("\n")
     .trim(),
+);
+
+const inputJSON = computed(() => JSON.stringify(props.toolInput, null, 2));
+const toggleLabel = computed(
+  () =>
+    (isExpanded.value ? "Collapse failed message to user" : "Expand failed message to user") +
+    ", failed",
+);
+const collapsedPlainText = computed(
+  () => `Input:\n${inputJSON.value}\n\nError:\n${resultText.value}`,
 );
 
 function attachmentURL(path: string, download = false): string {
