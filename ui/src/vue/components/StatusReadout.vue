@@ -48,7 +48,6 @@
       :on-compact-in-place="onCompactInPlace"
       :compact-in-place-busy="compactInPlaceBusy"
       :on-usage-needed="onUsageNeeded"
-      :agent-working="agentWorking"
     />
 
     <template v-if="selectedModel">
