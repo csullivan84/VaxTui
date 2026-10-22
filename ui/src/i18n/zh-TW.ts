@@ -193,6 +193,7 @@ export const zhTW: TranslationKeys = {
   nameShownInSelector: "在模型選擇器中顯示的名稱",
   apiKey: "API 金鑰",
   enterApiKey: "輸入 API 金鑰",
+  providerApiKeyKeepExisting: "留白以保留已儲存的金鑰",
   maxOutputTokens: "最大輸出權杖數",
   maxOutputTokensHelp:
     "留空則使用模型公布的輸出上限。降低該值可限制回應長度或成本。推理權杖也計入此上限。",

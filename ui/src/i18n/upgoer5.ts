@@ -193,6 +193,7 @@ export const upgoer5: TranslationKeys = {
   nameShownInSelector: "Name that shows up when you pick one",
   apiKey: "Key",
   enterApiKey: "Put in your key",
+  providerApiKeyKeepExisting: "Leave empty to keep the saved key",
   maxOutputTokens: "How many answer pieces can be made",
   maxOutputTokensHelp:
     "Leave this empty to use the model's known top number. Make it smaller to keep answers shorter or cheaper. Thinking pieces count too.",

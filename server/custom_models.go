@@ -24,7 +24,7 @@ type ModelAPI struct {
 	DisplayName        string `json:"display_name"`
 	ProviderType       string `json:"provider_type"`
 	Endpoint           string `json:"endpoint"`
-	APIKey             string `json:"api_key"`
+	HasAPIKey          bool   `json:"has_api_key"`
 	ModelName          string `json:"model_name"`
 	MaxTokens          int64  `json:"max_tokens"`
 	PublishedMaxTokens int    `json:"published_max_tokens,omitempty"`
@@ -159,7 +159,7 @@ func toModelAPI(m generated.Model) ModelAPI {
 		DisplayName:             m.DisplayName,
 		ProviderType:            m.ProviderType,
 		Endpoint:                m.Endpoint,
-		APIKey:                  m.ApiKey,
+		HasAPIKey:               m.ApiKey != "",
 		ModelName:               m.ModelName,
 		MaxTokens:               m.MaxTokens,
 		PublishedMaxTokens:      published,

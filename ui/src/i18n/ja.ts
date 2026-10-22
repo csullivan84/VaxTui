@@ -193,6 +193,7 @@ export const ja: TranslationKeys = {
   nameShownInSelector: "モデル選択に表示される名前",
   apiKey: "APIキー",
   enterApiKey: "APIキーを入力",
+  providerApiKeyKeepExisting: "保存済みのキーを使うには空欄のままにします",
   maxOutputTokens: "最大出力トークン数",
   maxOutputTokensHelp:
     "空欄にするとモデルの公開出力上限を使用します。応答の長さやコストを抑えたい場合は小さくしてください。推論トークンもこの上限に含まれます。",

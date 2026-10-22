@@ -193,6 +193,7 @@ export const zhCN: TranslationKeys = {
   nameShownInSelector: "在模型选择器中显示的名称",
   apiKey: "API 密钥",
   enterApiKey: "输入 API 密钥",
+  providerApiKeyKeepExisting: "留空以保留已保存的密钥",
   maxOutputTokens: "最大输出令牌数",
   maxOutputTokensHelp:
     "留空则使用模型公布的输出上限。降低该值可限制回答长度或成本。推理令牌也计入此上限。",

@@ -193,6 +193,7 @@ export const en: TranslationKeys = {
   nameShownInSelector: "Name shown in the model selector",
   apiKey: "API Key",
   enterApiKey: "Enter API key",
+  providerApiKeyKeepExisting: "Leave blank to keep the saved key",
   maxOutputTokens: "Max output tokens",
   maxOutputTokensHelp:
     "Leave blank to use the model's published output limit. Lower it to cap response length or cost. Reasoning tokens count toward it.",

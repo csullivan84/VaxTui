@@ -194,6 +194,7 @@ export const es: TranslationKeys = {
   nameShownInSelector: "Nombre que se muestra en el selector de modelos",
   apiKey: "Clave de API",
   enterApiKey: "Ingrese la clave de API",
+  providerApiKeyKeepExisting: "Déjelo en blanco para conservar la clave guardada",
   maxOutputTokens: "Máximo de tokens de salida",
   maxOutputTokensHelp:
     "Déjelo en blanco para usar el límite de salida publicado del modelo. Redúzcalo para limitar la longitud o el coste de la respuesta. Los tokens de razonamiento cuentan para este límite.",

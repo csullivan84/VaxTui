@@ -101,7 +101,8 @@
         <label>{{ t("apiKey") }}</label>
         <InputText
           v-model="form.api_key"
-          :placeholder="t('enterApiKey')"
+          type="password"
+          :placeholder="editModel?.has_api_key ? t('providerApiKeyKeepExisting') : t('enterApiKey')"
           fluid
           :dt="inputFieldDt"
           autocomplete="off"
@@ -266,11 +267,11 @@
           type="button"
           severity="secondary"
           :label="testing ? t('testingButton') : t('testButton')"
-          :disabled="testing || (!form.api_key && !editModel) || !form.model_name"
+          :disabled="testing || !hasApiKey || !form.model_name"
           :title="
             !form.model_name
               ? 'Enter model name to test'
-              : !form.api_key && !editModel
+              : !hasApiKey
                 ? 'Enter API key to test'
                 : ''
           "
@@ -279,7 +280,7 @@
         <Button
           type="button"
           :label="editModel ? t('save') : t('addModel')"
-          :disabled="!form.display_name || !form.api_key || !form.model_name"
+          :disabled="!form.display_name || !hasApiKey || !form.model_name"
           @click="handleSave"
         />
       </div>
@@ -338,6 +339,7 @@ const reasoningReplayOptions = computed(() => [
 const form = reactive<FormData>({ ...emptyForm });
 const maxTokensInput = ref("");
 const maxTokensValid = ref(true);
+const hasApiKey = computed(() => !!form.api_key || !!props.editModel?.has_api_key);
 
 const error = ref<string | null>(null);
 const testing = ref(false);
@@ -409,7 +411,7 @@ watch(
         provider_type: m.provider_type,
         endpoint: m.endpoint,
         endpoint_custom: m.endpoint !== DEFAULT_ENDPOINTS[m.provider_type as ProviderType],
-        api_key: m.api_key,
+        api_key: "",
         model_name: m.model_name,
         max_tokens: m.max_tokens,
         tags: m.tags,
@@ -463,7 +465,7 @@ async function handleTest() {
     testResult.value = { success: false, message: t("modelNameRequired") };
     return;
   }
-  if (!form.api_key && !props.editModel) {
+  if (!hasApiKey.value) {
     testResult.value = { success: false, message: t("apiKeyRequired") };
     return;
   }
@@ -498,7 +500,7 @@ async function handleSave() {
     error.value = "Max output tokens must be a positive integer";
     return;
   }
-  if (!form.display_name || !form.api_key || !form.model_name) {
+  if (!form.display_name || !hasApiKey.value || !form.model_name) {
     error.value = "Display name, API key, and model name are required";
     return;
   }

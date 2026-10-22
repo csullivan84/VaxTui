@@ -193,6 +193,7 @@ export const vi: TranslationKeys = {
   nameShownInSelector: "Tên ở phần chọn model",
   apiKey: "API Key",
   enterApiKey: "Nhập API key",
+  providerApiKeyKeepExisting: "Để trống để giữ key đã lưu",
   maxOutputTokens: "Số token đầu ra tối đa",
   maxOutputTokensHelp:
     "Để trống để dùng giới hạn đầu ra công bố của mô hình. Giảm xuống để giới hạn độ dài hoặc chi phí của câu trả lời. Token suy luận được tính vào giới hạn này.",

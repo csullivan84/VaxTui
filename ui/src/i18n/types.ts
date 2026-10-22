@@ -192,6 +192,7 @@ export interface TranslationKeys {
   nameShownInSelector: string;
   apiKey: string;
   enterApiKey: string;
+  providerApiKeyKeepExisting: string;
   maxOutputTokens: string;
   maxOutputTokensHelp: string;
   maxOutputTokensPlaceholder: string;
