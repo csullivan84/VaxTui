@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -251,6 +252,10 @@ func (l *RunConfig) run(ctx context.Context) error {
 		// Convert response to a message, persist it through the response hook,
 		// and retain it for the next model request.
 		assistantMessage := resp.ToMessage()
+		// Calls run from the model's own input (malformed input is refused
+		// there); history keeps canonical input, which providers accept.
+		calls := assistantMessage.Content
+		assistantMessage = canonicalToolInputs(assistantMessage)
 		if resp.StopReason == llm.StopReasonToolUse {
 			if err := ctx.Err(); err != nil {
 				return err
@@ -267,8 +272,8 @@ func (l *RunConfig) run(ctx context.Context) error {
 			return nil
 		}
 
-		l.Logger.Debug("handling tool calls", "content_count", len(resp.Content))
-		if err := l.executeToolCalls(ctx, resp.Content, &messages); err != nil {
+		l.Logger.Debug("handling tool calls", "content_count", len(assistantMessage.Content))
+		if err := l.executeToolCalls(ctx, calls, &messages); err != nil {
 			if errors.Is(err, errToolEndedTurn) {
 				return nil
 			}
@@ -452,6 +457,19 @@ func (l *RunConfig) resolvePausedTurn(
 	resolved.Usage = totalUsage
 	resolved.StartTime = startTime // EndTime stays at the final continuation
 	return &resolved, nil
+}
+
+// canonicalToolInputs returns message with each tool call's input in the
+// form llm.CanonicalToolInput gives it.
+func canonicalToolInputs(message llm.Message) llm.Message {
+	content := slices.Clone(message.Content)
+	for i, c := range content {
+		if c.Type == llm.ContentTypeToolUse {
+			content[i].ToolInput, _ = llm.CanonicalToolInput(c.ToolInput)
+		}
+	}
+	message.Content = content
+	return message
 }
 
 func (l *RunConfig) emitResponse(ctx context.Context, message llm.Message, usage llm.Usage, failureMessage string) error {
@@ -733,6 +751,19 @@ func (l *RunConfig) executeToolCall(ctx context.Context, call llm.Content, tool 
 			ToolResult: []llm.Content{
 				{Type: llm.ContentTypeText, Text: fmt.Sprintf("Tool '%s' not found", call.ToolName)},
 			},
+		}}
+	}
+
+	if _, repeated := llm.CanonicalToolInput(call.ToolInput); len(repeated) > 0 {
+		l.Logger.Warn("tool input repeats names", "name", call.ToolName, "repeated", repeated)
+		return toolCallExecution{content: llm.Content{
+			Type:      llm.ContentTypeToolResult,
+			ToolUseID: call.ID,
+			ToolError: true,
+			ToolResult: []llm.Content{{Type: llm.ContentTypeText, Text: fmt.Sprintf(
+				"Malformed tool call: its input repeats %q, so it was not run. Call %s again, giving each parameter once.",
+				repeated, call.ToolName,
+			)}},
 		}}
 	}
 

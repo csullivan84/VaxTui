@@ -2674,3 +2674,9 @@ func TestServiceDoDoesNotRetryNonEventStreamResponse(t *testing.T) {
 		t.Fatalf("attempts = %d, err = %v; want one attempt naming the content type", attempts, err)
 	}
 }
+
+func TestCanonicalToolInputReplayed(t *testing.T) {
+	if got := string(canonicalToolInput(json.RawMessage(`{"a":1,"a":2}`))); got != `{"a":2}` {
+		t.Fatalf("tool input %s", got)
+	}
+}
