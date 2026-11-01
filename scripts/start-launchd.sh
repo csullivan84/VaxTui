@@ -18,4 +18,4 @@ fi
 
 mkdir -p "$LOG_DIR"
 cd "$ROOT"
-exec "$BIN" serve -port "$PORT"
+exec "$BIN" serve -host 127.0.0.1 -port "$PORT"

@@ -184,6 +184,7 @@ func runSkill(args []string) {
 func runServe(global GlobalConfig, args []string) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	port := fs.String("port", "9000", "Port to listen on")
+	host := fs.String("host", "", "Address to listen on; empty listens on all interfaces")
 	portFile := fs.String("port-file", "", "Write the actual listening port to this file (useful with --port 0)")
 	systemdActivation := fs.Bool("systemd-activation", false, "Use systemd socket activation (listen on fd from systemd)")
 	requireHeader := fs.String("require-header", "", "Require this header on all API requests (e.g., X-Exedev-Userid)")
@@ -239,7 +240,7 @@ func runServe(global GlobalConfig, args []string) {
 		logger.Info("Using systemd socket activation")
 		err = svr.StartWithListeners(listener, effectiveSocket)
 	} else {
-		listener, listenerErr := net.Listen("tcp", ":"+*port)
+		listener, listenerErr := net.Listen("tcp", net.JoinHostPort(*host, *port))
 		if listenerErr != nil {
 			logger.Error("Failed to create listener", "error", listenerErr)
 			os.Exit(1)
