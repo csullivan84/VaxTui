@@ -81,9 +81,9 @@ func (s *Server) handleMessageFile(w http.ResponseWriter, r *http.Request) {
 	// navigation to this URL would otherwise render active content).
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; sandbox")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	// Short-term caching: unlike DB-embedded images, on-disk files can change
-	// during a session, so don't cache aggressively.
-	w.Header().Set("Cache-Control", "private, max-age=60")
+	// Unlike DB-embedded images, on-disk files change as the agent works:
+	// revalidate every time, so a rewritten chart never shows stale.
+	w.Header().Set("Cache-Control", "private, no-cache")
 	io.Copy(w, f)
 }
 
