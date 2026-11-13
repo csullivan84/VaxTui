@@ -103,7 +103,7 @@ func (c *CodebaseInfo) SubdirGuidanceSummary() string {
 		b.WriteByte('\n')
 	}
 	if len(c.SubdirGuidanceFiles) > 10 {
-		fmt.Fprintf(&b, "...and %d more. Use `find` to discover others.\n", len(c.SubdirGuidanceFiles)-10)
+		fmt.Fprintf(&b, "...and %d more. Use `find` within the repository to discover others.\n", len(c.SubdirGuidanceFiles)-10)
 	}
 	return b.String()
 }
@@ -1001,6 +1001,7 @@ func isSudoAvailable() bool {
 type SubagentSystemPromptData struct {
 	WorkingDirectory string
 	GitInfo          *GitInfo
+	Codebase         *CodebaseInfo
 	ShelleyDBPath    string
 	ConversationID   string
 	// MessageParent is set for delegated subagents, which have the
@@ -1046,6 +1047,23 @@ func generateSubagentSystemPromptData(workingDir, parentConversationID string, m
 	gitInfo, err := collectGitInfo(wd)
 	if err == nil {
 		data.GitInfo = gitInfo
+	}
+
+	if messageParent {
+		data.Codebase, err = collectCodebaseInfo(wd, gitInfo)
+		if err != nil {
+			return "", nil, fmt.Errorf("failed to collect subagent guidance: %w", err)
+		}
+		if gitInfo == nil {
+			dir, err := filepath.Abs(wd)
+			if err != nil {
+				return "", nil, fmt.Errorf("failed to resolve guidance directory: %w", err)
+			}
+			for parent := filepath.Dir(dir); parent != dir; parent = filepath.Dir(dir) {
+				data.Codebase.InjectFiles = append(data.Codebase.InjectFiles, findGuidanceFilesInDir(parent)...)
+				dir = parent
+			}
+		}
 	}
 
 	// Collect skills
