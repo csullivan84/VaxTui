@@ -7,6 +7,8 @@
 
 export {};
 
+import type { Message } from "../types";
+
 function assert(condition: boolean, message: string): void {
   if (!condition) throw new Error(`Assertion failed: ${message}`);
 }
@@ -130,6 +132,9 @@ let fetchCalls = 0;
 let fetchURL = "";
 let fetchRedirect: RequestRedirect | undefined;
 const fakeFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+  // messageStore's encrypted cache fetches its key in the background; only
+  // the stream's authentication probe counts.
+  if (input.toString() === "/api/cache-key") return { type: "basic", status: 503 } as Response;
   fetchCalls += 1;
   fetchURL = input.toString();
   fetchRedirect = init?.redirect;
@@ -219,15 +224,70 @@ await run("routes text and thinking deltas separately", () => {
   latest().emitOpen();
   latest().emitMessage({
     conversation_id: id,
-    stream_delta: { type: "thinking", text: "consider", index: 0, seq: 1 },
+    stream_delta: { type: "thinking", text: "consider", index: 0, seq: 1, message_id: "reply" },
   });
   latest().emitMessage({
     conversation_id: id,
-    stream_delta: { type: "text", text: "answer", index: 1, seq: 2 },
+    stream_delta: { type: "text", text: "answer", index: 1, seq: 2, message_id: "reply" },
   });
   const transient = messageStore.getTransient(id);
   assert(transient.streamingThinking === "consider", "thinking delta routed to thinking");
   assert(transient.streamingText === "answer", "text delta routed to text");
+  assert(transient.streamingMessageId === "reply", "preview keeps the saved reply's identity");
+  s.handle.close();
+});
+
+await run("a cancelled preview does not reappear when the next turn starts", () => {
+  reset();
+  const id = "stream-cancelled";
+  messageStore.resetTransient(id);
+  const s = newStream();
+  latest().emitOpen();
+  messageStore.setAgentWorking(id, true);
+  latest().emitMessage({
+    conversation_id: id,
+    stream_delta: {
+      type: "text",
+      text: "interrupted answer",
+      index: 1,
+      seq: 1,
+      message_id: "reply",
+    },
+  });
+  latest().emitMessage({
+    conversation_id: id,
+    stream_delta: {
+      type: "thinking",
+      text: "interrupted thinking",
+      index: 0,
+      seq: 2,
+      message_id: "reply",
+    },
+  });
+  // Stop records a fresh-ID end marker, not a saved row for the partial reply.
+  const cancelled: Message = {
+    conversation_id: id,
+    message_id: "cancel-marker",
+    sequence_id: 2,
+    type: "agent",
+    llm_data: JSON.stringify({
+      Role: 1,
+      Content: [{ Type: 2, Text: "[Operation cancelled]" }],
+      EndOfTurn: true,
+    }),
+    user_data: null,
+    usage_data: null,
+    display_data: null,
+    created_at: new Date(0).toISOString(),
+    generation: 0,
+    end_of_turn: true,
+  };
+  latest().emitMessage({ conversation_id: id, messages: [cancelled] });
+  messageStore.setAgentWorking(id, false);
+  messageStore.setAgentWorking(id, true);
+  const transient = messageStore.getTransient(id);
+  assert(transient.streamingText === "", "next turn must not revive cancelled text");
+  assert(transient.streamingThinking === "", "next turn must not revive cancelled thinking");
   s.handle.close();
 });
 
