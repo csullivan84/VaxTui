@@ -222,6 +222,9 @@ func runServe(global GlobalConfig, args []string) {
 	logger.Info("Available models", "models", strings.Join(availableModels, ", "))
 
 	toolSetConfig := setupToolSetConfig(llmManager, llmManager, database)
+	// Browser tests, which run predictable-only, check exact bash output
+	// that a loaded test machine's notes would change.
+	toolSetConfig.BashResourceNotes = !global.PredictableOnly
 
 	// Create server
 	svr := server.NewServer(database, llmManager, toolSetConfig, logger, global.PredictableOnly, llmConfig.DefaultModel, *requireHeader)
