@@ -3023,6 +3023,9 @@ func (s *Server) handleSearchConversations(w http.ResponseWriter, r *http.Reques
 	}
 	results, err := s.searchConversationsFTSWithState(r.Context(), query, limit, offset)
 	if err != nil {
+		if errors.Is(err, context.Canceled) && r.Context().Err() == context.Canceled {
+			return
+		}
 		s.internalError(w, "Failed to search conversations", err)
 		return
 	}
