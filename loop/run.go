@@ -2,6 +2,7 @@ package loop
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -221,6 +222,7 @@ func (l *RunConfig) run(ctx context.Context) error {
 		}
 
 		l.Logger.Debug("received LLM response", "content_count", len(resp.Content), "stop_reason", resp.StopReason.String(), "usage", resp.Usage.String())
+		l.fillToolCallIDs(resp)
 
 		// Handle max tokens truncation BEFORE adding to history - truncated responses
 		// should not be added to history normally (they get special handling)
@@ -331,6 +333,18 @@ func (l *RunConfig) sendWithRetry(ctx context.Context, req *llm.Request, request
 // req is the request that produced the initial paused response; it is not
 // mutated — each continuation request is a shallow copy with a fresh Messages
 // slice that has the running assistant turn appended.
+// fillToolCallIDs gives each tool call the provider sent without an id a
+// unique one, before the reply is recorded in any form or its tools run, so
+// its result and clients can name it.
+func (l *RunConfig) fillToolCallIDs(resp *llm.Response) {
+	for i, c := range resp.Content {
+		if c.Type == llm.ContentTypeToolUse && c.ID == "" {
+			resp.Content[i].ID = "shelley_" + rand.Text()
+			l.Logger.Warn("tool call without an id; assigned one", "name", c.ToolName, "call_id", resp.Content[i].ID)
+		}
+	}
+}
+
 func (l *RunConfig) resolvePausedTurn(
 	ctx context.Context,
 	req *llm.Request,
