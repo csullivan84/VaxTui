@@ -796,9 +796,15 @@ func runModels(global GlobalConfig, args []string) {
 
 // systemdListener returns a net.Listener from systemd socket activation.
 // Systemd passes file descriptors starting at fd 3, with LISTEN_FDS indicating the count.
+// It unsets the LISTEN_* variables, as sd_listen_fds does, so that child
+// processes do not mistake themselves for socket-activated.
 func systemdListener() (net.Listener, error) {
+	pidStr, fdsStr := os.Getenv("LISTEN_PID"), os.Getenv("LISTEN_FDS")
+	for _, k := range []string{"LISTEN_PID", "LISTEN_FDS", "LISTEN_FDNAMES", "LISTEN_PIDFDID"} {
+		os.Unsetenv(k)
+	}
+
 	// Check LISTEN_PID matches our PID (optional but recommended)
-	pidStr := os.Getenv("LISTEN_PID")
 	if pidStr != "" {
 		pid, err := strconv.Atoi(pidStr)
 		if err != nil {
@@ -810,7 +816,6 @@ func systemdListener() (net.Listener, error) {
 	}
 
 	// Get the number of file descriptors passed
-	fdsStr := os.Getenv("LISTEN_FDS")
 	if fdsStr == "" {
 		return nil, fmt.Errorf("LISTEN_FDS not set; not running under systemd socket activation")
 	}
