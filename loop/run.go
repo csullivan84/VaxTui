@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -749,7 +750,27 @@ func (l *RunConfig) executeToolCall(ctx context.Context, call llm.Content, tool 
 
 	startTime := time.Now()
 	resultCh := make(chan llm.ToolOut, 1)
-	go func() { resultCh <- tool.Run(toolCtx, call.ToolInput) }()
+	go func() {
+		// A panic on this goroutine would end the process and every
+		// conversation in it; report it as this call's error instead. The
+		// panic skipped the tool's secret redaction, so only its type and
+		// call sites are passed on, never its value or frame arguments.
+		defer func() {
+			if r := recover(); r != nil {
+				var stack strings.Builder
+				pcs := make([]uintptr, 64)
+				frames := runtime.CallersFrames(pcs[:runtime.Callers(1, pcs)])
+				for more := true; more; {
+					var f runtime.Frame
+					f, more = frames.Next()
+					fmt.Fprintf(&stack, "%s\n\t%s:%d\n", f.Function, f.File, f.Line)
+				}
+				l.Logger.Error("tool panicked", "name", call.ToolName, "id", call.ID, "type", fmt.Sprintf("%T", r), "stack", stack.String())
+				resultCh <- llm.ToolOut{Error: fmt.Errorf("tool %s panicked (%T); the stack is in the server log", call.ToolName, r)}
+			}
+		}()
+		resultCh <- tool.Run(toolCtx, call.ToolInput)
+	}()
 
 	var result llm.ToolOut
 	abandoned := false
