@@ -67,3 +67,11 @@ Thumbs.db
 # Local scratch / fire notes (all subpaths)
 fire/
 .metadata_never_index
+
+# Run output (logs, handoffs, evidence, scratch) lives outside the repo
+*.log
+*.pid
+*.out
+*.bak*
+*.orig
+*.rej

@@ -53,3 +53,8 @@ and indiscriminately running pkill -f shelley may break things.
 17. No Vim. Do not add Vim modes, Vim keybindings, `monaco-vim`, Vim toggles, or
     Vim-specific tests to any editor or input. When merging upstream, drop upstream's
     Vim code and specs instead of carrying them.
+18. Run output (logs, handoffs, evidence, scratch) goes outside the repo, under
+    `~/agent/draft/run/<campaign>/`. `scripts/check-no-sprawl.sh` (run by `go test ./scripts`, so CI and `test_ci.sh`) refuses a
+    top-level entry that is neither upstream's nor in its `FORK_EXTRAS`, and committed `*.log`,
+    `*.pid`, `*.out`, `*.bak*`, `*.orig` and `*.rej`. After an upstream sync that adds a top-level
+    entry, add it to `UPSTREAM` in that script.
