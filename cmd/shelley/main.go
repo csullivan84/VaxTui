@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"shelley.exe.dev/claudetool"
 	"shelley.exe.dev/client"
@@ -193,6 +194,11 @@ func runServe(global GlobalConfig, args []string) {
 	fs.Parse(args)
 
 	logger := setupLogging(global.Debug)
+
+	// Background job logs and large-output dumps are never kept forever.
+	if n := claudetool.PruneStaleTempFiles(time.Now()); n > 0 {
+		logger.Info("Removed stale temp files", "count", n)
+	}
 
 	database := setupDatabase(global.DBPath, logger)
 	defer database.Close()
