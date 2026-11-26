@@ -15,7 +15,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"unicode"
 
 	"github.com/pkg/diff"
@@ -30,14 +29,10 @@ import (
 // and returns a new, possibly altered tool output.
 type PatchCallback func(input PatchInput, output llm.ToolOut) llm.ToolOut
 
-type patchFileIdentity struct {
-	info os.FileInfo
-}
-
 type patchPathLock struct {
-	path     string
-	identity atomic.Pointer[patchFileIdentity]
-	mu       sync.Mutex
+	path  string
+	order int
+	mu    sync.Mutex
 }
 
 // PatchTool specifies an llm.Tool for patching files.
@@ -64,35 +59,53 @@ func canonicalPatchPath(path string) string {
 	return path
 }
 
-func (p *PatchTool) lockPath(path string) func() {
+// pathLockFor requires pathLocksMu to be held.
+func (p *PatchTool) pathLockFor(path string) *patchPathLock {
 	path = canonicalPatchPath(path)
 	info, _ := os.Stat(path)
-
-	p.pathLocksMu.Lock()
-	var pathLock *patchPathLock
 	for _, candidate := range p.pathLocks {
-		identity := candidate.identity.Load()
-		if candidate.path == path || (info != nil && identity != nil && os.SameFile(info, identity.info)) {
-			pathLock = candidate
-			break
+		if candidate.path == path {
+			return candidate
+		}
+		if info != nil {
+			// A path can be replaced and its old inode reused elsewhere.
+			if current, err := os.Stat(candidate.path); err == nil && os.SameFile(info, current) {
+				return candidate
+			}
 		}
 	}
-	if pathLock == nil {
-		pathLock = &patchPathLock{path: path}
-		if info != nil {
-			pathLock.identity.Store(&patchFileIdentity{info: info})
+	lock := &patchPathLock{path: path, order: len(p.pathLocks)}
+	p.pathLocks = append(p.pathLocks, lock)
+	return lock
+}
+
+func (p *PatchTool) lockPaths(paths []string) func() {
+	p.pathLocksMu.Lock()
+	seen := make(map[*patchPathLock]bool, len(paths))
+	locks := make([]*patchPathLock, 0, len(paths))
+	for _, path := range paths {
+		lock := p.pathLockFor(path)
+		if !seen[lock] {
+			seen[lock] = true
+			locks = append(locks, lock)
 		}
-		p.pathLocks = append(p.pathLocks, pathLock)
 	}
 	p.pathLocksMu.Unlock()
 
-	pathLock.mu.Lock()
-	return func() {
-		if info, err := os.Stat(path); err == nil {
-			pathLock.identity.Store(&patchFileIdentity{info: info})
-		}
-		pathLock.mu.Unlock()
+	// Aliases must acquire the same mutex only once, in the same order.
+	sort.Slice(locks, func(i, j int) bool { return locks[i].order < locks[j].order })
+	for _, lock := range locks {
+		lock.mu.Lock()
 	}
+	return func() {
+		for i := len(locks) - 1; i >= 0; i-- {
+			locks[i].mu.Unlock()
+		}
+	}
+}
+
+func (p *PatchTool) lockPath(path string) func() {
+	return p.lockPaths([]string{path})
 }
 
 func (p *PatchTool) lockClipboards(patches []PatchRequest) func() {
@@ -434,7 +447,7 @@ func (p *PatchTool) runApplyPatch(ctx context.Context, text string) llm.ToolOut 
 		return llm.ErrorToolOut(err)
 	}
 
-	pathSet := make(map[string]struct{}, len(files))
+	paths := make([]string, 0, len(files))
 	for _, file := range files {
 		for _, path := range []string{file.path, file.movePath} {
 			if path == "" {
@@ -443,25 +456,14 @@ func (p *PatchTool) runApplyPatch(ctx context.Context, text string) llm.ToolOut 
 			if !filepath.IsAbs(path) {
 				path = filepath.Join(p.getWorkingDir(), path)
 			}
-			pathSet[filepath.Clean(path)] = struct{}{}
+			paths = append(paths, filepath.Clean(path))
 		}
 	}
-	paths := make([]string, 0, len(pathSet))
-	for path := range pathSet {
-		paths = append(paths, path)
+	unlock := p.lockPaths(paths)
+	defer unlock()
+	if err := ctx.Err(); err != nil {
+		return llm.ErrorToolOut(err)
 	}
-	// Acquire all locks in a stable order so validation and commit see one
-	// consistent snapshot without deadlocking concurrent multi-file patches.
-	sort.Strings(paths)
-	unlocks := make([]func(), 0, len(paths))
-	for _, path := range paths {
-		unlocks = append(unlocks, p.lockPath(path))
-	}
-	defer func() {
-		for i := len(unlocks) - 1; i >= 0; i-- {
-			unlocks[i]()
-		}
-	}()
 
 	mutations := make([]applyPatchMutation, 0, len(files))
 	var matchNotices []string
