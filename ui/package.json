@@ -45,7 +45,7 @@
     "emoji-picker-element": "^1.29.1",
     "idb": "^8.0.4",
     "jszip": "^3.10.2",
-    "katex": "^0.18.10",
+    "katex": "^0.19.1",
     "marked": "^18.2.1",
     "monaco-editor": "^0.44.0",
     "primeicons": "^7.0.0",
