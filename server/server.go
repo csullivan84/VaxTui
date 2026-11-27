@@ -349,8 +349,7 @@ type Server struct {
 	defaultModel             string
 	requireHeader            string
 	refreshBuiltModels       func(context.Context) ([]models.Built, error)
-	providerAuthHome         string
-	providerAuthPath         string
+	providerStorePath        string
 	conversationGroup        singleflight.Group[string, *ConversationManager]
 	versionChecker           *VersionChecker
 	notifDispatcher          *notifications.Dispatcher
@@ -504,11 +503,10 @@ func (s *Server) SetModelRefresher(refresh func(context.Context) ([]models.Built
 	s.refreshBuiltModels = refresh
 }
 
-// SetProviderOnboarding enables first-run credential discovery and import.
-// Empty paths select the current user's standard application directories.
-func (s *Server) SetProviderOnboarding(home, storePath string) {
-	s.providerAuthHome = home
-	s.providerAuthPath = storePath
+// SetProviderStore sets where onboarding saves provider credentials.
+// An empty path selects ~/.config/shelley/providers.json.
+func (s *Server) SetProviderStore(path string) {
+	s.providerStorePath = path
 }
 
 // RegisterNotificationChannel adds a backend notification channel to the dispatcher.

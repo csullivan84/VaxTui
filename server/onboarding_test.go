@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -16,16 +15,8 @@ import (
 	"shelley.exe.dev/providerauth"
 )
 
-func TestOnboardingDiscoversImportsAndRefreshesProviders(t *testing.T) {
-	home := t.TempDir()
-	authPath := filepath.Join(home, ".local", "share", "opencode", "auth.json")
-	if err := os.MkdirAll(filepath.Dir(authPath), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(authPath, []byte(`{"opencode":{"type":"api","key":"secret-opencode-key"}}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	storePath := filepath.Join(home, ".config", "shelley", "providers.json")
+func TestOnboardingSavesOpenRouterKeyAndRefreshesProviders(t *testing.T) {
+	storePath := filepath.Join(t.TempDir(), "shelley", "providers.json")
 	database, cleanup := setupTestDB(t)
 	defer cleanup()
 	mgr, err := models.NewManager(&models.Config{
@@ -40,12 +31,11 @@ func TestOnboardingDiscoversImportsAndRefreshesProviders(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := &Server{
-		db:               database,
-		llmManager:       mgr,
-		logger:           slog.Default(),
-		defaultModel:     "predictable",
-		providerAuthHome: home,
-		providerAuthPath: storePath,
+		db:                database,
+		llmManager:        mgr,
+		logger:            slog.Default(),
+		defaultModel:      "predictable",
+		providerStorePath: storePath,
 		refreshBuiltModels: func(context.Context) ([]models.Built, error) {
 			config, loadErr := providerauth.Load(storePath)
 			if loadErr != nil {
@@ -59,40 +49,36 @@ func TestOnboardingDiscoversImportsAndRefreshesProviders(t *testing.T) {
 		},
 	}
 
-	getRequest := httptest.NewRequest(http.MethodGet, "/api/onboarding", nil)
 	getRecorder := httptest.NewRecorder()
-	s.handleGetOnboarding(getRecorder, getRequest)
+	s.handleGetOnboarding(getRecorder, httptest.NewRequest(http.MethodGet, "/api/onboarding", nil))
 	if getRecorder.Code != http.StatusOK {
 		t.Fatalf("GET status = %d, body = %q", getRecorder.Code, getRecorder.Body.String())
-	}
-	if strings.Contains(getRecorder.Body.String(), "secret-opencode-key") {
-		t.Fatal("GET response leaked provider key")
 	}
 	var initial onboardingResponse
 	if err := json.NewDecoder(getRecorder.Body).Decode(&initial); err != nil {
 		t.Fatal(err)
 	}
-	if initial.Complete || len(initial.Candidates) != 1 || initial.Candidates[0].ID != "opencode:opencode" {
+	if initial.Complete || initial.HasReadyModels {
 		t.Fatalf("initial response = %#v", initial)
 	}
 
-	postRequest := httptest.NewRequest(http.MethodPost, "/api/onboarding", strings.NewReader(`{"candidate_ids":["opencode:opencode"]}`))
+	postRequest := httptest.NewRequest(http.MethodPost, "/api/onboarding", strings.NewReader(`{"openrouter_api_key":"secret-openrouter-key"}`))
 	postRecorder := httptest.NewRecorder()
 	s.handleCompleteOnboarding(postRecorder, postRequest)
 	if postRecorder.Code != http.StatusOK {
 		t.Fatalf("POST status = %d, body = %q", postRecorder.Code, postRecorder.Body.String())
 	}
-	if strings.Contains(postRecorder.Body.String(), "secret-opencode-key") {
+	if strings.Contains(postRecorder.Body.String(), "secret-openrouter-key") {
 		t.Fatal("POST response leaked provider key")
 	}
 	var completed onboardingResponse
 	if err := json.NewDecoder(postRecorder.Body).Decode(&completed); err != nil {
 		t.Fatal(err)
 	}
-	if !completed.Complete || !completed.HasReadyModels || !mgr.HasModel("opencode/auto") {
+	if !completed.Complete || !completed.HasReadyModels || !mgr.HasModel("openrouter/auto") {
 		t.Fatalf("completed response = %#v", completed)
 	}
-	if s.defaultModel != "opencode/auto" {
+	if s.defaultModel != "openrouter/auto" {
 		t.Fatalf("default model = %q", s.defaultModel)
 	}
 }
@@ -126,7 +112,7 @@ func TestOnboardingPredictableOnlySkipsSetup(t *testing.T) {
 	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
 		t.Fatal(err)
 	}
-	if !response.Complete || len(response.Candidates) != 0 || len(response.Models) != 1 {
+	if !response.Complete || len(response.Models) != 1 {
 		t.Fatalf("response = %#v", response)
 	}
 }

@@ -225,7 +225,7 @@ func runServe(global GlobalConfig, args []string) {
 	// Create server
 	svr := server.NewServer(database, llmManager, toolSetConfig, logger, global.PredictableOnly, llmConfig.DefaultModel, *requireHeader)
 	svr.SetModelRefresher(llmConfig.RefreshBuiltModels)
-	svr.SetProviderOnboarding("", "")
+	svr.SetProviderStore("")
 	svr.Banner = *banner
 
 	// Load notification channels from DB.
@@ -578,14 +578,11 @@ func buildLLMConfig(global GlobalConfig, logger *slog.Logger, database *db.DB) (
 		}
 		providerConfig, err := providerauth.Load("")
 		if err != nil {
-			return "", nil, nil, fmt.Errorf("load imported provider credentials: %w", err)
+			return "", nil, nil, fmt.Errorf("load stored provider credentials: %w", err)
 		}
 		for _, provider := range providerConfig.Providers {
-			switch provider.Kind {
-			case providerauth.KindOpenAICodex:
+			if provider.Kind == providerauth.KindOpenAICodex {
 				sources = append(sources, modelsources.OpenAICodex(provider.AccessToken, provider.AccountID))
-			case providerauth.KindXAIOAuth:
-				sources = append(sources, modelsources.XAIOAuth(provider.AccessToken))
 			}
 		}
 		built := modelsources.Build(models.All(), sources, httpc, logger)

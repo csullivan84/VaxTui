@@ -12,8 +12,8 @@ bring your own.
 
 ## VaxTui enhancements
 
-Subscription-backed providers such as ChatGPT and OpenCode are discovered and
-can be imported during onboarding from their existing local credentials.
+A ChatGPT subscription works through the existing Codex CLI login (see
+[FORK.md](./FORK.md)); onboarding also accepts an OpenRouter API key.
 
 Herds group related, long-running terminals into durable work packs with shared lifecycle controls.
 VaxTui makes Herds accessible through semantic controls, status announcements, and predictable focus.
@@ -28,8 +28,6 @@ VaxTui makes Herds accessible through semantic controls, status announcements, a
   conversation is opened.
 - Manual editor saves by default, including an accessible dirty-file prompt
   before closing an unsaved tab.
-- Resilient multi-provider onboarding keeps valid providers available when
-  another provider cannot be discovered.
 
 *Mobile-friendly* because ideas can come any time.
 

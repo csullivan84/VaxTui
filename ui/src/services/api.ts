@@ -60,19 +60,8 @@ export interface AvailableModel {
   supports_images?: boolean;
 }
 
-export interface ProviderCandidate {
-  id: string;
-  source: string;
-  provider: string;
-  label: string;
-  auth_type: string;
-  model_id?: string;
-}
-
 export interface OnboardingStatus {
   complete: boolean;
-  candidates: ProviderCandidate[];
-  discovery_warnings: string[];
   has_ready_models: boolean;
   models: AvailableModel[];
 }
@@ -266,10 +255,7 @@ class ApiService {
     return response.json();
   }
 
-  async completeOnboarding(request: {
-    candidate_ids: string[];
-    openrouter_api_key: string;
-  }): Promise<OnboardingStatus> {
+  async completeOnboarding(request: { openrouter_api_key: string }): Promise<OnboardingStatus> {
     const response = await fetch(`${this.baseUrl}/onboarding`, {
       method: "POST",
       headers: this.postHeaders,

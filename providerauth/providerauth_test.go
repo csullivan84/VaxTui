@@ -1,151 +1,65 @@
 package providerauth
 
 import (
-	"encoding/base64"
-	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
-func TestDiscoverAndImportProviders(t *testing.T) {
-	home := t.TempDir()
-	writeFixture(t, filepath.Join(home, ".hermes", "auth.json"), map[string]any{
-		"providers": map[string]any{
-			"openai-codex": map[string]any{
-				"tokens": map[string]any{
-					"access_token":  jwtWithAccount(t, "acct-hermes"),
-					"refresh_token": "refresh-openai",
-				},
-			},
-		},
-		"credential_pool": map[string]any{
-			"xai-oauth": []any{map[string]any{
-				"id":            "x1",
-				"label":         "SuperGrok",
-				"access_token":  "xai-access",
-				"refresh_token": "xai-refresh",
-				"base_url":      "https://api.x.ai/v1",
-			}},
-		},
-	})
-	writeFixture(t, filepath.Join(home, ".local", "share", "opencode", "auth.json"), map[string]any{
-		"opencode-go": map[string]any{"type": "api", "key": "oc-key"},
-	})
-	if err := os.MkdirAll(filepath.Join(home, ".config", "opencode"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(home, ".config", "opencode", "opencode.jsonc"), []byte(`{"model":"opencode-go/gpt-5.6-luna"}`), 0o600); err != nil {
+func TestSaveOpenRouterKeyReplacesKeyAndKeepsOtherProviders(t *testing.T) {
+	storePath := filepath.Join(t.TempDir(), "shelley", "providers.json")
+	if err := Save(storePath, Config{Providers: []Provider{
+		{Kind: KindOpenAICodex, AccessToken: "codex-token", AccountID: "acct"},
+		{Kind: KindOpenRouter, AccessToken: "old-key"},
+	}}); err != nil {
 		t.Fatal(err)
 	}
 
-	candidates, err := Discover(home)
+	if _, err := SaveOpenRouterKey(storePath, " new-key "); err != nil {
+		t.Fatal(err)
+	}
+	config, err := Load(storePath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(candidates) != 3 {
-		t.Fatalf("candidates = %#v", candidates)
-	}
-	for _, candidate := range candidates {
-		encoded, err := json.Marshal(candidate)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if string(encoded) == "" || strings.Contains(string(encoded), "xai-access") || strings.Contains(string(encoded), "refresh-openai") || strings.Contains(string(encoded), "oc-key") {
-			t.Fatalf("candidate leaked a secret: %s", encoded)
-		}
-	}
-
-	storePath := filepath.Join(home, ".config", "shelley", "providers.json")
-	config, err := Import(home, storePath, []string{
-		"hermes:openai-codex",
-		"hermes:xai-oauth:x1",
-		"opencode:opencode-go",
-	}, "openrouter-key")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(config.Providers) != 4 {
+	if len(config.Providers) != 2 {
 		t.Fatalf("providers = %#v", config.Providers)
 	}
-	if got := PreferredModel(config); got != "opencode-go/gpt-5.6-luna" {
+	if got := PreferredModel(config); got != "openrouter/auto" {
 		t.Fatalf("preferred model = %q", got)
+	}
+	built := BuiltModels(config, nil)
+	if len(built) != 1 || built[0].ID != "openrouter/auto" {
+		t.Fatalf("built models = %#v", built)
+	}
+	for _, provider := range config.Providers {
+		if provider.Kind == KindOpenRouter && provider.AccessToken != "new-key" {
+			t.Fatalf("OpenRouter key = %q", provider.AccessToken)
+		}
 	}
 	if info, err := os.Stat(storePath); err != nil {
 		t.Fatal(err)
 	} else if info.Mode().Perm() != 0o600 {
 		t.Fatalf("provider store mode = %o", info.Mode().Perm())
 	}
+}
 
-	var accountID string
-	for _, provider := range config.Providers {
-		if provider.Kind == KindOpenAICodex {
-			accountID = provider.AccountID
-		}
+func TestPreferredModelForStoredCodexSession(t *testing.T) {
+	config := Config{Providers: []Provider{{Kind: KindOpenAICodex, AccessToken: "token"}}}
+	if got := PreferredModel(config); got != "gpt-5.6-luna" {
+		t.Fatalf("preferred model = %q", got)
 	}
-	if accountID != "acct-hermes" {
-		t.Fatalf("OpenAI account ID = %q", accountID)
-	}
-	if got := len(BuiltModels(config, nil)); got != 2 {
-		t.Fatalf("compatible built models = %d, want 2", got)
+	if got := len(BuiltModels(config, nil)); got != 0 {
+		t.Fatalf("built models = %d, want 0", got)
 	}
 }
 
-func TestImportRejectsStaleCandidate(t *testing.T) {
-	home := t.TempDir()
-	_, err := Import(home, filepath.Join(home, "providers.json"), []string{"missing"}, "")
-	if err == nil {
-		t.Fatal("expected missing candidate error")
-	}
-}
-
-func TestDiscoverAvailableKeepsValidSources(t *testing.T) {
-	home := t.TempDir()
-	brokenHermes := filepath.Join(home, ".hermes", "auth.json")
-	if err := os.MkdirAll(filepath.Dir(brokenHermes), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(brokenHermes, []byte("{"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	writeFixture(t, filepath.Join(home, ".local", "share", "opencode", "auth.json"), map[string]any{
-		"opencode": map[string]any{"type": "api", "key": "valid-key"},
-	})
-
-	candidates, warnings, err := DiscoverAvailable(home)
+func TestLoadMissingStore(t *testing.T) {
+	config, err := Load(filepath.Join(t.TempDir(), "providers.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(candidates) != 1 || candidates[0].ID != "opencode:opencode" {
-		t.Fatalf("candidates = %#v", candidates)
+	if config.Version != 1 || len(config.Providers) != 0 {
+		t.Fatalf("config = %#v", config)
 	}
-	if len(warnings) != 1 || !strings.Contains(warnings[0], "Hermes") {
-		t.Fatalf("warnings = %#v", warnings)
-	}
-}
-
-func writeFixture(t *testing.T, path string, value any) {
-	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	data, err := json.Marshal(value)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func jwtWithAccount(t *testing.T, accountID string) string {
-	t.Helper()
-	payload, err := json.Marshal(map[string]any{
-		"https://api.openai.com/auth": map[string]any{"chatgpt_account_id": accountID},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return "header." + base64.RawURLEncoding.EncodeToString(payload) + ".signature"
 }

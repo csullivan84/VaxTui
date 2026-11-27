@@ -6,7 +6,7 @@ VoiceOver-first fork of [boldsoftware/shelley](https://github.com/boldsoftware/s
 **Binary:** still `shelley` (upstream-compatible; rename later if needed)  
 **Default branch:** `main` (this tree is the product; `fork/lazy-sunday` was the early work branch)
 
-**Purpose:** Screen-reader-friendly coding agent UI with subscription and provider discovery for a single-user blind operator.
+**Purpose:** Screen-reader-friendly coding agent UI with ChatGPT subscription support (Codex OAuth) for a single-user blind operator.
 
 **Upstream:** `upstream` remote → `boldsoftware/shelley`  
 **Origin:** `origin` remote → [`csullivan84/VaxTui`](https://github.com/csullivan84/VaxTui)
@@ -44,7 +44,7 @@ make build
 # override: ./bin/shelley --db /tmp/vaxtui.db --default-model gpt-5.6-luna serve -port 8002
 ```
 
-The previous direct DeepSeek path was removed in favor of provider discovery and Codex OAuth. The Responses API base for Codex is `https://chatgpt.com/backend-api/codex` (no `/v1`).
+The previous direct DeepSeek path was removed in favor of Codex OAuth. The Responses API base for Codex is `https://chatgpt.com/backend-api/codex` (no `/v1`).
 
 ## Upstream contributions
 
