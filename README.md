@@ -12,8 +12,7 @@ bring your own.
 
 ## VaxTui enhancements
 
-A ChatGPT subscription works through the existing Codex CLI login (see
-[FORK.md](./FORK.md)); onboarding also accepts an OpenRouter API key.
+Onboarding accepts an OpenRouter API key (see [FORK.md](./FORK.md)).
 
 Herds group related, long-running terminals into durable work packs with shared lifecycle controls.
 VaxTui makes Herds accessible through semantic controls, status announcements, and predictable focus.

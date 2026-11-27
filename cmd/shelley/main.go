@@ -45,13 +45,7 @@ type shelleyConfig struct {
 
 var (
 	discoverLLMIntegrations = modelsources.DiscoverLLMIntegrations
-	readCodexOAuth          = codexOAuthCredentials
 )
-
-type codexOAuth struct {
-	AccessToken string
-	AccountID   string
-}
 
 // registerGlobalFlags binds the process-wide global flags onto fs, writing into
 // global. Extracted from main so tests can parse flags through a fresh FlagSet
@@ -560,8 +554,7 @@ func setupToolSetConfig(llmProvider claudetool.LLMServiceProvider, llmManager se
 //     provider env var overrides the gateway's implicit credential for
 //     that provider (legacy behavior).
 //  3. Provider env vars (ANTHROPIC_API_KEY, ...) when no gateway is set.
-//  4. OpenAI Codex OAuth from the existing Codex CLI session.
-//  5. Predictable (always available).
+//  4. Predictable (always available).
 //
 // Custom DB-backed models load on top of the returned set.
 func buildLLMConfig(global GlobalConfig, logger *slog.Logger, database *db.DB) (*server.LLMConfig, error) {
@@ -572,18 +565,10 @@ func buildLLMConfig(global GlobalConfig, logger *slog.Logger, database *db.DB) (
 
 	httpc := llmhttp.NewClient(nil)
 	build := func(ctx context.Context) (string, []models.Built, []models.TranscriptionModel, error) {
-		defaultModel, sources, err := buildLLMModelSources(ctx, global, config, logger)
-		if err != nil {
-			return "", nil, nil, err
-		}
+		defaultModel, sources := buildLLMModelSources(ctx, global, config, logger)
 		providerConfig, err := providerauth.Load("")
 		if err != nil {
 			return "", nil, nil, fmt.Errorf("load stored provider credentials: %w", err)
-		}
-		for _, provider := range providerConfig.Providers {
-			if provider.Kind == providerauth.KindOpenAICodex {
-				sources = append(sources, modelsources.OpenAICodex(provider.AccessToken, provider.AccountID))
-			}
 		}
 		built := modelsources.Build(models.All(), sources, httpc, logger)
 		built = append(built, providerauth.BuiltModels(providerConfig, httpc)...)
@@ -631,16 +616,12 @@ func loadConfig(path string) (shelleyConfig, error) {
 	return config, nil
 }
 
-func buildLLMModelSources(ctx context.Context, global GlobalConfig, config shelleyConfig, logger *slog.Logger) (string, []modelsources.Source, error) {
+func buildLLMModelSources(ctx context.Context, global GlobalConfig, config shelleyConfig, logger *slog.Logger) (string, []modelsources.Source) {
 	defaultModel := global.DefaultModel
 	anthropicKey := os.Getenv("ANTHROPIC_API_KEY")
 	openAIKey := os.Getenv("OPENAI_API_KEY")
 	geminiKey := os.Getenv("GEMINI_API_KEY")
 	fireworksKey := os.Getenv("FIREWORKS_API_KEY")
-	codex, err := readCodexOAuth()
-	if err != nil {
-		return "", nil, fmt.Errorf("read Codex OAuth credentials: %w", err)
-	}
 
 	var sources []modelsources.Source
 
@@ -670,10 +651,6 @@ func buildLLMModelSources(ctx context.Context, global GlobalConfig, config shell
 		gateway = ""
 	}
 
-	if defaultModel == "" && codex.AccessToken != "" {
-		defaultModel = "gpt-5.6-luna"
-	}
-
 	// 2. Gateway (Anthropic, OpenAI, Fireworks, xAI). Per-provider env vars
 	// override the gateway's implicit credential for those providers; xAI is
 	// gateway-only (no direct env-var credential).
@@ -695,41 +672,9 @@ func buildLLMModelSources(ctx context.Context, global GlobalConfig, config shell
 		sources = append(sources, modelsources.Env(anthropicKey, openAIKey, geminiKey, fireworksKey))
 	}
 
-	if codex.AccessToken != "" {
-		sources = append(sources, modelsources.OpenAICodex(codex.AccessToken, codex.AccountID))
-	}
-
 	// 4. Predictable always available.
 	sources = append(sources, modelsources.Predictable())
-	return defaultModel, sources, nil
-}
-
-func codexOAuthCredentials() (codexOAuth, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return codexOAuth{}, err
-	}
-	data, err := os.ReadFile(home + "/.codex/auth.json")
-	if os.IsNotExist(err) {
-		return codexOAuth{}, nil
-	}
-	if err != nil {
-		return codexOAuth{}, err
-	}
-	var auth struct {
-		AuthMode string `json:"auth_mode"`
-		Tokens   struct {
-			AccessToken string `json:"access_token"`
-			AccountID   string `json:"account_id"`
-		} `json:"tokens"`
-	}
-	if err := json.Unmarshal(data, &auth); err != nil {
-		return codexOAuth{}, fmt.Errorf("parse ~/.codex/auth.json: %w", err)
-	}
-	if auth.AuthMode != "chatgpt" || auth.Tokens.AccessToken == "" {
-		return codexOAuth{}, nil
-	}
-	return codexOAuth{AccessToken: auth.Tokens.AccessToken, AccountID: auth.Tokens.AccountID}, nil
+	return defaultModel, sources
 }
 
 func modelsCommandDefaultID(configured string, modelList []models.Built, predictableOnly bool) string {

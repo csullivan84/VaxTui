@@ -104,34 +104,6 @@ func TestEnvSourceLabels(t *testing.T) {
 	}
 }
 
-func TestOpenAICodexBuildsLuna(t *testing.T) {
-	bs := Build(models.All(), []Source{OpenAICodex("token", "account")}, &http.Client{}, nil)
-	b := findBuilt(bs, "gpt-5.6-luna")
-	if b == nil {
-		t.Fatal("gpt-5.6-luna not built")
-	}
-	if b.Source != "OpenAI Codex OAuth" {
-		t.Errorf("source = %q", b.Source)
-	}
-	if b.BaseURL != "https://chatgpt.com/backend-api/codex" {
-		t.Errorf("base URL = %q", b.BaseURL)
-	}
-	responses, ok := b.Service.(*oai.ResponsesService)
-	if !ok {
-		t.Fatalf("service type = %T", b.Service)
-	}
-	if got := responses.Headers.Get("ChatGPT-Account-ID"); got != "account" {
-		t.Errorf("account header = %q", got)
-	}
-	// Must be .../codex, not .../codex/v1 — the backend-api path has no /v1.
-	if responses.ModelURL != "https://chatgpt.com/backend-api/codex" {
-		t.Errorf("ModelURL = %q, want https://chatgpt.com/backend-api/codex", responses.ModelURL)
-	}
-	if !responses.OmitMaxOutputTokens {
-		t.Error("Codex OAuth service must omit max_output_tokens")
-	}
-}
-
 func TestGatewaySourceLabels(t *testing.T) {
 	// Plain gateway.
 	bs := Build(models.All(), []Source{Gateway("https://gw.example.com", "", "", "")}, &http.Client{}, nil)
@@ -1186,10 +1158,6 @@ func TestTranscriptionModelsFromOpenAICredentials(t *testing.T) {
 			name: "gateway with explicit key",
 			got:  routes(Gateway("https://gw.example.com", "", "sk-openai", "")),
 			want: want("https://gw.example.com/openai/v1/audio/transcriptions", "sk-openai", "$OPENAI_API_KEY"),
-		},
-		{
-			name: "Codex OAuth is not an audio transcription credential",
-			got:  routes(OpenAICodex("fixture-token", "fixture-account")),
 		},
 		{
 			name: "no OpenAI credential",

@@ -33,10 +33,8 @@ import (
 // sources never have to encode protocol details. Empty falls back to
 // the catalog's DefaultBaseURL, which is also a bare origin.
 type providerConn struct {
-	baseURL             string
-	apiKey              string // "implicit" when credentials are injected at the network edge
-	headers             http.Header
-	codexOAuthResponses bool
+	baseURL string
+	apiKey  string // "implicit" when credentials are injected at the network edge
 }
 
 // Source is one origin from which built-in Shelley models can be
@@ -121,29 +119,6 @@ func Env(anthropicKey, openAIKey, geminiKey, fireworksKey string) Source {
 	add(models.ProviderGemini, geminiKey, "GEMINI_API_KEY")
 	add(models.ProviderFireworks, fireworksKey, "FIREWORKS_API_KEY")
 	return Source{label: "env", providers: prov, providerLabels: labels}
-}
-
-// OpenAICodex returns an OpenAI Responses source authenticated with the
-// user's existing Codex OAuth session.
-func OpenAICodex(accessToken, accountID string) Source {
-	headers := http.Header{
-		"User-Agent": []string{"codex_cli_rs/0.0.0 (Shelley)"},
-		"Originator": []string{"codex_cli_rs"},
-	}
-	if accountID != "" {
-		headers.Set("ChatGPT-Account-ID", accountID)
-	}
-	return Source{
-		label: "OpenAI Codex OAuth",
-		providers: map[models.Provider]*providerConn{
-			models.ProviderOpenAI: {
-				baseURL:             "https://chatgpt.com/backend-api/codex",
-				apiKey:              accessToken,
-				headers:             headers,
-				codexOAuthResponses: true,
-			},
-		},
-	}
 }
 
 // LLMIntegration returns a Source backed by one exe.dev "llm"
@@ -242,16 +217,6 @@ func Build(catalog []models.Model, sources []Source, httpc *http.Client, logger 
 			}
 			seen[id] = true
 			svc := m.Build(conn.baseURL, conn.apiKey, httpc)
-			// Codex OAuth is the only source that sets custom headers today.
-			// Its backend-api serves Responses at {base}/responses (no /v1);
-			// oaiResponsesSvc always appends /v1 for the public OpenAI API.
-			if responses, ok := svc.(*oai.ResponsesService); ok && conn.headers != nil {
-				responses.Headers = conn.headers.Clone()
-				if conn.codexOAuthResponses {
-					responses.ModelURL = strings.TrimRight(conn.baseURL, "/")
-					responses.OmitMaxOutputTokens = true
-				}
-			}
 			label := src.labelFor(m.Provider)
 			baseURL := conn.baseURL
 			if baseURL == "" {
@@ -292,7 +257,7 @@ func TranscriptionModels(sources []Source) []models.TranscriptionModel {
 			continue
 		}
 		conn := src.providers[models.ProviderOpenAI]
-		if conn == nil || conn.codexOAuthResponses {
+		if conn == nil {
 			continue
 		}
 		baseURL := cmp.Or(conn.baseURL, models.DefaultOpenAIBaseURL)

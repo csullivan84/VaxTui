@@ -106,9 +106,8 @@ func TestTransportAddsHeaders(t *testing.T) {
 }
 
 // TestTransportProviderCacheAffinityHeaders covers the per-provider prompt-cache
-// affinity headers: x-session-affinity for Fireworks, and session-id for the
-// ChatGPT Codex backend, which otherwise ignores the body's prompt_cache_key and
-// mints a fresh cache key per request.
+// affinity headers: x-session-affinity for Fireworks, and session-id for
+// OpenAI-compatible backends that ignore the body's prompt_cache_key.
 func TestTransportProviderCacheAffinityHeaders(t *testing.T) {
 	var receivedHeaders http.Header
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

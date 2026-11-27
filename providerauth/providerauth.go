@@ -1,6 +1,6 @@
-// Package providerauth stores model provider credentials that belong to
-// Shelley itself in ~/.config/shelley/providers.json. It never reads another
-// tool's credential files.
+// Package providerauth stores the OpenRouter API key the user typed into
+// Shelley in ~/.config/shelley/providers.json. It never reads another tool's
+// credential files.
 package providerauth
 
 import (
@@ -18,24 +18,16 @@ import (
 )
 
 const (
-	// KindOpenAICodex is a ChatGPT OAuth session for the Codex Responses API.
-	KindOpenAICodex = "openai-codex"
-	KindOpenRouter  = "openrouter-api-key"
-	openRouterModel = "openrouter/auto"
-	codexModel      = "gpt-5.6-luna"
+	KindOpenRouter    = "openrouter-api-key"
+	openRouterModel   = "openrouter/auto"
+	openRouterBaseURL = "https://openrouter.ai/api/v1"
 )
 
-// Provider is one stored provider credential. Secret fields are persisted
-// only in Shelley's private provider store and are never returned by the API.
+// Provider is one stored provider credential. AccessToken is persisted only
+// in Shelley's private provider store and is never returned by the API.
 type Provider struct {
-	Kind         string `json:"kind"`
-	Label        string `json:"label"`
-	AccessToken  string `json:"access_token"`
-	RefreshToken string `json:"refresh_token,omitempty"`
-	AccountID    string `json:"account_id,omitempty"`
-	BaseURL      string `json:"base_url,omitempty"`
-	ModelID      string `json:"model_id,omitempty"`
-	ModelName    string `json:"model_name,omitempty"`
+	Kind        string `json:"kind"`
+	AccessToken string `json:"access_token"`
 }
 
 type Config struct {
@@ -116,37 +108,17 @@ func Save(path string, config Config) error {
 	return os.Rename(tmpName, path)
 }
 
-// SaveOpenRouterKey stores a manually entered OpenRouter API key,
-// replacing any previous one.
+// SaveOpenRouterKey stores a manually entered OpenRouter API key as the
+// store's only entry, replacing whatever was there.
 func SaveOpenRouterKey(path, key string) (Config, error) {
-	config, err := Load(path)
-	if err != nil {
-		return Config{}, err
-	}
-	provider := Provider{
-		Kind:        KindOpenRouter,
-		Label:       "OpenRouter",
-		AccessToken: strings.TrimSpace(key),
-		BaseURL:     "https://openrouter.ai/api/v1",
-		ModelID:     openRouterModel,
-		ModelName:   openRouterModel,
-	}
-	providers := config.Providers[:0]
-	for _, existing := range config.Providers {
-		if existing.Kind != KindOpenRouter {
-			providers = append(providers, existing)
-		}
-	}
-	config.Providers = append(providers, provider)
+	config := Config{Providers: []Provider{{Kind: KindOpenRouter, AccessToken: strings.TrimSpace(key)}}}
 	if err := Save(path, config); err != nil {
 		return Config{}, err
 	}
 	return config, nil
 }
 
-// BuiltModels creates OpenAI-compatible models for stored providers that do
-// not map to Shelley's first-party catalog. Stored OpenAI Codex sessions are
-// materialized through modelsources by the command package instead.
+// BuiltModels creates the OpenRouter model for a stored OpenRouter key.
 func BuiltModels(config Config, httpc *http.Client) []models.Built {
 	var built []models.Built
 	for _, provider := range config.Providers {
@@ -155,35 +127,30 @@ func BuiltModels(config Config, httpc *http.Client) []models.Built {
 		}
 		service := &oai.Service{
 			APIKey:       provider.AccessToken,
-			ModelURL:     strings.TrimRight(provider.BaseURL, "/"),
-			Model:        oai.Model{ModelName: provider.ModelName, SupportsImages: true},
+			ModelURL:     openRouterBaseURL,
+			Model:        oai.Model{ModelName: openRouterModel, SupportsImages: true},
 			HTTPC:        httpc,
 			ProviderName: "openrouter",
 		}
 		built = append(built, models.Built{
-			ID:          provider.ModelID,
-			DisplayName: provider.ModelID,
+			ID:          openRouterModel,
+			DisplayName: openRouterModel,
 			Provider:    models.Provider("openrouter"),
-			Source:      provider.Label,
+			Source:      "OpenRouter",
 			Service:     llm.Service(service),
 			APIType:     models.APITypeOpenAIChat,
-			BaseURL:     provider.BaseURL,
+			BaseURL:     openRouterBaseURL,
 		})
 	}
 	return built
 }
 
-// PreferredModel returns the model to default to for the stored providers,
-// or "" when none is stored.
+// PreferredModel returns the model to default to for a stored OpenRouter
+// key, or "" when none is stored.
 func PreferredModel(config Config) string {
 	for _, provider := range config.Providers {
-		if provider.Kind == KindOpenRouter {
-			return provider.ModelID
-		}
-	}
-	for _, provider := range config.Providers {
-		if provider.Kind == KindOpenAICodex {
-			return codexModel
+		if provider.Kind == KindOpenRouter && provider.AccessToken != "" {
+			return openRouterModel
 		}
 	}
 	return ""

@@ -6,10 +6,10 @@ import (
 	"testing"
 )
 
-func TestSaveOpenRouterKeyReplacesKeyAndKeepsOtherProviders(t *testing.T) {
+func TestSaveOpenRouterKeyReplacesStore(t *testing.T) {
 	storePath := filepath.Join(t.TempDir(), "shelley", "providers.json")
 	if err := Save(storePath, Config{Providers: []Provider{
-		{Kind: KindOpenAICodex, AccessToken: "codex-token", AccountID: "acct"},
+		{Kind: "retired-kind", AccessToken: "stale-token"},
 		{Kind: KindOpenRouter, AccessToken: "old-key"},
 	}}); err != nil {
 		t.Fatal(err)
@@ -22,7 +22,7 @@ func TestSaveOpenRouterKeyReplacesKeyAndKeepsOtherProviders(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(config.Providers) != 2 {
+	if len(config.Providers) != 1 || config.Providers[0].AccessToken != "new-key" {
 		t.Fatalf("providers = %#v", config.Providers)
 	}
 	if got := PreferredModel(config); got != "openrouter/auto" {
@@ -32,11 +32,6 @@ func TestSaveOpenRouterKeyReplacesKeyAndKeepsOtherProviders(t *testing.T) {
 	if len(built) != 1 || built[0].ID != "openrouter/auto" {
 		t.Fatalf("built models = %#v", built)
 	}
-	for _, provider := range config.Providers {
-		if provider.Kind == KindOpenRouter && provider.AccessToken != "new-key" {
-			t.Fatalf("OpenRouter key = %q", provider.AccessToken)
-		}
-	}
 	if info, err := os.Stat(storePath); err != nil {
 		t.Fatal(err)
 	} else if info.Mode().Perm() != 0o600 {
@@ -44,9 +39,9 @@ func TestSaveOpenRouterKeyReplacesKeyAndKeepsOtherProviders(t *testing.T) {
 	}
 }
 
-func TestPreferredModelForStoredCodexSession(t *testing.T) {
-	config := Config{Providers: []Provider{{Kind: KindOpenAICodex, AccessToken: "token"}}}
-	if got := PreferredModel(config); got != "gpt-5.6-luna" {
+func TestStaleStoredKindsAreIgnored(t *testing.T) {
+	config := Config{Providers: []Provider{{Kind: "retired-kind", AccessToken: "token"}}}
+	if got := PreferredModel(config); got != "" {
 		t.Fatalf("preferred model = %q", got)
 	}
 	if got := len(BuiltModels(config, nil)); got != 0 {

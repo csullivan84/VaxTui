@@ -16,7 +16,7 @@
   >
     <!--
       Expand control is ONLY the summary row — never wrap download/open buttons
-      in role=button (nested interactive controls; Codex's leftover sin).
+      in role=button (nested interactive controls).
     -->
     <div class="output-iframe-tool-header">
       <div
