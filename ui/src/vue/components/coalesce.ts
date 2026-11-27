@@ -53,7 +53,7 @@ export function coalesceMessages(
     messages.forEach((message) => {
       const status = distillStatus(message);
       if (!status) return;
-      let key = "";
+      let key: string;
       try {
         const ud =
           typeof message.user_data === "string" ? JSON.parse(message.user_data) : message.user_data;

@@ -176,7 +176,7 @@ run("add, move, replace, remove stress sequence", () => {
 });
 
 run("reduce: applies a chain of patches and advances hash atomically", () => {
-  let state: ConversationListState = {
+  const state: ConversationListState = {
     list: [conv("a", "alpha"), conv("b", "beta")],
     hash: "h0",
   };
@@ -191,7 +191,6 @@ run("reduce: applies a chain of patches and advances hash atomically", () => {
   if (res.ok) {
     assert(res.state.hash === "h1", "expected hash advanced to h1");
     assert(res.state.list[0].slug === "alpha2", "expected field replaced");
-    state = res.state;
   }
 });
 

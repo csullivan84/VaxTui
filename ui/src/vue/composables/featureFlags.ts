@@ -50,7 +50,7 @@ export async function refreshFeatureFlags(): Promise<void> {
 // `page.addInitScript` is private to that page.
 function localOverride(name: string): boolean | undefined {
   if (typeof window === "undefined") return undefined;
-  let raw: string | null = null;
+  let raw: string | null;
   try {
     raw = window.localStorage.getItem(`ff:${name}`);
   } catch {
