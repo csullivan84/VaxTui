@@ -7,6 +7,8 @@ export const SHIKI_LANGUAGE_LOADERS = Object.freeze({
   "actionscript-3": () =>
     import("@shikijs/langs/actionscript-3").then(({ default: language }) => language),
   ada: () => import("@shikijs/langs/ada").then(({ default: language }) => language),
+  ahk: () => import("@shikijs/langs/ahk").then(({ default: language }) => language),
+  ahk2: () => import("@shikijs/langs/ahk2").then(({ default: language }) => language),
   "angular-expression": () =>
     import("@shikijs/langs/angular-expression").then(({ default: language }) => language),
   "angular-html": () =>
@@ -44,6 +46,7 @@ export const SHIKI_LANGUAGE_LOADERS = Object.freeze({
   c3: () => import("@shikijs/langs/c3").then(({ default: language }) => language),
   cadence: () => import("@shikijs/langs/cadence").then(({ default: language }) => language),
   cairo: () => import("@shikijs/langs/cairo").then(({ default: language }) => language),
+  chapel: () => import("@shikijs/langs/chapel").then(({ default: language }) => language),
   clarity: () => import("@shikijs/langs/clarity").then(({ default: language }) => language),
   clojure: () => import("@shikijs/langs/clojure").then(({ default: language }) => language),
   cmake: () => import("@shikijs/langs/cmake").then(({ default: language }) => language),
@@ -173,6 +176,7 @@ export const SHIKI_LANGUAGE_LOADERS = Object.freeze({
   nginx: () => import("@shikijs/langs/nginx").then(({ default: language }) => language),
   nim: () => import("@shikijs/langs/nim").then(({ default: language }) => language),
   nix: () => import("@shikijs/langs/nix").then(({ default: language }) => language),
+  nsis: () => import("@shikijs/langs/nsis").then(({ default: language }) => language),
   nushell: () => import("@shikijs/langs/nushell").then(({ default: language }) => language),
   "objective-c": () =>
     import("@shikijs/langs/objective-c").then(({ default: language }) => language),
@@ -181,6 +185,7 @@ export const SHIKI_LANGUAGE_LOADERS = Object.freeze({
   ocaml: () => import("@shikijs/langs/ocaml").then(({ default: language }) => language),
   odin: () => import("@shikijs/langs/odin").then(({ default: language }) => language),
   openscad: () => import("@shikijs/langs/openscad").then(({ default: language }) => language),
+  org: () => import("@shikijs/langs/org").then(({ default: language }) => language),
   pascal: () => import("@shikijs/langs/pascal").then(({ default: language }) => language),
   perl: () => import("@shikijs/langs/perl").then(({ default: language }) => language),
   php: () => import("@shikijs/langs/php").then(({ default: language }) => language),
@@ -205,6 +210,7 @@ export const SHIKI_LANGUAGE_LOADERS = Object.freeze({
   racket: () => import("@shikijs/langs/racket").then(({ default: language }) => language),
   raku: () => import("@shikijs/langs/raku").then(({ default: language }) => language),
   razor: () => import("@shikijs/langs/razor").then(({ default: language }) => language),
+  rbs: () => import("@shikijs/langs/rbs").then(({ default: language }) => language),
   reg: () => import("@shikijs/langs/reg").then(({ default: language }) => language),
   regexp: () => import("@shikijs/langs/regexp").then(({ default: language }) => language),
   rel: () => import("@shikijs/langs/rel").then(({ default: language }) => language),
@@ -225,6 +231,7 @@ export const SHIKI_LANGUAGE_LOADERS = Object.freeze({
   shellsession: () =>
     import("@shikijs/langs/shellsession").then(({ default: language }) => language),
   smalltalk: () => import("@shikijs/langs/smalltalk").then(({ default: language }) => language),
+  smithy: () => import("@shikijs/langs/smithy").then(({ default: language }) => language),
   solidity: () => import("@shikijs/langs/solidity").then(({ default: language }) => language),
   soy: () => import("@shikijs/langs/soy").then(({ default: language }) => language),
   sparql: () => import("@shikijs/langs/sparql").then(({ default: language }) => language),

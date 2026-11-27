@@ -25,10 +25,10 @@
     "@excalidraw/excalidraw": "0.18.0",
     "@pierre/diffs": "1.4.1",
     "@primeuix/themes": "^2.0.3",
-    "@shikijs/core": "3.23.0",
-    "@shikijs/engine-javascript": "3.23.0",
-    "@shikijs/langs": "3.23.0",
-    "@shikijs/themes": "3.23.0",
+    "@shikijs/core": "4.6.0",
+    "@shikijs/engine-javascript": "4.6.0",
+    "@shikijs/langs": "4.6.0",
+    "@shikijs/themes": "4.6.0",
     "@tiptap/core": "^3.34.0",
     "@tiptap/extension-document": "^3.34.0",
     "@tiptap/extension-paragraph": "^3.34.0",
@@ -83,10 +83,10 @@
       "esbuild"
     ],
     "overrides": {
-      "shiki": "^3.22.0",
-      "@shikijs/core": "^3.22.0",
-      "@shikijs/engine-javascript": "^3.22.0",
-      "@shikijs/transformers": "^3.22.0"
+      "shiki": "^4.0.0",
+      "@shikijs/core": "^4.0.0",
+      "@shikijs/engine-javascript": "^4.0.0",
+      "@shikijs/transformers": "^4.0.0"
     },
     "patchedDependencies": {
       "@primevue/core@4.5.5": "patches/@primevue__core@4.5.5.patch"
