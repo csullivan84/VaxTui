@@ -119,9 +119,10 @@ test("displays LLM error message in UI", async ({ page }) => {
   const errorMessage = page.locator('[role="alert"]');
   await expect(errorMessage).toBeVisible({ timeout: 10000 });
 
-  // Verify the error text is displayed
+  // Verify the error text is displayed (exactly: the model bar's health
+  // readout may also quote the error as "Health: last error: ...").
   await expect(
-    page.locator("text=LLM request failed: predictable error: test error message"),
+    page.getByText("LLM request failed: predictable error: test error message", { exact: true }),
   ).toBeVisible();
 
   // The error is labelled for screen readers: an "Error message" heading (for
