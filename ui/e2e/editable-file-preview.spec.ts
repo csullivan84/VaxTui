@@ -38,7 +38,7 @@ test("Edit User AGENTS.md previews, returns focus, and saves in the private test
   await page.keyboard.press("ControlOrMeta+Alt+P");
   await expect(modal.locator(".monaco-editor")).toBeVisible();
 
-  const editorInput = modal.locator(".monaco-editor textarea.inputarea");
+  const editorInput = modal.locator(".monaco-editor .native-edit-context");
   await editorInput.focus();
   await expect(editorInput).toBeFocused();
   await page.keyboard.press("End");
@@ -84,7 +84,7 @@ test("User AGENTS preview uses the live unsaved buffer and safe Markdown rendere
   await preview.locator(".shelley-code-copy").click();
   await expect.poll(() => page.evaluate(() => (window as unknown as { copied?: string }).copied)).toContain("const safe = true");
   await modal.getByRole("button", { name: "Edit mode" }).click();
-  const input = modal.locator(".monaco-editor textarea.inputarea");
+  const input = modal.locator(".monaco-editor .native-edit-context");
   await input.focus();
   await page.keyboard.press("End");
   await page.keyboard.type("\n## Unsaved preview");
@@ -108,7 +108,7 @@ test("User AGENTS keeps a failed edited buffer after reopen and retries it", asy
     return dialog;
   };
   let modal = await open();
-  const input = modal.locator(".monaco-editor textarea.inputarea");
+  const input = modal.locator(".monaco-editor .native-edit-context");
   await input.focus();
   await page.keyboard.press("End");
   await page.keyboard.type("\n<!-- retain after failed save -->");
@@ -119,7 +119,7 @@ test("User AGENTS keeps a failed edited buffer after reopen and retries it", asy
   await expect(modal.locator(".view-lines")).toContainText("retain after failed save");
   await expect(modal.locator(".agents-md-save-error")).toBeVisible();
   failWrite = false;
-  const retriedInput = modal.locator(".monaco-editor textarea.inputarea");
+  const retriedInput = modal.locator(".monaco-editor .native-edit-context");
   await retriedInput.focus();
   // Monaco registers save commands after recreating the editor. Make a real
   // edit before invoking it so this also verifies the recovered buffer remains editable.

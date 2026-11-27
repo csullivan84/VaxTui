@@ -40,6 +40,6 @@ test("keeps a wide Markdown table inside the mobile file-preview reading pane", 
   expect(widths.pane).toBeGreaterThan(0);
   expect(widths.content).toBeLessThanOrEqual(widths.pane);
   await modal.getByRole("button", { name: "Edit mode" }).click();
-  await expect(modal.locator(".monaco-editor textarea.inputarea")).not.toBeFocused();
+  await expect(modal.locator(".monaco-editor .native-edit-context")).not.toBeFocused();
   await expect(modal.locator(".agents-md-header-path")).toBeVisible();
 });

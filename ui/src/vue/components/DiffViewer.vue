@@ -1358,7 +1358,7 @@ function createEditor() {
     overviewRulerLanes: initMobile ? MOBILE_OVERVIEW_RULER_LANES : DESKTOP_OVERVIEW_RULER_LANES,
     quickSuggestions: false,
     suggestOnTriggerCharacters: false,
-    lightbulb: { enabled: false },
+    lightbulb: { enabled: monaco.editor.ShowLightbulbIconMode.Off },
     codeLens: false,
     contextmenu: false,
     links: false,

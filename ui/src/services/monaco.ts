@@ -17,7 +17,7 @@ export function loadMonaco(): Promise<typeof Monaco> {
     const monacoEnv: Monaco.Environment = {
       getWorkerUrl: () => "/editor.worker.js",
     };
-    (self as Window).MonacoEnvironment = monacoEnv;
+    globalThis.MonacoEnvironment = monacoEnv;
 
     // Load Monaco CSS if not already loaded
     if (!document.querySelector('link[href="/monaco-editor.css"]')) {
