@@ -24,7 +24,7 @@
   "dependencies": {
     "@excalidraw/excalidraw": "0.18.1",
     "@pierre/diffs": "1.4.1",
-    "@primeuix/themes": "^2.0.3",
+    "@primeuix/themes": "2.0.3",
     "@shikijs/core": "4.6.0",
     "@shikijs/engine-javascript": "4.6.0",
     "@shikijs/langs": "4.6.0",
@@ -48,8 +48,8 @@
     "katex": "^0.19.1",
     "marked": "^18.2.1",
     "monaco-editor": "^0.57.0",
-    "primeicons": "^7.0.0",
-    "primevue": "^4.5.5",
+    "primeicons": "7.0.0",
+    "primevue": "4.5.5",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "vue": "^3.5.45"

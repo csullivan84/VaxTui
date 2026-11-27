@@ -26,7 +26,7 @@ importers:
         specifier: 1.4.1
         version: 1.4.1(@shikijs/themes@4.6.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       '@primeuix/themes':
-        specifier: ^2.0.3
+        specifier: 2.0.3
         version: 2.0.3
       '@shikijs/core':
         specifier: ^4.0.0
@@ -98,10 +98,10 @@ importers:
         specifier: ^0.57.0
         version: 0.57.0
       primeicons:
-        specifier: ^7.0.0
+        specifier: 7.0.0
         version: 7.0.0
       primevue:
-        specifier: ^4.5.5
+        specifier: 4.5.5
         version: 4.5.5(vue@3.5.45(typescript@5.9.3))
       react:
         specifier: ^19.3.1
